@@ -198,6 +198,9 @@ const ui = {
             createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
                 const skipDl = !!currentSettings.skipDownload;
                 const orgMedia = skipDl ? false : currentSettings.organizeMedia !== false;
+                const smartMirrors = currentSettings.smartMirrors !== false;
+                const vidQual = currentSettings.videoQuality || 'best';
+                const opt = (val, label) => `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
                 return [
                     `
           <div class="menu-row">
@@ -213,6 +216,23 @@ const ui = {
                         orgMedia,
                         skipDl,
                     ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-smart-mirrors`,
+                        'Smart Mirrors (Auto-Fallback)',
+                        smartMirrors,
+                        false,
+                    ),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
+            <select id="${idPrefix}-video-quality" class="xfpd-select">
+              ${opt('best', 'Best Available (4K)')}
+              ${opt('1080p', 'Max 1080p')}
+              ${opt('720p', 'Max 720p')}
+              ${opt('all', 'All Resolutions')}
+            </select>
+          </div>
+          `,
                     ui.forms.createCheckbox(
                         `${idPrefix}-flatten`,
                         'Flatten',
@@ -237,7 +257,7 @@ const ui = {
                 ].join('');
             },
             /**
-       * Syncs checkbox .checked and .disabled states in rootEl from live settingsObj.
+       * Syncs checkbox .checked/.disabled and select .value states in rootEl from live settingsObj.
        * @param rootEl
        * @param idPrefix
        * @param settingsObj
@@ -259,6 +279,12 @@ const ui = {
                 const orgMedia = skipDl ? false : settingsObj.organizeMedia !== false;
                 setCb('zipped', settingsObj.zipped, false);
                 setCb('organize-media', orgMedia, skipDl);
+                setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
+                const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
+                if (qualEl) {
+                    const q = settingsObj.videoQuality || 'best';
+                    if (qualEl.value !== q) qualEl.value = q;
+                }
                 setCb('flatten', skipDl || orgMedia ? false : settingsObj.flatten, skipDl || orgMedia);
                 setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
@@ -318,6 +344,16 @@ const ui = {
                         { organizeMedia: settingsObj.organizeMedia, preSkipDownload: { ...settingsObj.preSkipDownload } },
                         ['organizeMedia'],
                     );
+                });
+
+                bindOne('smart-mirrors', e => {
+                    settingsObj.smartMirrors = !!e.target.checked;
+                    notify({ smartMirrors: settingsObj.smartMirrors }, ['smartMirrors']);
+                });
+
+                bindOne('video-quality', e => {
+                    settingsObj.videoQuality = e.target.value || 'best';
+                    notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
                 bindOne('flatten', e => {

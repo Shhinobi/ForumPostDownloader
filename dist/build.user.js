@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.27
+// @version 3.28
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -334,9 +334,13 @@ const settings = {
 // --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
 const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
 
+const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
+
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
     organizeMedia: true,
+    smartMirrors: true,
+    videoQuality: 'best',
     flatten: false,
     generateLinks: false,
     generateLog: false,
@@ -347,6 +351,11 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
 
 const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
 
+// Link-level filename hints extracted from forum DOM (e.g. XenForo unfurl card titles / anchor text)
+// and Pixeldrain /api/file/<id>/info metadata cache.
+const linkHintNameByUrl = new Map();
+const pixeldrainInfoById = new Map();
+
 let xfpdPrefsMirror = null;
 let xfpdPrefsListenerBound = false;
 const xfpdPrefsSubscribers = new Set();
@@ -355,7 +364,13 @@ function xfpdNormalizeUserPrefs(rawObj) {
     const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
     const normalized = {};
     for (const key of XFPD_USER_PREF_KEYS) {
-        normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+        if (key === 'videoQuality') {
+            normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
+                ? src.videoQuality
+                : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else {
+            normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+        }
     }
     const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
     normalized.preSkipDownload = {
@@ -516,6 +531,8 @@ function xfpdCreatePostSettings() {
     const postSettings = {
         zipped: prefs.zipped,
         organizeMedia: prefs.organizeMedia,
+        smartMirrors: prefs.smartMirrors,
+        videoQuality: prefs.videoQuality,
         flatten: prefs.flatten,
         generateLinks: prefs.generateLinks,
         generateLog: prefs.generateLog,
@@ -2262,6 +2279,37 @@ const parsers = {
                 } catch (e) { /* ignore */ }
             } catch (e) { /* ignore */ }
 
+            // Capture human-readable filename hints from anchor text / XenForo unfurl card headers
+            // (after redirect decoding above!) so multi-mirror & multi-resolution links know their real filenames.
+            try {
+                const extractFilenameHint = rawText => {
+                    let s = String(rawText || '').replace(/\s+/g, ' ').trim();
+                    if (!s || /^https?:\/\//i.test(s) || xfpdLooksLikeCfFilenameHint(s)) return '';
+                    // Strip trailing site suffix often added by XenForo unfurls (e.g. "file.mp4 | Bunkr" or "file.mp4 - Pixeldrain")
+                    s = s.replace(/\s+[|\-–—]\s*(?:bunkr|gofile|pixeldrain|filester|cyberdrop|fileditch[a-z.]*)\s*$/i, '').trim();
+                    if (/\.[A-Za-z0-9]{2,5}$/.test(s) && s.length >= 4 && s.length <= 240) {
+                        return s;
+                    }
+                    const m = s.match(/[^\\/:*?"<>|\r\n]{3,220}\.(?:mp4|mkv|m4v|mov|webm|avi|wmv|flv|ts|m2ts|zip|rar|7z|pdf|jpe?g|png|webp|gif|avif)\b/i);
+                    return m ? m[0].trim() : '';
+                };
+
+                messageContentClone.querySelectorAll('a[href]').forEach(a => {
+                    let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim();
+                    if (!href0 || href0.startsWith('#') || href0.startsWith('javascript:')) return;
+                    if (!/^https?:\/\//i.test(href0)) {
+                        try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
+                    }
+                    const hint = extractFilenameHint(a.textContent || '');
+                    if (!hint) return;
+                    const cleanNoHash = href0.split('#')[0].replace(/\/$/, '');
+                    const cleanNoQs = cleanNoHash.split('?')[0].replace(/\/$/, '');
+                    linkHintNameByUrl.set(href0, hint);
+                    linkHintNameByUrl.set(cleanNoHash, hint);
+                    linkHintNameByUrl.set(cleanNoQs, hint);
+                });
+            } catch (e) { /* ignore */ }
+
             // Prevent duplicate detection: attachment links often wrap a preview image.
             // For parsing only, remove the preview <img> inside attachment links so we don't count/download it twice.
             try {
@@ -2494,7 +2542,7 @@ const parsers = {
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:165px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
     },
 };
 
@@ -2698,6 +2746,9 @@ const ui = {
             createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
                 const skipDl = !!currentSettings.skipDownload;
                 const orgMedia = skipDl ? false : currentSettings.organizeMedia !== false;
+                const smartMirrors = currentSettings.smartMirrors !== false;
+                const vidQual = currentSettings.videoQuality || 'best';
+                const opt = (val, label) => `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
                 return [
                     `
           <div class="menu-row">
@@ -2713,6 +2764,23 @@ const ui = {
                         orgMedia,
                         skipDl,
                     ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-smart-mirrors`,
+                        'Smart Mirrors (Auto-Fallback)',
+                        smartMirrors,
+                        false,
+                    ),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
+            <select id="${idPrefix}-video-quality" class="xfpd-select">
+              ${opt('best', 'Best Available (4K)')}
+              ${opt('1080p', 'Max 1080p')}
+              ${opt('720p', 'Max 720p')}
+              ${opt('all', 'All Resolutions')}
+            </select>
+          </div>
+          `,
                     ui.forms.createCheckbox(
                         `${idPrefix}-flatten`,
                         'Flatten',
@@ -2737,7 +2805,7 @@ const ui = {
                 ].join('');
             },
             /**
-       * Syncs checkbox .checked and .disabled states in rootEl from live settingsObj.
+       * Syncs checkbox .checked/.disabled and select .value states in rootEl from live settingsObj.
        * @param rootEl
        * @param idPrefix
        * @param settingsObj
@@ -2759,6 +2827,12 @@ const ui = {
                 const orgMedia = skipDl ? false : settingsObj.organizeMedia !== false;
                 setCb('zipped', settingsObj.zipped, false);
                 setCb('organize-media', orgMedia, skipDl);
+                setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
+                const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
+                if (qualEl) {
+                    const q = settingsObj.videoQuality || 'best';
+                    if (qualEl.value !== q) qualEl.value = q;
+                }
                 setCb('flatten', skipDl || orgMedia ? false : settingsObj.flatten, skipDl || orgMedia);
                 setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
@@ -2818,6 +2892,16 @@ const ui = {
                         { organizeMedia: settingsObj.organizeMedia, preSkipDownload: { ...settingsObj.preSkipDownload } },
                         ['organizeMedia'],
                     );
+                });
+
+                bindOne('smart-mirrors', e => {
+                    settingsObj.smartMirrors = !!e.target.checked;
+                    notify({ smartMirrors: settingsObj.smartMirrors }, ['smartMirrors']);
+                });
+
+                bindOne('video-quality', e => {
+                    settingsObj.videoQuality = e.target.value || 'best';
+                    notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
                 bindOne('flatten', e => {
@@ -7967,6 +8051,308 @@ try {
         resolved = deduped;
     }
 
+    // --- Smart Mirror Grouping & Video Quality Filtering ----------------------------------------
+    // Handles multi-mirror posts (e.g. same file uploaded to Pixeldrain + Filester + GoFile + Bunkr)
+    // and multi-resolution video posts (e.g. 2160p/4K + 1080p + 720p variants of the same video).
+    const useSmartMirrors = postSettings.smartMirrors !== false;
+    const videoQualityPref = String(postSettings.videoQuality || 'best');
+
+    const getHostMirrorRank = item => {
+        const hName = String((item && item.host && item.host.name) || '').toLowerCase();
+        const u = String((item && item.url) || '').toLowerCase();
+        if (hName === 'simpcity' || hName === 'smg' || hName === 'pomf2' || hName === 'imagepond' || hName === 'goonbox' || hName === 'jpgx') return 10;
+        if (hName === 'gofile' || u.includes('gofile.io')) return 20;
+        if (hName === 'pixeldrain' || u.includes('pixeldrain.') || u.includes('pixeldra.in')) return 30;
+        if (hName === 'filester' || u.includes('filester.') || filesterSlugByUrl.has(String(item && item.url))) return 35;
+        if (hName === 'bunkr' || u.includes('bunkr')) return 45;
+        if (hName === 'cyberdrop' || hName === 'cyberfile' || u.includes('cyberdrop')) return 55;
+        if (hName === 'turbo' || u.includes('turbo')) return 70;
+        return 60;
+    };
+
+    const inferItemKnownFilename = item => {
+        if (!item) return '';
+        if (item.hintedFilename) return String(item.hintedFilename);
+        const u = String(item.url || '');
+        const orig = String(item.original || '');
+        const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+
+        // 1. Host-resolved metadata maps
+        const flSlug = filesterSlugByUrl.get(u) || '';
+        const fromFilester = filesterNameByUrl.get(u) || filesterNameByUrl.get(orig) || (flSlug ? filesterNameBySlug.get(flSlug) : '');
+        if (fromFilester && String(fromFilester).trim()) return String(fromFilester).trim();
+
+        const mGf = u.match(/\/download\/(?:web|direct)\/([^\/?#]+)\//i);
+        const gfName = (mGf && mGf[1] && gofileNameById.get(mGf[1])) || gofileNameByUrl.get(u) || '';
+        if (gfName && String(gfName).trim()) return String(gfName).trim();
+
+        const bkName = bunkrNameByUrl.get(u) || bunkrNameByUrl.get(strip(u)) || bunkrNameByUrl.get(orig) || bunkrNameByUrl.get(strip(orig)) || '';
+        if (bkName && String(bkName).trim() && !xfpdLooksLikeCfFilenameHint(bkName)) return String(bkName).trim();
+
+        const cdName = cyberdropNameByUrl.get(u) || '';
+        if (cdName && String(cdName).trim()) return String(cdName).trim();
+
+        const ipName = imagepondNameByUrl.get(u) || imagepondNameByUrl.get(strip(u)) || imagepondNameByUrl.get(orig) || imagepondNameByUrl.get(strip(orig)) || '';
+        if (ipName && String(ipName).trim()) return String(ipName).trim();
+
+        const mPd = /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/(?:api\/file|u)\/([^\/?#]+)/i.exec(u) ||
+            /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/u\/([^\/?#]+)/i.exec(orig);
+        if (mPd && mPd[1] && pixeldrainInfoById.has(mPd[1])) {
+            const pdInfo = pixeldrainInfoById.get(mPd[1]);
+            if (pdInfo && pdInfo.filename) return String(pdInfo.filename).trim();
+        }
+
+        // 2. Signed URL query parameters (?fn= on Turbo, &n= on Filester v2, ?f= on Kemono)
+        try {
+            const uo = new URL(u, typeof location !== 'undefined' ? location.origin : 'https://simpcity.su');
+            for (const qk of ['fn', 'n', 'f', 'filename']) {
+                const qv = uo.searchParams.get(qk);
+                if (qv && /\.[A-Za-z0-9]{2,5}$/.test(qv.trim())) {
+                    return qv.trim();
+                }
+            }
+        } catch (e) {}
+
+        // 3. Forum DOM anchor / unfurl card title hints
+        const domHint =
+            linkHintNameByUrl.get(orig) ||
+            linkHintNameByUrl.get(strip(orig)) ||
+            linkHintNameByUrl.get(u) ||
+            linkHintNameByUrl.get(strip(u)) ||
+            '';
+        if (domHint && String(domHint).trim()) return String(domHint).trim();
+
+        // 4. URL pathname basename if it carries a real extension (exclude bare /api/file/<id> paths)
+        if (!/\/api\/(?:file|list)\//i.test(u)) {
+            let base = h.basename(strip(u));
+            try { base = decodeURIComponent(base); } catch (e) {}
+            if (base && /\.[A-Za-z0-9]{2,5}$/.test(base) && !/^[0-9a-f-]{32,}\.[a-z0-9]+$/i.test(base)) {
+                return base.trim();
+            }
+        }
+
+        return '';
+    };
+
+    // Lightweight Pixeldrain /info probe ONLY when smartMirrors or videoQuality filtering is active
+    // AND a Pixeldrain single-file link has no DOM card title yet (e.g. text link "[Mirror 1]").
+    if ((useSmartMirrors || videoQualityPref !== 'all') && resolved.length > 1 && !isCancelled()) {
+        for (const item of resolved) {
+            if (isCancelled()) break;
+            if (inferItemKnownFilename(item)) continue;
+            const mPd = /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/api\/file\/([^\/?#]+)/i.exec(String(item.url || ''));
+            if (!mPd || !mPd[1] || pixeldrainInfoById.has(mPd[1])) continue;
+            try {
+                const pdId = mPd[1];
+                const pdRes = await h.http.get(`https://pixeldrain.com/api/file/${pdId}/info`, {}, { __xfpd_timeout: 6000 }, 'text');
+                if (pdRes && pdRes.status === 200 && pdRes.source) {
+                    const j = JSON.parse(String(pdRes.source));
+                    const v = j && (j.value || j.data || j);
+                    const pdName = String((v && (v.name ?? v.filename ?? v.title)) ?? (j && (j.name ?? j.filename)) ?? '').trim();
+                    const pdSize = Number((v && (v.size ?? v.bytes)) ?? (j && (j.size ?? j.bytes)) ?? 0) || 0;
+                    if (pdName) {
+                        pixeldrainInfoById.set(pdId, { filename: pdName, size: pdSize });
+                    }
+                }
+            } catch (e) {}
+        }
+    }
+
+    // Attach inferred filenames onto resolved items so downloaders (including Pixeldrain) benefit from them.
+    for (const item of resolved) {
+        const knownName = inferItemKnownFilename(item);
+        if (knownName) {
+            item.hintedFilename = knownName;
+        }
+    }
+
+    const buildMirrorFileKey = rawName => {
+        let s = String(rawName || '').trim();
+        if (!s) return '';
+        try { if (/%[0-9A-Fa-f]{2}/.test(s)) s = decodeURIComponent(s); } catch (e) {}
+        const ext = String(h.extension(s) || h.ext(s) || '').toLowerCase();
+        if (!ext) return '';
+        let stem = h.fnNoExt(s).toLowerCase();
+        stem = stem.replace(/\s*\(online-video-cutter\.com\)\s*/gi, ' ');
+        // Normalize spaces, underscores, dots, and hyphens into single underscores so
+        // "Title s04 2160p h264.mp4" and "Title_s04_2160p_h264.mp4" match identically!
+        const normStem = stem.replace(/[\s._\-]+/g, '_').replace(/^_+|_+$/g, '');
+        if (normStem.length < 6) return '';
+        // Never treat generic placeholder names ("video.mp4", "image_1.jpg", "download.zip") as mirrors of each other!
+        if (/^(?:video|vid|clip|movie|scene|image|img|photo|pic|file|download|output|untitled|sample)_?\d*$/i.test(normStem)) {
+            return '';
+        }
+        return `${normStem}.${ext}`;
+    };
+
+    const parseVideoResolutionVariant = rawName => {
+        let s = String(rawName || '').trim();
+        if (!s) return null;
+        try { if (/%[0-9A-Fa-f]{2}/.test(s)) s = decodeURIComponent(s); } catch (e) {}
+        const ext = String(h.extension(s) || h.ext(s) || '').toLowerCase();
+        if (!ext || !/^(?:mp4|m4v|mkv|webm|mov|avi|wmv|flv|ts|m2ts|mpg|mpeg)$/i.test(ext)) {
+            return null;
+        }
+        const stem = h.fnNoExt(s).toLowerCase();
+        const rawTokens = stem.split(/[\s._\-()\[\]]+/).filter(Boolean);
+        if (rawTokens.length < 2) return null;
+
+        let detectedHeight = 0;
+        const workTokens = [];
+
+        for (const tok of rawTokens) {
+            let resH = 0;
+            const mP = /^(4320|2160|1440|1080|720|576|540|480|360|240)[pi]$/i.exec(tok);
+            const mWxH = /^\d{3,4}x(4320|2160|1440|1080|720|576|540|480|360|240)$/i.exec(tok);
+            if (mP) resH = Number(mP[1]);
+            else if (mWxH) resH = Number(mWxH[1]);
+            else if (tok === '8k') resH = 4320;
+            else if (tok === '4k' || tok === 'uhd') resH = 2160;
+            else if (tok === '2k' || tok === 'qhd') resH = 1440;
+            else if (tok === 'fhd' || tok === 'fullhd') resH = 1080;
+
+            if (resH > 0 && detectedHeight === 0) {
+                detectedHeight = resH;
+                continue;
+            }
+            // Strip pure video codec/hdr/fps encoding tags so 4K HEVC and 1080p H264 of the same scene match.
+            if (/^(?:h264|x264|avc|h265|x265|hevc|av1|vp9|aac|mp3|10bit|8bit|hdr|sdr|60fps|30fps)$/i.test(tok)) {
+                continue;
+            }
+            workTokens.push(tok);
+        }
+
+        if (!detectedHeight || !workTokens.length) return null;
+        const workKey = workTokens.join('_');
+        if (workKey.length < 5) return null;
+        if (/^(?:video|vid|clip|movie|scene)_?\d*$/i.test(workKey)) return null;
+        return { workKey, height: detectedHeight };
+    };
+
+    // Pass 1: Group mirrors of the exact same file across different hosts (primary + ordered fallbacks).
+    if (useSmartMirrors && resolved.length > 1) {
+        const groupsByMirrorKey = new Map();
+        const orderedEntries = [];
+
+        for (const item of resolved) {
+            // Only group standalone items (or items from the same folder context) with a valid mirrorFileKey.
+            const hasFolder = !!(item.folderName && String(item.folderName).trim() !== '');
+            const mKey = !hasFolder ? buildMirrorFileKey(item.hintedFilename || '') : '';
+            if (!mKey) {
+                orderedEntries.push({ single: item });
+                continue;
+            }
+            if (!groupsByMirrorKey.has(mKey)) {
+                const bucket = [];
+                groupsByMirrorKey.set(mKey, bucket);
+                orderedEntries.push({ groupKey: mKey, bucket });
+            }
+            groupsByMirrorKey.get(mKey).push(item);
+        }
+
+        const merged = [];
+        for (const entry of orderedEntries) {
+            if (entry.single) {
+                merged.push(entry.single);
+                continue;
+            }
+            const bucket = entry.bucket;
+            if (bucket.length === 1) {
+                merged.push(bucket[0]);
+                continue;
+            }
+            bucket.sort((a, b) => getHostMirrorRank(a) - getHostMirrorRank(b));
+            const primary = bucket[0];
+            const fallbacks = bucket.slice(1);
+            primary.mirrorFallbacks = (primary.mirrorFallbacks || []).concat(fallbacks);
+            dedupedCount += fallbacks.length;
+            log.post.info(
+                postId,
+                `::Mirror group (${bucket.length} mirrors for "${primary.hintedFilename || entry.groupKey}") -> primary: ${primary.host.name}, fallback(s): ${fallbacks.map(f => f.host.name).join(', ')}::`,
+                postNumber,
+            );
+            merged.push(primary);
+        }
+        resolved = merged;
+    }
+
+    // Pass 2: Filter multi-resolution variants of the same video according to postSettings.videoQuality.
+    if (videoQualityPref !== 'all' && resolved.length > 1) {
+        const resGroups = new Map();
+        const slots = [];
+
+        for (const item of resolved) {
+            const hasFolder = !!(item.folderName && String(item.folderName).trim() !== '');
+            const info = !hasFolder ? parseVideoResolutionVariant(item.hintedFilename || '') : null;
+            if (!info) {
+                slots.push({ single: item });
+                continue;
+            }
+            item._resHeight = info.height;
+            if (!resGroups.has(info.workKey)) {
+                const list = [];
+                resGroups.set(info.workKey, list);
+                slots.push({ workKey: info.workKey, list });
+            }
+            resGroups.get(info.workKey).push(item);
+        }
+
+        const pickPreferredVariant = variants => {
+            // Sort highest resolution first; ties broken by host priority rank.
+            const sorted = variants.slice().sort((a, b) => (b._resHeight - a._resHeight) || (getHostMirrorRank(a) - getHostMirrorRank(b)));
+            if (videoQualityPref === 'best') {
+                return sorted[0];
+            }
+            const cap = videoQualityPref === '1080p' ? 1080 : videoQualityPref === '720p' ? 720 : 99999;
+            const withinCap = sorted.filter(v => v._resHeight <= cap);
+            if (withinCap.length > 0) {
+                // Highest resolution <= cap
+                return withinCap[0];
+            }
+            // If all available versions exceed cap (e.g. only 2160p exists), pick the smallest one above cap so we never drop the video!
+            return sorted[sorted.length - 1];
+        };
+
+        const qualityFiltered = [];
+        for (const slot of slots) {
+            if (slot.single) {
+                qualityFiltered.push(slot.single);
+                continue;
+            }
+            const variants = slot.list;
+            const distinctHeights = new Set(variants.map(v => v._resHeight));
+            if (variants.length <= 1 || distinctHeights.size <= 1) {
+                qualityFiltered.push(...variants);
+                continue;
+            }
+            const chosen = pickPreferredVariant(variants);
+            const others = variants
+                .filter(v => v !== chosen)
+                .sort((a, b) => Math.abs(a._resHeight - chosen._resHeight) - Math.abs(b._resHeight - chosen._resHeight));
+
+            // Keep unselected resolutions (and their mirrors) as last-resort fallbacks if smartMirrors is ON!
+            if (useSmartMirrors && others.length) {
+                const extraFallbacks = [];
+                for (const other of others) {
+                    extraFallbacks.push(other);
+                    if (Array.isArray(other.mirrorFallbacks) && other.mirrorFallbacks.length) {
+                        extraFallbacks.push(...other.mirrorFallbacks);
+                    }
+                }
+                chosen.mirrorFallbacks = (chosen.mirrorFallbacks || []).concat(extraFallbacks);
+            }
+
+            dedupedCount += others.length;
+            log.post.info(
+                postId,
+                `::Video Quality (${videoQualityPref}) -> selected ${chosen._resHeight}p (${chosen.hintedFilename || chosen.url}), skipped ${others.map(o => `${o._resHeight}p`).join(', ')}::`,
+                postNumber,
+            );
+            qualityFiltered.push(chosen);
+        }
+        resolved = qualityFiltered;
+    }
+
     let totalDownloadable = resolved.filter(r => r.url).length;
 
     const totalResources = enabledHosts.reduce((acc, h) => h.resources.length + acc, 0);
@@ -8507,26 +8893,36 @@ if (tmp.length) {
                     if (isPixeldrain) {
                         const mFile = /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/api\/file\/([^\/?#]+)/i.exec(dlUrl || '');
                         if (mFile && mFile[1]) {
-                            const pdOrigin = (() => {
-                                try {
-                                    const uu = new URL(dlUrl || '', location.origin);
-                                    const host = String(uu.hostname || '').toLowerCase();
-                                    if (host.endsWith('pixeldrain.net')) return 'https://pixeldrain.net';
-                                    if (host.endsWith('pixeldra.in')) return 'https://pixeldra.in';
-                                    return 'https://pixeldrain.com';
-                                } catch (e) {
-                                    return 'https://pixeldrain.com';
+                            const pdId = mFile[1];
+                            if (pixeldrainInfoById.has(pdId)) {
+                                const cachedPd = pixeldrainInfoById.get(pdId);
+                                meta.size = extractNum(cachedPd.size);
+                                meta.filename = String(cachedPd.filename || '');
+                            } else {
+                                const pdOrigin = (() => {
+                                    try {
+                                        const uu = new URL(dlUrl || '', location.origin);
+                                        const host = String(uu.hostname || '').toLowerCase();
+                                        if (host.endsWith('pixeldrain.net')) return 'https://pixeldrain.net';
+                                        if (host.endsWith('pixeldra.in')) return 'https://pixeldra.in';
+                                        return 'https://pixeldrain.com';
+                                    } catch (e) {
+                                        return 'https://pixeldrain.com';
+                                    }
+                                })();
+                                const infoUrl = `${pdOrigin}/api/file/${pdId}/info`;
+                                const r = await gmGetText(infoUrl, reflink);
+                                if (r.ok && r.text) {
+                                    try {
+                                        const j = JSON.parse(r.text);
+                                        const v = j && (j.value || j.data || j);
+                                        meta.size = extractNum((v && (v.size ?? v.bytes ?? v.length)) ?? (j && (j.size ?? j.bytes)));
+                                        meta.filename = String((v && (v.name ?? v.filename ?? v.title)) ?? (j && (j.name ?? j.filename)) ?? '');
+                                        if (meta.filename) {
+                                            pixeldrainInfoById.set(pdId, { filename: meta.filename, size: meta.size });
+                                        }
+                                    } catch (e) {}
                                 }
-                            })();
-                            const infoUrl = `${pdOrigin}/api/file/${mFile[1]}/info`;
-                            const r = await gmGetText(infoUrl, reflink);
-                            if (r.ok && r.text) {
-                                try {
-                                    const j = JSON.parse(r.text);
-                                    const v = j && (j.value || j.data || j);
-                                    meta.size = extractNum((v && (v.size ?? v.bytes ?? v.length)) ?? (j && (j.size ?? j.bytes)));
-                                    meta.filename = String((v && (v.name ?? v.filename ?? v.title)) ?? (j && (j.name ?? j.filename)) ?? '');
-                                } catch (e) {}
                             }
                         }
                     }
@@ -8766,6 +9162,35 @@ if (tmp.length) {
                     return;
                 }
                 let { url, host, original, folderName } = resource;
+                let mirrorSwitched = false;
+
+                const tryFallbackMirror = (reason, releasePath = '') => {
+                    if (mirrorSwitched || isCancelled()) return false;
+                    const fbList = resource && Array.isArray(resource.mirrorFallbacks) ? resource.mirrorFallbacks : null;
+                    if (!fbList || !fbList.length) return false;
+                    mirrorSwitched = true;
+                    if (releasePath) {
+                        usedPaths.delete(releasePath);
+                    }
+                    const nextMirror = fbList.shift();
+                    nextMirror._seqIndex = resource._seqIndex;
+                    nextMirror.mirrorFallbacks = fbList;
+                    if (!nextMirror.hintedFilename && resource.hintedFilename) {
+                        nextMirror.hintedFilename = resource.hintedFilename;
+                    }
+                    log.post.info(
+                        postId,
+                        `::Mirror fallback (${reason}) -> switching from ${(host && host.name) || 'mirror'} to ${(nextMirror.host && nextMirror.host.name) || 'fallback'}::: ${nextMirror.url}`,
+                        postNumber,
+                    );
+                    h.ui.setElProps(statusLabel, { color: '#e8a838' });
+                    h.ui.setText(
+                        statusLabel,
+                        `Mirror fallback (${reason}) 🢒 ${(nextMirror.host && nextMirror.host.name) || 'next mirror'}...`,
+                    );
+                    setTimeout(() => startDownload(nextMirror, 1), 150);
+                    return true;
+                };
                 const zippedForThis = !!(postSettings.zipped && !(resource && (resource.forceDirect || resource.forceUnzipped)) );
                 const isGoFile = isGoFileUrl(url);
                 const isPixeldrain = isPixeldrainUrl(url);
@@ -8939,7 +9364,11 @@ if (tmp.length) {
                         let basename = '';
 
                         if (isPixeldrain) {
-                            basename = String(meta.filename || '') || parseDispositionFilename(meta.headers || '') || '';
+                            basename =
+                                String(meta.filename || '') ||
+                                parseDispositionFilename(meta.headers || '') ||
+                                String((resource && resource.hintedFilename) || '') ||
+                                '';
                         } else if (isGoFile) {
                             basename =
                                 (filename && filename.name ? String(filename.name) : '') ||
@@ -8964,6 +9393,9 @@ if (tmp.length) {
                         }
                         if (!basename) {
                             basename = (filename && filename.name) ? String(filename.name) : '';
+                        }
+                        if (!basename && resource && resource.hintedFilename) {
+                            basename = String(resource.hintedFilename);
                         }
                         if (!basename) {
                             basename = h.basename(url);
@@ -9210,6 +9642,7 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                             onerror: err => {
                                 log.post.error(postId, `::DIRECT download failed::: ${url}`, postNumber);
                                 console.log(err);
+                                if (tryFallbackMirror('DIRECT error', fn)) return;
                                 finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9221,6 +9654,7 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                             ontimeout: err => {
                                 log.post.error(postId, `::DIRECT download timed out::: ${url}`, postNumber);
                                 console.log(err);
+                                if (tryFallbackMirror('DIRECT timeout', fn)) return;
                                 finishBatchItem(false);
                             },
                         };
@@ -9304,6 +9738,7 @@ GM_download(dlOpts);
                         // Safety: never hang the batch loop.
                         log.post.error(postId, `::DIRECT download error::: ${url}`, postNumber);
                         console.log(e);
+                        if (tryFallbackMirror('DIRECT exception')) return;
                         finishBatchItem(false);
                     }
                 };
@@ -9326,6 +9761,10 @@ GM_download(dlOpts);
 
 if (isGoFile || isPixeldrain || isFilester) {
                     const meta0 = await preflightMeta(url, reflink, isGoFile, isPixeldrain);
+                    if (!isGoFile && meta0 && meta0.status && meta0.status >= 400) {
+                        log.post.error(postId, `::Preflight HTTP ${meta0.status}::: ${url}`, postNumber);
+                        if (tryFallbackMirror(`HTTP ${meta0.status}`)) return;
+                    }
                     if (meta0 && meta0.size && meta0.size > BLOB_MAX_BYTES) {
                         log.post.info(postId, `::Large file (${meta0.size} bytes > ~1.6GB) -> DIRECT (skip blob)::: ${url}`, postNumber);
                         startDirectDownload(meta0);
@@ -9458,8 +9897,9 @@ if (isGoFile || isPixeldrain || isFilester) {
                                     return;
                                 }
 
-                                // Retry failed -> mark as unsuccessful and continue.
+                                // Retry failed -> try fallback mirror before marking as unsuccessful.
                                 log.post.error(postId, `::GoFile failed (after retry)::: ${url}`, postNumber);
+                                if (tryFallbackMirror('GoFile failed')) return;
                                 finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9490,8 +9930,9 @@ if (isGoFile || isPixeldrain || isFilester) {
                                     return;
                                 }
 
-                                // Retry failed -> mark as unsuccessful and continue.
+                                // Retry failed -> try fallback mirror before marking as unsuccessful.
                                 log.post.error(postId, `::Cyberdrop failed (gate/tiny response)::: ${url}`, postNumber);
+                                if (tryFallbackMirror('Cyberdrop failed')) return;
                                 finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9659,6 +10100,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                                     // If we only have a /d/ view URL, DIRECT would just save HTML.
                                     log.post.error(postId, `::Filester failed (resolved to /d/ HTML view)::: ${url}`, postNumber);
+                                    if (tryFallbackMirror('Filester HTML view')) return;
                                     finishBatchItem(false);
 
                                     h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9671,6 +10113,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                                 const reason = badStatus ? `HTTP ${response.status || 0}` : (isGate ? 'HTML/JSON gate' : 'tiny/blocked response');
                                 log.post.error(postId, `::Filester failed (${reason})::: ${url}`, postNumber);
+                                if (tryFallbackMirror(`Filester ${reason}`)) return;
                                 finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9719,6 +10162,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 if (isMaint) bunkrMaintenanceHandled = true;
                                 const reason = isMaint ? 'maintenance redirect (maint.mp4)' : (badStatus ? `HTTP ${response.status || 0}` : (isHtml ? 'HTML/maintenance response' : 'tiny HTML placeholder'));
                                 log.post.error(postId, `::Bunkr skipped (${reason})::: ${url}`, postNumber);
+                                if (tryFallbackMirror(`Bunkr ${reason}`)) return;
                                 finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -9728,6 +10172,19 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 });
                                 return;
                             }
+                        }
+
+                        // Universal HTTP status guard (e.g. Pixeldrain 403 daily quota / 404 DMCA): fail over to mirror instead of saving error body!
+                        if (!response.status || response.status >= 400) {
+                            log.post.error(postId, `::HTTP ${response.status || 0} downloading::: ${url}`, postNumber);
+                            if (tryFallbackMirror(`HTTP ${response.status || 0}`)) return;
+                            finishBatchItem(false);
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                            h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                            h.ui.setElProps(totalPB, {
+                                width: `${(completed / totalDownloadable) * 100}%`,
+                            });
+                            return;
                         }
 
                         // Success path (finishBatchItem(true) and status update run after saving/zipping below)
@@ -9797,7 +10254,9 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             const rh = response && response.responseHeaders ? String(response.responseHeaders) : '';
                             basename =
                                 parseDispositionFilename(rh) ||
-                                (filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, ''));
+                                (filename ? filename.name : '') ||
+                                String((resource && resource.hintedFilename) || '') ||
+                                h.basename(url).replace(/\?.*/, '').replace(/#.*/, '');
                         } else if (/\/attachments\//i.test(String(url || ''))) {
                             basename = filename ? filename.name : h.basename(url).replace(/(.*)-([a-z0-9]{3,4})\.\d+$/i, '$1.$2');
                         } else if (/kemono\.(cr|su|party)/i.test(String(url || ''))) {
@@ -9840,7 +10299,10 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
 
                             if (!basename) {
-                                basename = filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, '');
+                                basename =
+                                    (filename && filename.name) ||
+                                    (resource && resource.hintedFilename) ||
+                                    h.basename(url).replace(/\?.*/, '').replace(/#.*/, '');
                             }
                         }
 
@@ -10054,6 +10516,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                         bunkrMaintenanceHandled = true;
 
                         log.post.error(postId, `::Bunkr skipped (maintenance redirect: maint.mp4)::: ${url}`, postNumber);
+                        if (tryFallbackMirror('Bunkr maint.mp4')) return;
                         finishBatchItem(false);
 
                         h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -10081,6 +10544,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                         }
 
                         log.post.error(postId, `::Network error downloading::: ${url}`, postNumber);
+                        if (tryFallbackMirror('Network error')) return;
                         finishBatchItem(false);
                     },
                 });
@@ -10144,6 +10608,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
 
                             log.post.error(postId, `::Turbo failed (stalled after retries)::: ${url}`, postNumber);
+                            if (tryFallbackMirror('Turbo stalled')) return;
                             finishBatchItem(false);
                             return;
                         }
@@ -10162,6 +10627,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             return;
                         }
 
+                        if (tryFallbackMirror('Stalled')) return;
                         finishBatchItem(false);
                     } else {
                         p.old = p.new;

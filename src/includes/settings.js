@@ -45,9 +45,13 @@ const settings = {
 // --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
 const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
 
+const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
+
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
     organizeMedia: true,
+    smartMirrors: true,
+    videoQuality: 'best',
     flatten: false,
     generateLinks: false,
     generateLog: false,
@@ -58,6 +62,11 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
 
 const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
 
+// Link-level filename hints extracted from forum DOM (e.g. XenForo unfurl card titles / anchor text)
+// and Pixeldrain /api/file/<id>/info metadata cache.
+const linkHintNameByUrl = new Map();
+const pixeldrainInfoById = new Map();
+
 let xfpdPrefsMirror = null;
 let xfpdPrefsListenerBound = false;
 const xfpdPrefsSubscribers = new Set();
@@ -66,7 +75,13 @@ function xfpdNormalizeUserPrefs(rawObj) {
     const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
     const normalized = {};
     for (const key of XFPD_USER_PREF_KEYS) {
-        normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+        if (key === 'videoQuality') {
+            normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
+                ? src.videoQuality
+                : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else {
+            normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+        }
     }
     const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
     normalized.preSkipDownload = {
@@ -227,6 +242,8 @@ function xfpdCreatePostSettings() {
     const postSettings = {
         zipped: prefs.zipped,
         organizeMedia: prefs.organizeMedia,
+        smartMirrors: prefs.smartMirrors,
+        videoQuality: prefs.videoQuality,
         flatten: prefs.flatten,
         generateLinks: prefs.generateLinks,
         generateLog: prefs.generateLog,

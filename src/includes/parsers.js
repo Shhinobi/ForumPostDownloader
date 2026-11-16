@@ -223,6 +223,37 @@ const parsers = {
                 } catch (e) { /* ignore */ }
             } catch (e) { /* ignore */ }
 
+            // Capture human-readable filename hints from anchor text / XenForo unfurl card headers
+            // (after redirect decoding above!) so multi-mirror & multi-resolution links know their real filenames.
+            try {
+                const extractFilenameHint = rawText => {
+                    let s = String(rawText || '').replace(/\s+/g, ' ').trim();
+                    if (!s || /^https?:\/\//i.test(s) || xfpdLooksLikeCfFilenameHint(s)) return '';
+                    // Strip trailing site suffix often added by XenForo unfurls (e.g. "file.mp4 | Bunkr" or "file.mp4 - Pixeldrain")
+                    s = s.replace(/\s+[|\-–—]\s*(?:bunkr|gofile|pixeldrain|filester|cyberdrop|fileditch[a-z.]*)\s*$/i, '').trim();
+                    if (/\.[A-Za-z0-9]{2,5}$/.test(s) && s.length >= 4 && s.length <= 240) {
+                        return s;
+                    }
+                    const m = s.match(/[^\\/:*?"<>|\r\n]{3,220}\.(?:mp4|mkv|m4v|mov|webm|avi|wmv|flv|ts|m2ts|zip|rar|7z|pdf|jpe?g|png|webp|gif|avif)\b/i);
+                    return m ? m[0].trim() : '';
+                };
+
+                messageContentClone.querySelectorAll('a[href]').forEach(a => {
+                    let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim();
+                    if (!href0 || href0.startsWith('#') || href0.startsWith('javascript:')) return;
+                    if (!/^https?:\/\//i.test(href0)) {
+                        try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
+                    }
+                    const hint = extractFilenameHint(a.textContent || '');
+                    if (!hint) return;
+                    const cleanNoHash = href0.split('#')[0].replace(/\/$/, '');
+                    const cleanNoQs = cleanNoHash.split('?')[0].replace(/\/$/, '');
+                    linkHintNameByUrl.set(href0, hint);
+                    linkHintNameByUrl.set(cleanNoHash, hint);
+                    linkHintNameByUrl.set(cleanNoQs, hint);
+                });
+            } catch (e) { /* ignore */ }
+
             // Prevent duplicate detection: attachment links often wrap a preview image.
             // For parsing only, remove the preview <img> inside attachment links so we don't count/download it twice.
             try {
