@@ -5051,11 +5051,11 @@ try {
         if (!label) {
             return postTag;
         }
-        const cleanLbl = sanitizeSegFn(label, '');
+        const cleanLbl = sanitizeSegFn(label, '').replace(/[-_. ]+$/g, '').trim();
         if (!cleanLbl || cleanLbl === 'file' || cleanLbl === '_') {
             return postTag;
         }
-        const trimmedLbl = cleanLbl.length > 75 ? cleanLbl.slice(0, 75).trim().replace(/[. ]+$/g, '') : cleanLbl;
+        const trimmedLbl = cleanLbl.length > 75 ? cleanLbl.slice(0, 75).trim().replace(/[-_. ]+$/g, '') : cleanLbl;
         return sanitizeSegFn(`${postTag} - ${trimmedLbl}`, postTag);
     };
 
@@ -7870,7 +7870,13 @@ const selectedPosts = [];
 
         const isPostDownloadableOrLocked = postEntry => {
             if (!postEntry) return false;
-            return postEntry.parsedHosts.length > 0 || !!(postEntry.parsedPost && postEntry.parsedPost.hasLockedContent);
+            const ps = postEntry.getSettingsCB && postEntry.getSettingsCB();
+            const incComments = !ps || ps.includeComments !== false;
+            const lockedActive =
+                postEntry.parsedPost &&
+                (postEntry.parsedPost.hasMainLockedContent || (incComments && postEntry.parsedPost.hasCommentLockedContent));
+            const collapsedActive = incComments && postEntry.parsedPost && postEntry.parsedPost.hasCollapsedComments;
+            return postEntry.parsedHosts.length > 0 || !!lockedActive || !!collapsedActive;
         };
 
         const getPostEnabledResourceCount = postEntry => {
@@ -8057,6 +8063,7 @@ const selectedPosts = [];
                 ui.forms.config.syncSettingsInputs(downloadPageTippy.popper, 'page-settings', pageSettings);
             }
 
+            const incCommentsChanged = keys.includes('includeComments');
             parsedPosts.forEach(p => {
                 const ps = p.getSettingsCB();
                 if (!ps) return;
@@ -8071,10 +8078,15 @@ const selectedPosts = [];
                 if (prefs.preSkipDownload && (source === 'page' || !ps._overridden || !ps._overridden.has('skipDownload'))) {
                     ps.preSkipDownload = { ...prefs.preSkipDownload };
                 }
-                if (p.tippyInstance && p.tippyInstance.popper) {
+                if (incCommentsChanged && typeof p.recomputeHostsForSettings === 'function') {
+                    p.recomputeHostsForSettings();
+                } else if (p.tippyInstance && p.tippyInstance.popper) {
                     ui.forms.config.syncSettingsInputs(p.tippyInstance.popper, `settings-${p.parsedPost.postId}`, ps);
                 }
             });
+            if (incCommentsChanged) {
+                syncDownloadPageUI();
+            }
         });
 
         const buildDownloadPageFormHtml = () => {
@@ -8273,6 +8285,91 @@ const selectedPosts = [];
             });
         };
 
+        const expandCollapsedPostComments = async (postEntry, statusLabel) => {
+            const { parsedPost } = postEntry;
+            const { postId, postNumber } = parsedPost;
+            const messageEl =
+                parsedPost.messageEl ||
+                document.querySelector(`#js-post-${postId}, [data-content="post-${postId}"]`) ||
+                (parsedPost.post && parsedPost.post.closest && parsedPost.post.closest('article.message, .message--post, .js-post'));
+            if (!messageEl) return false;
+
+            let expandedAny = false;
+            for (let pass = 0; pass < 10; pass++) {
+                const loaders = xfpdFindCollapsedCommentLoaders(messageEl);
+                if (!loaders.length) break;
+
+                const loaderLink = loaders[0];
+                const rawHref = loaderLink.getAttribute('href') || '';
+                if (!rawHref) break;
+
+                let fetchUrl = '';
+                try {
+                    const u = new URL(rawHref, location.origin);
+                    u.searchParams.set('_xfWithData', '1');
+                    u.searchParams.set('_xfResponseType', 'json');
+                    fetchUrl = u.href;
+                } catch (e) {
+                    break;
+                }
+
+                if (statusLabel) {
+                    h.ui.setElProps(statusLabel, { color: '#3DB7C7', fontWeight: 'bold' });
+                    h.ui.setText(statusLabel, '💬 Expanding collapsed post comments...');
+                    h.show(statusLabel);
+                }
+
+                const res = await xfpdSameOriginFetchText(fetchUrl, 'GET', null);
+                // Remove or mark the loader row so we never re-fetch the same loader link in a loop.
+                const loaderRow = loaderLink.closest('.js-commentLoader, .message-responseRow') || loaderLink;
+                if (!res || !res.ok || !res.text) {
+                    loaderLink.removeAttribute('href');
+                    break;
+                }
+
+                let htmlChunk = '';
+                try {
+                    const parsedJson = JSON.parse(res.text);
+                    htmlChunk = String((parsedJson && parsedJson.html && parsedJson.html.content) || '');
+                } catch (e) {
+                    htmlChunk = res.text;
+                }
+
+                if (htmlChunk && htmlChunk.trim()) {
+                    const targetContainer =
+                        (loaderRow && loaderRow.parentElement) ||
+                        messageEl.querySelector('.js-replyNewMessageContainer, .message-responses, .uw_fcs_comment_section') ||
+                        messageEl.nextElementSibling;
+                    if (targetContainer) {
+                        const tmp = document.createElement('div');
+                        tmp.innerHTML = htmlChunk;
+                        while (tmp.firstChild) {
+                            if (loaderRow && loaderRow.parentElement === targetContainer) {
+                                targetContainer.insertBefore(tmp.firstChild, loaderRow);
+                            } else {
+                                targetContainer.appendChild(tmp.firstChild);
+                            }
+                        }
+                        expandedAny = true;
+                    }
+                }
+                if (loaderRow && loaderRow !== messageEl) {
+                    loaderRow.remove();
+                } else {
+                    loaderLink.remove();
+                }
+            }
+
+            if (expandedAny) {
+                log.post.info(postId, '::Expanded collapsed post comments::', postNumber);
+                postEntry.refreshUnlockedDom();
+                syncDownloadPageUI();
+            } else {
+                parsedPost.hasCollapsedComments = false;
+            }
+            return expandedAny;
+        };
+
         const unlockPostViaReaction = async (postEntry, statusLabel) => {
             const { parsedPost } = postEntry;
             const { postId, postNumber } = parsedPost;
@@ -8287,8 +8384,29 @@ const selectedPosts = [];
                 (parsedPost.post && parsedPost.post.closest && parsedPost.post.closest('article.message, .message--post, .js-post'));
             if (!messageEl) return false;
 
-            const reactLink = xfpdFindPostNativeReactLink(messageEl);
-            if (!reactLink) return false;
+            const postSettings = postEntry.getSettingsCB ? postEntry.getSettingsCB() : {};
+            const incComments = postSettings.includeComments !== false;
+
+            const reactTargets = [];
+            if (parsedPost.hasMainLockedContent) {
+                const mainLink = xfpdFindPostNativeReactLink(messageEl);
+                if (mainLink) reactTargets.push(mainLink);
+            }
+            if (incComments && parsedPost.hasCommentLockedContent) {
+                const commentEls = xfpdCollectPostCommentElements(messageEl);
+                for (const cEl of commentEls) {
+                    const cClone = xfpdCleanContentFragmentClone(cEl.cloneNode(true));
+                    if (xfpdDetectLockedReactionContent(cEl, cClone, true)) {
+                        const cReactLink = xfpdFindNativeReactLinkInContainer(cEl, false);
+                        if (cReactLink) reactTargets.push(cReactLink);
+                    }
+                }
+            }
+            if (!reactTargets.length) {
+                const fallbackMain = xfpdFindPostNativeReactLink(messageEl);
+                if (fallbackMain) reactTargets.push(fallbackMain);
+            }
+            if (!reactTargets.length) return false;
 
             if (statusLabel) {
                 h.ui.setElProps(statusLabel, { color: '#3DB7C7', fontWeight: 'bold' });
@@ -8297,12 +8415,16 @@ const selectedPosts = [];
             }
             log.post.info(postId, '::Locked content detected -> reacting to unlock links::', postNumber);
 
-            const alreadyReacted =
-                reactLink.classList.contains('has-reaction') || !!messageEl.querySelector('.has-reaction, .smgReactionPill--reacted');
+            const csrfToken = xfpdGetXenForoCsrfToken();
 
-            if (!alreadyReacted) {
+            for (const reactLink of reactTargets) {
+                const ownerBlock = reactLink.closest('.comment, .js-comment, article.message, .js-post') || messageEl;
+                const alreadyReacted =
+                    reactLink.classList.contains('has-reaction') ||
+                    !!ownerBlock.querySelector(':scope > footer .has-reaction, .comment-actionBar .has-reaction');
+                if (alreadyReacted) continue;
+
                 const reactUrl = xfpdBuildPostReactUrl(reactLink.getAttribute('href') || '');
-                const csrfToken = xfpdGetXenForoCsrfToken();
                 let postedViaAjax = false;
 
                 if (reactUrl && csrfToken) {
@@ -8327,9 +8449,9 @@ const selectedPosts = [];
                     }
                     reactLink.click();
                     reactLink.classList.add('has-reaction');
-                    await h.delayedResolve(700);
+                    await h.delayedResolve(500);
                 } else {
-                    await h.delayedResolve(180);
+                    await h.delayedResolve(150);
                 }
             }
 
@@ -8337,7 +8459,7 @@ const selectedPosts = [];
             let refreshed = postEntry.refreshUnlockedDom();
 
             // If still locked (e.g. server-rendered [HIDETHANKS]/[HIDEREACT] block), fetch the fresh page HTML
-            // and update the post's .message-userContent in-place so both the page UI and parser get the unlocked links!
+            // and update the post's .message-userContent (and comments) in-place!
             if (parsedPost.hasLockedContent || !postEntry.parsedHosts.length) {
                 if (statusLabel) {
                     h.ui.setText(statusLabel, '🔓 Loading unlocked post links...');
@@ -8348,15 +8470,29 @@ const selectedPosts = [];
                     try {
                         const doc = new DOMParser().parseFromString(pageRes.text, 'text/html');
                         const freshPostEl = doc.querySelector(`#js-post-${postId}, [data-content="post-${postId}"]`);
-                        const freshContent = freshPostEl && freshPostEl.querySelector('.message-content > .message-userContent');
-                        if (freshContent && parsedPost.contentContainer) {
-                            parsedPost.contentContainer.innerHTML = freshContent.innerHTML;
+                        if (freshPostEl) {
+                            const freshContent = freshPostEl.querySelector('.message-content > .message-userContent');
+                            if (freshContent && parsedPost.contentContainer) {
+                                parsedPost.contentContainer.innerHTML = freshContent.innerHTML;
+                                if (postEntry.statusUI) {
+                                    if (postEntry.statusUI.totalPB) parsedPost.contentContainer.prepend(postEntry.statusUI.totalPB);
+                                    if (postEntry.statusUI.filePB) parsedPost.contentContainer.prepend(postEntry.statusUI.filePB);
+                                    if (postEntry.statusUI.status) parsedPost.contentContainer.prepend(postEntry.statusUI.status);
+                                }
+                            }
+                            const liveResponses = messageEl.querySelector('.message-responses, .uw_fcs_comment_section');
+                            const freshResponses = freshPostEl.querySelector('.message-responses, .uw_fcs_comment_section');
+                            if (liveResponses && freshResponses) {
+                                liveResponses.innerHTML = freshResponses.innerHTML;
+                            }
                             refreshed = postEntry.refreshUnlockedDom() || refreshed;
                         }
                     } catch (e) {}
                 }
             }
 
+            parsedPost.hasMainLockedContent = false;
+            parsedPost.hasCommentLockedContent = false;
             parsedPost.hasLockedContent = false;
             postEntry.updateIdleButtonLabel();
             if (postEntry.tippyInstance && typeof postEntry.tippyInstance.__xfpdRebuildForm === 'function') {
@@ -8372,40 +8508,55 @@ const selectedPosts = [];
             const parsedPost = parsers.thread.parsePost(post);
             if (!parsedPost) return false;
 
-            const { postId, content, contentContainer } = parsedPost;
+            const { postId, contentContainer } = parsedPost;
 
             addDuplicateTabLink(post);
             addShowDownloadPageBtnLink(post);
 
-            const parsedHosts = parsers.hosts.parseHosts(content);
+            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
+            const postSettings = existingIdx > -1 ? parsedPosts[existingIdx].getSettingsCB() : xfpdCreatePostSettings();
+
+            const selectEffectiveContent = () =>
+                postSettings.includeComments !== false ? parsedPost.content : parsedPost.mainOnlyContent;
+
+            const parsedHosts = parsers.hosts.parseHosts(selectEffectiveContent());
+            const fullHostsCheck = parsedPost.commentsOnlyContent ? parsers.hosts.parseHosts(parsedPost.content) : parsedHosts;
             const getEnabledHostsCB = hostsList => hostsList.filter(host => host.enabled);
 
-            if (!parsedHosts.length && !parsedPost.hasLockedContent) {
+            if (!fullHostsCheck.length && !parsedPost.hasLockedContent && !parsedPost.hasCollapsedComments) {
                 return false;
             }
 
             post.dataset.xfpdInitialized = '1';
-
-            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
-            const postSettings = existingIdx > -1 ? parsedPosts[existingIdx].getSettingsCB() : xfpdCreatePostSettings();
 
             const getTotalDownloadableResourcesForPostCB = hostsList => {
                 return hostsList.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
             };
             const getTotalResourcesCount = () => parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
 
+            const hasActiveLock = () =>
+                !!(
+                    parsedPost.hasMainLockedContent ||
+                    (postSettings.includeComments !== false && parsedPost.hasCommentLockedContent)
+                );
+
             // Create and attach the download button to post.
             const { btn: btnDownloadPost } = ui.buttons.addDownloadPostButton(post);
             const updateIdleButtonLabel = () => {
                 const totalRes = getTotalResourcesCount();
                 const checkedLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
-                if (totalRes === 0 && parsedPost.hasLockedContent) {
+                const isLockedNow = hasActiveLock();
+                const hasMoreComments = postSettings.includeComments !== false && parsedPost.hasCollapsedComments;
+                if (totalRes === 0 && isLockedNow) {
                     btnDownloadPost.style.color = '#3DB7C7';
                     btnDownloadPost.innerHTML = '🔓 Unlock & Download';
+                } else if (totalRes === 0 && hasMoreComments) {
+                    btnDownloadPost.style.color = '#3DB7C7';
+                    btnDownloadPost.innerHTML = '💬 Load Comments & Download';
                 } else {
-                    const lockSuffix = parsedPost.hasLockedContent ? ' + 🔒' : '';
+                    const extraTags = `${isLockedNow ? ' + 🔒' : ''}${hasMoreComments ? ' + 💬' : ''}`;
                     btnDownloadPost.style.color = '';
-                    btnDownloadPost.innerHTML = `🡳 Download (${checkedLen}/${totalRes}${lockSuffix})`;
+                    btnDownloadPost.innerHTML = `🡳 Download (${checkedLen}/${totalRes}${extraTags})`;
                 }
             };
             updateIdleButtonLabel();
@@ -8431,37 +8582,50 @@ const selectedPosts = [];
 
             const getSettingsCB = () => postSettings;
 
-            const refreshUnlockedDom = () => {
-                const reParsed = parsers.thread.parsePost(post);
-                if (!reParsed) return false;
-                parsedPost.content = reParsed.content;
-                parsedPost.textContent = reParsed.textContent;
-                parsedPost.postCaption = reParsed.postCaption;
-                parsedPost.spoilers = reParsed.spoilers;
-                parsedPost.footer = reParsed.footer;
-                parsedPost.hasLockedContent = reParsed.hasLockedContent;
-
+            const applyFreshHostsList = freshHosts => {
                 const disabledNames = new Set(
                     parsedHosts.filter(hItem => !hItem.enabled).map(hItem => `${hItem.name}:${hItem.category}`),
                 );
-                const freshHosts = parsers.hosts.parseHosts(reParsed.content);
                 freshHosts.forEach(hItem => {
                     if (disabledNames.has(`${hItem.name}:${hItem.category}`)) {
                         hItem.enabled = false;
                     }
                 });
-
                 const prevTotal = getTotalResourcesCount();
                 parsedHosts.splice(0, parsedHosts.length, ...freshHosts);
                 const newTotal = getTotalResourcesCount();
-
                 if (btnDownloadPost.dataset.xfpdState !== 'running') {
                     updateIdleButtonLabel();
                 }
-                if (postEntry.tippyInstance && typeof postEntry.tippyInstance.__xfpdRebuildForm === 'function') {
+                if (postEntry && postEntry.tippyInstance && typeof postEntry.tippyInstance.__xfpdRebuildForm === 'function') {
                     postEntry.tippyInstance.__xfpdRebuildForm();
                 }
-                return newTotal !== prevTotal || !reParsed.hasLockedContent;
+                return newTotal !== prevTotal;
+            };
+
+            const recomputeHostsForSettings = () => {
+                parsedPost.hasLockedContent = hasActiveLock();
+                const freshHosts = parsers.hosts.parseHosts(selectEffectiveContent());
+                return applyFreshHostsList(freshHosts);
+            };
+
+            const refreshUnlockedDom = () => {
+                const reParsed = parsers.thread.parsePost(post);
+                if (!reParsed) return false;
+                parsedPost.mainOnlyContent = reParsed.mainOnlyContent;
+                parsedPost.commentsOnlyContent = reParsed.commentsOnlyContent;
+                parsedPost.content = reParsed.content;
+                parsedPost.textContent = reParsed.textContent;
+                parsedPost.postCaption = reParsed.postCaption;
+                parsedPost.spoilers = reParsed.spoilers;
+                parsedPost.footer = reParsed.footer;
+                parsedPost.hasMainLockedContent = reParsed.hasMainLockedContent;
+                parsedPost.hasCommentLockedContent = reParsed.hasCommentLockedContent;
+                parsedPost.hasCollapsedComments = reParsed.hasCollapsedComments;
+                parsedPost.hasLockedContent = hasActiveLock();
+
+                const changedCount = applyFreshHostsList(parsers.hosts.parseHosts(selectEffectiveContent()));
+                return changedCount || !parsedPost.hasLockedContent;
             };
 
             const postDownloadCallbacks = {
@@ -8512,8 +8676,18 @@ const selectedPosts = [];
                 btnDownloadPost.dataset.xfpdState = 'running';
                 btnDownloadPost.style.color = '#e8a838';
 
-                // Automatically react & unlock hidden [HIDEREACT]/[HIDETHANKS] links before downloading!
-                if (parsedPost.hasLockedContent && (postSettings.autoUnlockReaction !== false || parsedHosts.length === 0)) {
+                // 1) Expand collapsed ("View previous comments...") replies when Include Post Comments is ON!
+                if (postSettings.includeComments !== false && parsedPost.hasCollapsedComments) {
+                    btnDownloadPost.innerHTML = '💬 Loading comments...';
+                    try {
+                        await expandCollapsedPostComments(postEntry, statusText);
+                    } catch (e) {
+                        console.error('[XFPD] Error expanding post comments:', e);
+                    }
+                }
+
+                // 2) Automatically react & unlock hidden [HIDEREACT]/[HIDETHANKS] links (post & comments) before downloading!
+                if (hasActiveLock() && (postSettings.autoUnlockReaction !== false || parsedHosts.length === 0)) {
                     btnDownloadPost.innerHTML = '⏳ Unlocking...';
                     try {
                         await unlockPostViaReaction(postEntry, statusText);
@@ -8526,9 +8700,9 @@ const selectedPosts = [];
                 if (enabledLen === 0) {
                     btnDownloadPost.dataset.xfpdState = 'done';
                     btnDownloadPost.style.color = '#959595';
-                    btnDownloadPost.innerHTML = '✓ Unlocked (0 links)';
+                    btnDownloadPost.innerHTML = '✓ No Links (0)';
                     h.ui.setElProps(statusText, { color: '#959595', fontWeight: 'normal' });
-                    h.ui.setText(statusText, 'Unlocked post — no supported host links found.');
+                    h.ui.setText(statusText, 'No supported host links found.');
                     h.show(statusText);
                     return;
                 }
@@ -8556,6 +8730,8 @@ const selectedPosts = [];
                 }
             };
 
+            let postEntry = null;
+
             const postTippyInstance = ui.forms.config.post.createPostConfigForm(
                 parsedPost,
                 parsedHosts,
@@ -8567,7 +8743,7 @@ const selectedPosts = [];
             );
 
             // Replace any stale entry if a post was re-rendered dynamically (e.g. XenSoluce [HIDEREACT] unlock on SMG).
-            const postEntry = {
+            postEntry = {
                 parsedPost,
                 parsedHosts,
                 enabledHostsCB: getEnabledHostsCB,
@@ -8577,6 +8753,7 @@ const selectedPosts = [];
                 postDownloadCallbacks,
                 startPostDownload,
                 refreshUnlockedDom,
+                recomputeHostsForSettings,
                 updateIdleButtonLabel,
                 tippyInstance: postTippyInstance,
             };
@@ -8622,7 +8799,7 @@ const selectedPosts = [];
 
         scanPosts();
 
-        // Watch for dynamically unlocked/inserted posts (e.g. SMG [HIDEREACT]/[HIDETHANKS] AJAX post replacement, class changes, or quick replies).
+        // Watch for dynamically unlocked/inserted posts & comments (e.g. SMG [HIDEREACT]/[HIDETHANKS] or UW/FCS comment expansion).
         if (typeof MutationObserver !== 'undefined' && document.body) {
             let rescanTimer = null;
             const observer = new MutationObserver(mutations => {
@@ -8640,9 +8817,11 @@ const selectedPosts = [];
                     for (const node of m.addedNodes) {
                         if (node.nodeType !== 1) continue;
                         if (
-                            (node.matches && node.matches('article.message, .js-post, .message-attribution-opposite, .bbCodeBlock--visible')) ||
-                            (node.querySelector && node.querySelector('.message-attribution-opposite, .bbCodeBlock--visible')) ||
-                            (node.closest && node.closest('.message-body, .message-userContent'))
+                            (node.matches &&
+                                node.matches('article.message, .js-post, .message-attribution-opposite, .bbCodeBlock--visible, .comment, .js-comment')) ||
+                            (node.querySelector &&
+                                node.querySelector('.message-attribution-opposite, .bbCodeBlock--visible, .comment, .js-comment')) ||
+                            (node.closest && node.closest('.message-body, .message-userContent, .message-responses, .uw_fcs_comment_section'))
                         ) {
                             shouldScan = true;
                             break;
@@ -8654,7 +8833,17 @@ const selectedPosts = [];
                     if (rescanTimer) clearTimeout(rescanTimer);
                     rescanTimer = setTimeout(() => {
                         rescanTimer = null;
+                        // Refresh existing posts when comments are added dynamically too!
+                        let updatedExisting = false;
+                        parsedPosts.forEach(entry => {
+                            if (entry && !isPostProcessing(entry.parsedPost.postId) && typeof entry.refreshUnlockedDom === 'function') {
+                                try {
+                                    if (entry.refreshUnlockedDom()) updatedExisting = true;
+                                } catch (e) {}
+                            }
+                        });
                         scanPosts();
+                        if (updatedExisting) syncDownloadPageUI();
                     }, 120);
                 }
             });

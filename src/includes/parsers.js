@@ -1,10 +1,17 @@
-function xfpdFindPostNativeReactLink(messageEl) {
-    if (!messageEl || !messageEl.querySelectorAll) return null;
-    const candidates = messageEl.querySelectorAll(
-        'footer a.reaction[href], .message-actionBar a.reaction[href], a.reaction[data-xf-init~="reaction"][href]',
+function xfpdFindNativeReactLinkInContainer(containerEl, excludeComments = true) {
+    if (!containerEl || !containerEl.querySelectorAll) return null;
+    const candidates = containerEl.querySelectorAll(
+        'footer a.reaction[href], .message-actionBar a.reaction[href], .comment-actionBar a.reaction[href], a.reaction[data-xf-init~="reaction"][href]',
     );
     for (const link of candidates) {
-        if (link.closest && link.closest('.smgReactionPills, .comment, .js-comment, .uw_fcs_comment_section, .message-responses')) {
+        if (link.closest && link.closest('.smgReactionPills')) {
+            continue;
+        }
+        if (
+            excludeComments &&
+            link.closest &&
+            link.closest('.comment, .js-comment, .uw_fcs_comment_section, .message-responses')
+        ) {
             continue;
         }
         const href = link.getAttribute('href') || '';
@@ -15,10 +22,14 @@ function xfpdFindPostNativeReactLink(messageEl) {
     return null;
 }
 
-function xfpdDetectLockedReactionContent(messageEl, cleanedClone) {
-    if (!messageEl || !cleanedClone || !cleanedClone.querySelectorAll) return false;
-    // Only offer reaction-unlock when a native reaction control exists on the post (user is logged in & permitted to react).
-    const reactLink = xfpdFindPostNativeReactLink(messageEl);
+function xfpdFindPostNativeReactLink(messageEl) {
+    return xfpdFindNativeReactLinkInContainer(messageEl, true);
+}
+
+function xfpdDetectLockedReactionContent(ownerEl, cleanedClone, isComment = false) {
+    if (!ownerEl || !cleanedClone || !cleanedClone.querySelectorAll) return false;
+    // Only offer reaction-unlock when a native reaction control exists on the post/comment (user is logged in & permitted to react).
+    const reactLink = xfpdFindNativeReactLinkInContainer(ownerEl, !isComment);
     if (!reactLink) return false;
 
     const explicitReactionLockSel = [
@@ -116,6 +127,306 @@ function xfpdExtractCleanPostCaption(cleanedClone) {
     return '';
 }
 
+function xfpdGetPostCommentContainers(messageEl) {
+    const roots = [];
+    if (!messageEl) return roots;
+    roots.push(messageEl);
+    const sib = messageEl.nextElementSibling;
+    if (
+        sib &&
+        sib.matches &&
+        sib.matches('.uw_fcs_comment_section, .message-responses, .js-messageResponses, [class*="uw_fcs"]') &&
+        !sib.matches('article.message--post:not(.comment)')
+    ) {
+        roots.push(sib);
+    }
+    return roots;
+}
+
+function xfpdCollectPostCommentElements(messageEl) {
+    const out = [];
+    const seen = new Set();
+    for (const root of xfpdGetPostCommentContainers(messageEl)) {
+        if (!root.querySelectorAll) continue;
+        const nodes = root.querySelectorAll('.comment, .js-comment, .uw_fcs_comment');
+        for (const n of nodes) {
+            if (seen.has(n)) continue;
+            let hasCommentAncestor = false;
+            let cur = n.parentElement;
+            while (cur && cur !== root) {
+                if (seen.has(cur)) {
+                    hasCommentAncestor = true;
+                    break;
+                }
+                cur = cur.parentElement;
+            }
+            if (hasCommentAncestor) continue;
+            seen.add(n);
+            out.push(n);
+        }
+    }
+    return out;
+}
+
+function xfpdFindCollapsedCommentLoaders(messageEl) {
+    const loaders = [];
+    const seenHrefs = new Set();
+    for (const root of xfpdGetPostCommentContainers(messageEl)) {
+        if (!root.querySelectorAll) continue;
+        const links = root.querySelectorAll(
+            'a[data-xf-click*="comment-loader"][href], .js-commentLoader a[href], a[href*="/load-previous"], a[href*="/load-comments"], a[href*="uw-fcs"][href*="load"]',
+        );
+        for (const a of links) {
+            const href = String(a.getAttribute('href') || '').trim();
+            if (!href || href === '#' || href.startsWith('javascript:') || seenHrefs.has(href)) continue;
+            seenHrefs.add(href);
+            loaders.push(a);
+        }
+    }
+    return loaders;
+}
+
+function xfpdCleanContentFragmentClone(fragmentClone) {
+    if (!fragmentClone || !fragmentClone.querySelectorAll) return fragmentClone;
+
+    // Remove our own injected status/progress UI, quotes of other posts, code headers, spoiler button labels, unfurl icons, and SMG reaction overlays.
+    ['[data-xfpd-ui="1"]', '.contentRow-figure', '.js-unfurl-favicon', '.smgTargetReactions', 'blockquote', '.button-text > span']
+        .flatMap(i => [...fragmentClone.querySelectorAll(i)])
+        .forEach(i => {
+            if (i.tagName === 'BLOCKQUOTE') {
+                if (i.querySelector('.bbCodeBlock-title')) {
+                    i.remove();
+                }
+            } else {
+                i.remove();
+            }
+        });
+
+    // Remove internal forum thread/node links (SimpCity & SocialMediaGirls).
+    [...fragmentClone.querySelectorAll('.contentRow-header > a[href]')]
+        .filter(a => {
+            const href = a.getAttribute('href') || '';
+            return (
+                /^https?:\/\/(?:[\w-]+\.)?(?:simpcity\.[a-z]+|socialmediagirls\.com)\/(?:threads|forums|posts)\b/i.test(href) ||
+                /^\/(?:threads|forums|posts)\//i.test(href)
+            );
+        })
+        .map(a => a.closest('.bbCodeBlock--unfurl, .js-unfurl') || a.parentNode?.parentNode?.parentNode?.parentNode)
+        .filter(Boolean)
+        .forEach(i => i.remove());
+
+    // Decode forum outbound link protection (/redirect/?to=...&m=b64 and SMG /goto/link-confirmation?url=...)
+    try {
+        const __decodeB64Url = s => {
+            if (!s) return null;
+            let b = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
+            while (b.length % 4) b += '=';
+            try {
+                const bin = atob(b);
+                try {
+                    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+                    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                } catch (e2) {
+                    return bin;
+                }
+            } catch (e) {
+                return null;
+            }
+        };
+
+        const __decodeForumRedirect = href => {
+            if (!href) return null;
+            try {
+                const u = new URL(href, location.origin);
+                const p = (u.pathname || '').toLowerCase();
+                const q = (u.search || '').toLowerCase();
+
+                const looksRedirect = p === '/redirect' || p === '/redirect/' || p.startsWith('/redirect/');
+                const looksLinkProxy = p.includes('link-proxy');
+                const looksGoto =
+                    p.includes('/goto/link-confirmation') ||
+                    q.includes('goto/link-confirmation') ||
+                    (p.startsWith('/goto/') && !p.startsWith('/goto/post') && !p.startsWith('/goto/quoted'));
+                if (!looksRedirect && !looksLinkProxy && !looksGoto) return null;
+
+                const to =
+                    u.searchParams.get('to') ||
+                    u.searchParams.get('url') ||
+                    u.searchParams.get('u') ||
+                    u.searchParams.get('link') ||
+                    u.searchParams.get('target');
+                if (!to) return null;
+
+                const mode = (u.searchParams.get('m') || '').toLowerCase();
+                let decoded = null;
+
+                if (mode === 'b64' || mode === 'base64') {
+                    decoded = __decodeB64Url(to);
+                }
+
+                if (!decoded) {
+                    let rawTo = to;
+                    try { rawTo = decodeURIComponent(rawTo); } catch (e) {}
+                    const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(rawTo) && rawTo.length >= 16 && rawTo.length % 4 !== 1;
+                    if (looksB64) decoded = __decodeB64Url(rawTo);
+                }
+
+                if (!decoded) {
+                    try { decoded = decodeURIComponent(to); } catch (e) { decoded = to; }
+                }
+
+                decoded = String(decoded || '').trim();
+
+                if (decoded && !/^https?:\/\//i.test(decoded) && /%3a%2f%2f/i.test(decoded)) {
+                    try {
+                        const d2 = decodeURIComponent(decoded);
+                        if (/^https?:\/\//i.test(d2)) decoded = d2;
+                    } catch (e) {}
+                }
+
+                if (!/^https?:\/\//i.test(decoded)) return null;
+                return decoded;
+            } catch (e) {
+                return null;
+            }
+        };
+
+        const sel = [
+            'a[href*="/redirect/"]',
+            'a[href^="/redirect"]',
+            'a[href*="redirect?"]',
+            'a[href*="link-proxy"]',
+            'a[href*="/goto/"]',
+            'a[href*="goto/link-confirmation"]',
+            'a[data-href*="/goto/"]',
+        ].join(', ');
+
+        fragmentClone.querySelectorAll(sel).forEach(a => {
+            const candidates = [a.getAttribute('href'), a.getAttribute('data-href'), a.getAttribute('data-url')].filter(Boolean);
+            for (const c of candidates) {
+                const decoded = __decodeForumRedirect(c);
+                if (decoded) {
+                    a.setAttribute('data-url', decoded);
+                    a.setAttribute('href', decoded);
+                    a.setAttribute('data-xfpd-decoded', '1');
+                    break;
+                }
+            }
+        });
+
+        try {
+            fragmentClone.querySelectorAll('a[data-xfpd-decoded="1"] img').forEach(img => {
+                const u = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
+                if (!u) return;
+                let host = '';
+                let path = '';
+                try {
+                    const uu = new URL(u, location.origin);
+                    host = (uu.hostname || '').toLowerCase();
+                    path = (uu.pathname || '').toLowerCase();
+                } catch (e) {}
+                const isThumb = host.includes('thumb') || /_t\.(?:jpe?g|png|webp|gif)$/i.test(u) || /\/thumbs?\//i.test(path);
+                if (isThumb) img.remove();
+            });
+        } catch (e) {}
+    } catch (e) {}
+
+    // Capture human-readable filename hints from anchor text / XenForo unfurl card headers
+    try {
+        const extractFilenameHint = rawText => {
+            let s = String(rawText || '').replace(/\s+/g, ' ').trim();
+            if (!s || /^https?:\/\//i.test(s) || xfpdLooksLikeCfFilenameHint(s)) return '';
+            s = s.replace(/\s+[|\-–—]\s*(?:bunkr|gofile|pixeldrain|filester|cyberdrop|fileditch[a-z.]*)\s*$/i, '').trim();
+            if (/\.[A-Za-z0-9]{2,5}$/.test(s) && s.length >= 4 && s.length <= 240) {
+                return s;
+            }
+            const m = s.match(/[^\\/:*?"<>|\r\n]{3,220}\.(?:mp4|mkv|m4v|mov|webm|avi|wmv|flv|ts|m2ts|zip|rar|7z|pdf|jpe?g|png|webp|gif|avif)\b/i);
+            return m ? m[0].trim() : '';
+        };
+
+        fragmentClone.querySelectorAll('a[href]').forEach(a => {
+            let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim();
+            if (!href0 || href0.startsWith('#') || href0.startsWith('javascript:')) return;
+            if (!/^https?:\/\//i.test(href0)) {
+                try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
+            }
+            const hint = extractFilenameHint(a.textContent || '');
+            if (!hint) return;
+            const cleanNoHash = href0.split('#')[0].replace(/\/$/, '');
+            const cleanNoQs = cleanNoHash.split('?')[0].replace(/\/$/, '');
+            linkHintNameByUrl.set(href0, hint);
+            linkHintNameByUrl.set(cleanNoHash, hint);
+            linkHintNameByUrl.set(cleanNoQs, hint);
+        });
+    } catch (e) {}
+
+    try {
+        fragmentClone.querySelectorAll('a[href*="/attachments/"] img').forEach(img => img.remove());
+    } catch (e) {}
+
+    try {
+        fragmentClone.querySelectorAll('a[href*="goonbox.cr"] img').forEach(img => img.remove());
+    } catch (e) {}
+
+    try {
+        fragmentClone
+            .querySelectorAll('a[href*="imagepond.net"], a[href*="images.socialmediagirls.com"]')
+            .forEach(a => {
+                const rawHref = (a.getAttribute('href') || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
+                const img = a.querySelector('img');
+                if (!img) return;
+                const imgUrl = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
+                const altName = (img.getAttribute('alt') || '').trim();
+                if (
+                    rawHref &&
+                    /^https?:\/\/media\.imagepond\.net\/media\//i.test(imgUrl) &&
+                    !/(?:_thumb\.|\/thumb\/|\.th\.|\.md\.|android-chrome|placeholder)/i.test(imgUrl)
+                ) {
+                    imagepondDirectByPageUrl.set(rawHref, imgUrl);
+                    if (altName && /\.[A-Za-z0-9]{2,8}$/.test(altName) && !/^https?:\/\//i.test(altName)) {
+                        imagepondNameByUrl.set(imgUrl, altName);
+                        imagepondNameByUrl.set(rawHref, altName);
+                    }
+                }
+                img.remove();
+            });
+    } catch (e) {}
+
+    try {
+        fragmentClone
+            .querySelectorAll(
+                'a[href*="pixhost."][href*="/show/"] img, a[href*="pixho.st/show/"] img, a[href*="putmega.com/image/"] img, a[href*="putme.ga/image/"] img',
+            )
+            .forEach(img => img.remove());
+    } catch (e) {}
+
+    return fragmentClone;
+}
+
+function xfpdExtractSpoilersFromFragment(fragmentClone) {
+    if (!fragmentClone || !fragmentClone.querySelectorAll) return [];
+    const textVal = fragmentClone.innerText || fragmentClone.textContent || '';
+    return [...fragmentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content')]
+        .filter(s => !s.querySelector('.bbCodeBlock--unfurl'))
+        .concat([...fragmentClone.querySelectorAll('.bbCodeInlineSpoiler')].filter(s => !s.querySelector('.bbCodeBlock--unfurl')))
+        .map(s => s.innerText || s.textContent || '')
+        .concat(
+            h.re
+                .matchAll(/(?<=pw|pass|passwd|password)(\s:|:)?\s+?[a-zA-Z0-9~!@#$%^&*()_+{}|:'"<>?\/,;.]+/gis, textVal)
+                .map(s => s.trim()),
+        )
+        .map(s =>
+            s
+                .trim()
+                .replace(/^:/, '')
+                .replace(/\bp:\b/i, '')
+                .replace(/\bpw:\b/i, '')
+                .replace(/\bkey:\b/i, '')
+                .trim(),
+        )
+        .filter(s => s !== '');
+}
+
 const parsers = {
     thread: {
         /**
@@ -137,9 +448,7 @@ const parsers = {
             return !settings.naming.allowEmojis ? parsed.replace(emojisPattern, settings.naming.invalidCharSubstitute).trim() : parsed.trim();
         },
         /**
-     *
      * @param post
-     * @returns {{pageNumber: number, post, spoilers: *, footer: HTMLElement, contentContainer: Element, textContent: string, postId: string, postNumber: string, content: string}|null}
      */
         parsePost: post => {
             if (!post || (post.closest && post.closest('.comment, .js-comment, .uw_fcs_comment_section, .message-responses'))) {
@@ -153,7 +462,7 @@ const parsers = {
             if (!messageContent) return null;
 
             const footer = messageEl.querySelector('footer.message-footer, footer');
-            const messageContentClone = messageContent.cloneNode(true);
+            const messageContentClone = xfpdCleanContentFragmentClone(messageContent.cloneNode(true));
 
             const postNumberCandidates = [...post.querySelectorAll('li > a[href*="/post-"], li > a[href*="/posts/"]')].filter(
                 a => !a.classList.contains('message-attribution-gadget') && (a.textContent || '').trim() !== '',
@@ -176,278 +485,44 @@ const parsers = {
             const rawNumber = (postIdAnchor?.textContent || '').replace('#', '').trim();
             const postNumber = rawNumber || postId;
 
-            // Remove the following from the post content:
-            // 1. Quotes.
-            // 2. CodeBlock headers
-            // 3. Spoiler button text from each spoiler
-            // 4. Icons from un-furled urls and SMG per-target reaction overlays.
-            ['.contentRow-figure', '.js-unfurl-favicon', '.smgTargetReactions', 'blockquote', '.button-text > span']
-                .flatMap(i => [...messageContentClone.querySelectorAll(i)])
-                .forEach(i => {
-                if (i.tagName === 'BLOCKQUOTE') {
-                    // Only remove blockquotes that quote the other posts.
-                    if (i.querySelector('.bbCodeBlock-title')) {
-                        i.remove();
-                    }
-                } else {
-                    i.remove();
+            // Collect and clean post comments (e.g. SMG [UW] Forum Comments System / XenForo .message-responses)
+            const commentEls = xfpdCollectPostCommentElements(messageEl);
+            const commentHtmlParts = [];
+            const commentSpoilers = [];
+            let hasCommentLockedContent = false;
+
+            for (const commentEl of commentEls) {
+                const bodyEl =
+                    commentEl.querySelector(
+                        '.comment-body .bbWrapper, .comment-contentWrapper .bbWrapper, .message-userContent .bbWrapper, .comment-body, .message-userContent, .bbWrapper',
+                    ) || commentEl;
+                const cClone = xfpdCleanContentFragmentClone(bodyEl.cloneNode(true));
+                if (xfpdDetectLockedReactionContent(commentEl, cClone, true)) {
+                    hasCommentLockedContent = true;
                 }
-            });
+                commentSpoilers.push(...xfpdExtractSpoilersFromFragment(cClone));
+                const cHtml = cClone.innerHTML;
+                if (cHtml && cHtml.trim() !== '') {
+                    commentHtmlParts.push(cHtml);
+                }
+            }
 
-            // Remove internal forum thread/node links (SimpCity & SocialMediaGirls).
-            [...messageContentClone.querySelectorAll('.contentRow-header > a[href]')]
-                .filter(a => {
-                    const href = a.getAttribute('href') || '';
-                    return (
-                        /^https?:\/\/(?:[\w-]+\.)?(?:simpcity\.[a-z]+|socialmediagirls\.com)\/(?:threads|forums|posts)\b/i.test(href) ||
-                        /^\/(?:threads|forums|posts)\//i.test(href)
-                    );
-                })
-                .map(a => a.closest('.bbCodeBlock--unfurl, .js-unfurl') || a.parentNode?.parentNode?.parentNode?.parentNode)
-                .filter(Boolean)
-                .forEach(i => i.remove());
+            const collapsedLoaders = xfpdFindCollapsedCommentLoaders(messageEl);
+            const hasCollapsedComments = collapsedLoaders.length > 0;
 
-            // Decode forum outbound link protection (e.g. /redirect/?to=...&m=b64 and SMG's /goto/link-confirmation?url=...)
-            // BEFORE stripping preview images inside host links so decoded anchors are recognized by their real target host.
-            try {
-                const __decodeB64Url = (s) => {
-                    if (!s) return null;
-                    let b = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
-                    while (b.length % 4) b += '=';
-                    try {
-                        const bin = atob(b);
-                        try {
-                            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
-                            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-                        } catch (e2) {
-                            return bin;
-                        }
-                    } catch (e) {
-                        return null;
-                    }
-                };
+            const spoilers = xfpdExtractSpoilersFromFragment(messageContentClone).concat(commentSpoilers).unique();
+            const hasMainLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone, false);
+            const hasLockedContent = hasMainLockedContent || hasCommentLockedContent;
 
-                const __decodeForumRedirect = (href) => {
-                    if (!href) return null;
-                    try {
-                        const u = new URL(href, location.origin);
-                        const p = (u.pathname || '').toLowerCase();
-                        const q = (u.search || '').toLowerCase();
-
-                        const looksRedirect = p === '/redirect' || p === '/redirect/' || p.startsWith('/redirect/');
-                        const looksLinkProxy = p.includes('link-proxy');
-                        const looksGoto =
-                            p.includes('/goto/link-confirmation') ||
-                            q.includes('goto/link-confirmation') ||
-                            (p.startsWith('/goto/') && !p.startsWith('/goto/post') && !p.startsWith('/goto/quoted'));
-                        if (!looksRedirect && !looksLinkProxy && !looksGoto) return null;
-
-                        const to = u.searchParams.get('to')
-                                 || u.searchParams.get('url')
-                                 || u.searchParams.get('u')
-                                 || u.searchParams.get('link')
-                                 || u.searchParams.get('target');
-                        if (!to) return null;
-
-                        const mode = (u.searchParams.get('m') || '').toLowerCase();
-                        let decoded = null;
-
-                        if (mode === 'b64' || mode === 'base64') {
-                            decoded = __decodeB64Url(to);
-                        }
-
-                        // Some installs (including SMG /goto/link-confirmation) omit the mode flag even though `url` is base64.
-                        if (!decoded) {
-                            let rawTo = to;
-                            try { rawTo = decodeURIComponent(rawTo); } catch (e) {}
-                            const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(rawTo) && rawTo.length >= 16 && (rawTo.length % 4 !== 1);
-                            if (looksB64) decoded = __decodeB64Url(rawTo);
-                        }
-
-                        if (!decoded) {
-                            try { decoded = decodeURIComponent(to); } catch (e) { decoded = to; }
-                        }
-
-                        decoded = String(decoded || '').trim();
-
-                        // Some protectors double-encode.
-                        if (decoded && !/^https?:\/\//i.test(decoded) && /%3a%2f%2f/i.test(decoded)) {
-                            try {
-                                const d2 = decodeURIComponent(decoded);
-                                if (/^https?:\/\//i.test(d2)) decoded = d2;
-                            } catch (e) { /* ignore */ }
-                        }
-
-                        if (!/^https?:\/\//i.test(decoded)) return null;
-                        return decoded;
-                    } catch (e) {
-                        return null;
-                    }
-                };
-
-                const sel = [
-                    'a[href*="/redirect/"]',
-                    'a[href^="/redirect"]',
-                    'a[href*="redirect?"]',
-                    'a[href*="link-proxy"]',
-                    'a[href*="/goto/"]',
-                    'a[href*="goto/link-confirmation"]',
-                    'a[data-href*="/goto/"]',
-                ].join(', ');
-
-                messageContentClone.querySelectorAll(sel).forEach((a) => {
-                    // Some XenForo installs store the redirect/protected URL in different attrs.
-                    const candidates = [
-                        a.getAttribute('href'),
-                        a.getAttribute('data-href'),
-                        a.getAttribute('data-url'),
-                    ].filter(Boolean);
-
-                    for (const c of candidates) {
-                        const decoded = __decodeForumRedirect(c);
-                        if (decoded) {
-                            a.setAttribute('data-url', decoded);
-                            a.setAttribute('href', decoded);
-                            a.setAttribute('data-xfpd-decoded', '1');
-                            break;
-                        }
-                    }
-                });
-
-                // Prevent common thumbnail URLs inside decoded redirect links from being treated as direct downloads.
-                // (Keeps the UI intact for non-thumb embeds, but avoids downloading *_t.jpg / thumbs.* previews.)
-                try {
-                    messageContentClone.querySelectorAll('a[data-xfpd-decoded="1"] img').forEach((img) => {
-                        const u = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
-                        if (!u) return;
-
-                        let host = '';
-                        let path = '';
-                        try {
-                            const uu = new URL(u, location.origin);
-                            host = (uu.hostname || '').toLowerCase();
-                            path = (uu.pathname || '').toLowerCase();
-                        } catch (e) {
-                            // ignore
-                        }
-
-                        const isThumb =
-                            host.includes('thumb') ||
-                            /_t\.(?:jpe?g|png|webp|gif)$/i.test(u) ||
-                            /\/thumbs?\//i.test(path);
-
-                        if (isThumb) img.remove();
-                    });
-                } catch (e) { /* ignore */ }
-            } catch (e) { /* ignore */ }
-
-            // Capture human-readable filename hints from anchor text / XenForo unfurl card headers
-            // (after redirect decoding above!) so multi-mirror & multi-resolution links know their real filenames.
-            try {
-                const extractFilenameHint = rawText => {
-                    let s = String(rawText || '').replace(/\s+/g, ' ').trim();
-                    if (!s || /^https?:\/\//i.test(s) || xfpdLooksLikeCfFilenameHint(s)) return '';
-                    // Strip trailing site suffix often added by XenForo unfurls (e.g. "file.mp4 | Bunkr" or "file.mp4 - Pixeldrain")
-                    s = s.replace(/\s+[|\-–—]\s*(?:bunkr|gofile|pixeldrain|filester|cyberdrop|fileditch[a-z.]*)\s*$/i, '').trim();
-                    if (/\.[A-Za-z0-9]{2,5}$/.test(s) && s.length >= 4 && s.length <= 240) {
-                        return s;
-                    }
-                    const m = s.match(/[^\\/:*?"<>|\r\n]{3,220}\.(?:mp4|mkv|m4v|mov|webm|avi|wmv|flv|ts|m2ts|zip|rar|7z|pdf|jpe?g|png|webp|gif|avif)\b/i);
-                    return m ? m[0].trim() : '';
-                };
-
-                messageContentClone.querySelectorAll('a[href]').forEach(a => {
-                    let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim();
-                    if (!href0 || href0.startsWith('#') || href0.startsWith('javascript:')) return;
-                    if (!/^https?:\/\//i.test(href0)) {
-                        try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
-                    }
-                    const hint = extractFilenameHint(a.textContent || '');
-                    if (!hint) return;
-                    const cleanNoHash = href0.split('#')[0].replace(/\/$/, '');
-                    const cleanNoQs = cleanNoHash.split('?')[0].replace(/\/$/, '');
-                    linkHintNameByUrl.set(href0, hint);
-                    linkHintNameByUrl.set(cleanNoHash, hint);
-                    linkHintNameByUrl.set(cleanNoQs, hint);
-                });
-            } catch (e) { /* ignore */ }
-
-            // Prevent duplicate detection: attachment links often wrap a preview image.
-            // For parsing only, remove the preview <img> inside attachment links so we don't count/download it twice.
-            try {
-                messageContentClone.querySelectorAll('a[href*="/attachments/"] img').forEach((img) => img.remove());
-            } catch (e) { /* ignore */ }
-
-            // Goonbox links wrap a medium-res CDN thumbnail — suppress it so we call the API for the original instead.
-            try {
-                messageContentClone.querySelectorAll('a[href*="goonbox.cr"] img').forEach((img) => img.remove());
-            } catch (e) { /* ignore */ }
-
-            // ImagePond links (SocialMediaGirls default host) wrap either the full media.imagepond.net image or a /thumb/ preview.
-            // Record full-res direct CDN hints + alt filenames, then remove the inner <img> so linked embeds aren't counted twice.
-            try {
-                messageContentClone
-                    .querySelectorAll('a[href*="imagepond.net"], a[href*="images.socialmediagirls.com"]')
-                    .forEach((a) => {
-                        const rawHref = (a.getAttribute('href') || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
-                        const img = a.querySelector('img');
-                        if (!img) return;
-
-                        const imgUrl = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
-                        const altName = (img.getAttribute('alt') || '').trim();
-
-                        if (
-                            rawHref &&
-                            /^https?:\/\/media\.imagepond\.net\/media\//i.test(imgUrl) &&
-                            !/(?:_thumb\.|\/thumb\/|\.th\.|\.md\.|android-chrome|placeholder)/i.test(imgUrl)
-                        ) {
-                            imagepondDirectByPageUrl.set(rawHref, imgUrl);
-                            if (altName && /\.[A-Za-z0-9]{2,8}$/.test(altName) && !/^https?:\/\//i.test(altName)) {
-                                imagepondNameByUrl.set(imgUrl, altName);
-                                imagepondNameByUrl.set(rawHref, altName);
-                            }
-                        }
-
-                        img.remove();
-                    });
-            } catch (e) { /* ignore */ }
-
-            // Pixhost /show/ and PutMega /image/ links wrap a thumbnail <img> — remove the inner <img> to avoid double-counting.
-            try {
-                messageContentClone
-                    .querySelectorAll('a[href*="pixhost."][href*="/show/"] img, a[href*="pixho.st/show/"] img, a[href*="putmega.com/image/"] img, a[href*="putme.ga/image/"] img')
-                    .forEach((img) => img.remove());
-            } catch (e) { /* ignore */ }
-
-            // Extract spoilers from the post content.
-            const spoilers = [...messageContentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content')]
-            .filter(s => !s.querySelector('.bbCodeBlock--unfurl'))
-            .concat([...messageContentClone.querySelectorAll('.bbCodeInlineSpoiler')].filter(s => !s.querySelector('.bbCodeBlock--unfurl')))
-            .map(s => s.innerText)
-            .concat(
-                h.re
-                .matchAll(/(?<=pw|pass|passwd|password)(\s:|:)?\s+?[a-zA-Z0-9~!@#$%^&*()_+{}|:'"<>?\/,;.]+/gis, messageContentClone.innerText)
-                .map(s => s.trim()),
-            )
-            .map(s =>
-                 s
-                 .trim()
-                 .replace(/^:/, '')
-                 .replace(/\bp:\b/i, '')
-                 .replace(/\bpw:\b/i, '')
-                 .replace(/\bkey:\b/i, '')
-                 .trim(),
-                )
-            .filter(s => s !== '')
-            .unique();
-
-            const hasLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone);
+            // Extract caption purely from the main post (never polluted by commenter replies!)
             const postCaption = xfpdExtractCleanPostCaption(messageContentClone);
-            const postContent = messageContentClone.innerHTML;
-            const postTextContent = messageContentClone.innerText;
+
+            const mainOnlyContent = messageContentClone.innerHTML;
+            const commentsOnlyContent = commentHtmlParts.join('\n');
+            const postContent = commentsOnlyContent ? `${mainOnlyContent}\n${commentsOnlyContent}` : mainOnlyContent;
+            const postTextContent = messageContentClone.innerText || messageContentClone.textContent || '';
 
             const matches = /(?<=\/page-)\d+/is.exec(document.location.pathname);
-
             const pageNumber = matches && matches.length ? Number(matches[0]) : 1;
 
             return {
@@ -458,8 +533,14 @@ const parsers = {
                 pageNumber,
                 spoilers,
                 footer,
+                hasMainLockedContent,
+                hasCommentLockedContent,
                 hasLockedContent,
+                hasCollapsedComments,
+                commentCount: commentEls.length,
                 postCaption,
+                mainOnlyContent,
+                commentsOnlyContent,
                 content: postContent,
                 textContent: postTextContent,
                 contentContainer: messageContent,

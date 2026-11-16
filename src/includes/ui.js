@@ -49,6 +49,7 @@ const ui = {
      */
         base: (color, height = '3px', width = '0%') => {
             const pb = document.createElement('div');
+            pb.setAttribute('data-xfpd-ui', '1');
             pb.style.height = height;
             pb.style.background = color;
             pb.style.width = width;
@@ -81,10 +82,12 @@ const ui = {
      */
         createBlockLabel: (initialText = null, color = '#959595') => {
             const container = document.createElement('div');
+            container.setAttribute('data-xfpd-ui', '1');
             container.style.color = color;
             container.style.fontSize = '12px';
 
             const span = document.createElement('span');
+            span.setAttribute('data-xfpd-ui', '1');
             container.appendChild(span);
 
             if (initialText) {
@@ -238,6 +241,12 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(
+                        `${idPrefix}-include-comments`,
+                        'Include Post Comments',
+                        currentSettings.includeComments !== false,
+                        false,
+                    ),
+                    ui.forms.createCheckbox(
                         `${idPrefix}-smart-mirrors`,
                         'Smart Mirrors (Auto-Fallback)',
                         smartMirrors,
@@ -308,6 +317,7 @@ const ui = {
                     layoutEl.disabled = skipDl;
                 }
 
+                setCb('include-comments', settingsObj.includeComments !== false, false);
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
                 setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
 
@@ -428,6 +438,11 @@ const ui = {
                         },
                         ['folderLayout', 'organizeMedia', 'flatten'],
                     );
+                });
+
+                bindOne('include-comments', e => {
+                    settingsObj.includeComments = !!e.target.checked;
+                    notify({ includeComments: settingsObj.includeComments }, ['includeComments']);
                 });
 
                 bindOne('smart-mirrors', e => {
