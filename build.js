@@ -1,6 +1,7 @@
 const fs = require('fs');
+const path = require('path');
 
-const getContents = path => require('child_process').execSync(`cat ${path}`).toString();
+const getContents = filePath => fs.readFileSync(path.resolve(__dirname, filePath), 'utf8');
 
 const header = getContents('./src/header.js');
 
@@ -10,10 +11,11 @@ const includes = ['globals.js', 'logging.js', 'settings.js', 'helpers.js', 'prot
   .join('\n');
 const main = getContents('./src/main.js');
 
-if (!fs.existsSync('./dist')) {
-  fs.mkdirSync('./dist');
+const distDir = path.resolve(__dirname, './dist');
+if (!fs.existsSync(distDir)) {
+  fs.mkdirSync(distDir, { recursive: true });
 }
 
-const data = header + includes + main;
+const data = `${header}\n${includes}\n${main}`;
 
-fs.writeFileSync('dist/build.user.js', data);
+fs.writeFileSync(path.join(distDir, 'build.user.js'), data);

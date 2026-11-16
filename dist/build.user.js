@@ -1,12 +1,13 @@
 // noinspection SpellCheckingInspection,JSUnresolvedVariable,JSUnresolvedFunction,TypeScriptUMDGlobal,JSUnusedGlobalSymbols
 // ==UserScript==
 // @name XenForoPostDownloader
-// @namespace https://github.com/SkyCloudDev
+// @namespace https://github.com/Shhinobi
 // @author SkyCloudDev
-// @description Downloads images and videos from posts
-// @version 3.23
-// @updateURL https://github.com/SkyCloudDev/ForumPostDownloader/raw/main/dist/build.user.js
-// @downloadURL https://github.com/SkyCloudDev/ForumPostDownloader/raw/main/dist/build.user.js
+// @author Shhinobi
+// @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
+// @version 3.24
+// @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
+// @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
 // @license WTFPL; http://www.wtfpl.net/txt/copying/
 // @match https://simpcity.cr/threads/*
@@ -15,6 +16,10 @@
 // @match https://simpcity.hk/threads/*
 // @match https://simpcity.rs/threads/*
 // @match https://simpcity.ax/threads/*
+// @match https://simpcity.su/threads/*
+// @match https://forums.socialmediagirls.com/threads/*
+// @match https://socialmediagirls.com/threads/*
+// @match https://*.socialmediagirls.com/threads/*
 // @match https://gofile.io/*
 // @match https://goonbox.cr/*
 // @match https://*.goonbox.cr/*
@@ -25,10 +30,21 @@
 // @require https://raw.githubusercontent.com/geraintluff/sha256/gh-pages/sha256.min.js
 // @connect self
 // @connect simpcity.su
+// @connect socialmediagirls.com
+// @connect forums.socialmediagirls.com
+// @connect smgmedia.socialmediagirls.com
+// @connect images.socialmediagirls.com
+// @connect imagepond.net
+// @connect www.imagepond.net
+// @connect media.imagepond.net
 // @connect coomer.st
+// @connect coomer.su
+// @connect coomer.party
 // @connect box.com
 // @connect boxcloud.com
 // @connect kemono.cr
+// @connect kemono.su
+// @connect kemono.party
 // @connect github.com
 // @connect scdn.st
 // @connect cache8.st
@@ -102,6 +118,12 @@
 // @connect cuckcapital.cr
 // @connect imgbox.com
 // @connect pixhost.to
+// @connect pixhost.cc
+// @connect pixho.st
+// @connect putmega.com
+// @connect putme.ga
+// @connect erome.com
+// @connect imgur.com
 // @connect pomf2.lain.la
 // @connect pornhub.com
 // @connect postimg.cc
@@ -594,6 +616,11 @@ const bunkrNameByUrl = new Map();
 // API's original_url 404s (post-migration, some originals are missing but the .md. thumbnail --
 // also hosted on cuckcapital.cr -- still exists).
 const goonboxThumbByUrl = new Map();
+
+// ImagePond (SocialMediaGirls official media host): human filenames + direct CDN URL hints captured
+// from embedded [URL=imagepond.net/i/...][IMG]media.imagepond.net/...[/IMG][/URL] tags and album tiles.
+const imagepondNameByUrl = new Map();
+const imagepondDirectByPageUrl = new Map();
 
 // --- Goonbox same-origin API bridge -------------------------------------------------------------
 // Goonbox's API sits behind Cloudflare and requires the first-party goonbox.cr cookies. On Firefox
@@ -1795,29 +1822,64 @@ const parsers = {
         parseTitle: () => {
             const emojisPattern =
                   /[\u{1f300}-\u{1f5ff}\u{1f900}-\u{1f9ff}\u{1f600}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{2600}-\u{26ff}\u{2700}-\u{27bf}\u{1f191}-\u{1f251}\u{1f004}\u{1f0cf}\u{1f170}-\u{1f171}\u{1f17e}-\u{1f17f}\u{1f18e}\u{3030}\u{2b50}\u{2b55}\u{2934}-\u{2935}\u{2b05}-\u{2b07}\u{2b1b}-\u{2b1c}\u{3297}\u{3299}\u{303d}\u{00a9}\u{00ae}\u{2122}\u{23f3}\u{24c2}\u{23e9}-\u{23ef}\u{25b6}\u{23f8}-\u{23fa}]/gu;
-            let parsed = h.stripTags(['a', 'span'], h.element('.p-title-value').innerHTML).replace('/\n/g', '');
+            const titleEl = h.element('.p-title-value');
+            let parsed = '';
+            if (titleEl) {
+                const clone = titleEl.cloneNode(true);
+                clone.querySelectorAll('a, span').forEach(el => el.remove());
+                parsed = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+            }
+            if (!parsed) {
+                parsed = (document.title || 'Thread').replace(/\s*\|\s*(?:Social Media Girls|SimpCity).*$/i, '').trim();
+            }
             return !settings.naming.allowEmojis ? parsed.replace(emojisPattern, settings.naming.invalidCharSubstitute).trim() : parsed.trim();
         },
         /**
      *
      * @param post
-     * @returns {{pageNumber: string, post, spoilers: *, footer: HTMLElement, contentContainer: Element, textContent: (*|string|string), postId: string, postNumber: string, content: (*|string|string|string)}}
+     * @returns {{pageNumber: number, post, spoilers: *, footer: HTMLElement, contentContainer: Element, textContent: string, postId: string, postNumber: string, content: string}|null}
      */
         parsePost: post => {
-            const messageContent = post.parentNode.parentNode.querySelector('.message-content > .message-userContent');
-            const footer = post.parentNode.parentNode.querySelector('footer');
+            if (!post || (post.closest && post.closest('.comment, .js-comment, .uw_fcs_comment_section, .message-responses'))) {
+                return null;
+            }
+
+            const messageEl = (post.closest && post.closest('article.message, .message--post, .js-post')) || post.parentNode?.parentNode;
+            if (!messageEl) return null;
+
+            const messageContent = messageEl.querySelector('.message-content > .message-userContent');
+            if (!messageContent) return null;
+
+            const footer = messageEl.querySelector('footer.message-footer, footer');
             const messageContentClone = messageContent.cloneNode(true);
 
-            const postIdAnchor = post.querySelector('li:last-of-type > a');
-            const postId = /(?<=\/post-).*/i.exec(postIdAnchor.getAttribute('href'))[0];
-            const postNumber = postIdAnchor.textContent.replace('#', '').trim();
+            const postNumberCandidates = [...post.querySelectorAll('li > a[href*="/post-"], li > a[href*="/posts/"]')].filter(
+                a => !a.classList.contains('message-attribution-gadget') && (a.textContent || '').trim() !== '',
+            );
+            const postIdAnchor =
+                postNumberCandidates[postNumberCandidates.length - 1] ||
+                [...post.querySelectorAll('li > a[href*="/post-"]')].pop() ||
+                post.querySelector('li:last-of-type > a');
+
+            const postHref = postIdAnchor?.getAttribute('href') || '';
+            const dataContent = messageEl.getAttribute?.('data-content') || messageEl.id || '';
+            const idMatch =
+                /\/post-(\d+)/i.exec(postHref) ||
+                /\/posts\/(\d+)/i.exec(postHref) ||
+                /(?:^|-)post-(\d+)/i.exec(dataContent);
+
+            if (!idMatch || !idMatch[1]) return null;
+
+            const postId = idMatch[1];
+            const rawNumber = (postIdAnchor?.textContent || '').replace('#', '').trim();
+            const postNumber = rawNumber || postId;
 
             // Remove the following from the post content:
             // 1. Quotes.
             // 2. CodeBlock headers
             // 3. Spoiler button text from each spoiler
-            // 2. Icons from un-furled urls (url parser can sometimes match them).
-            ['.contentRow-figure', '.js-unfurl-favicon', 'blockquote', '.button-text > span']
+            // 4. Icons from un-furled urls and SMG per-target reaction overlays.
+            ['.contentRow-figure', '.js-unfurl-favicon', '.smgTargetReactions', 'blockquote', '.button-text > span']
                 .flatMap(i => [...messageContentClone.querySelectorAll(i)])
                 .forEach(i => {
                 if (i.tagName === 'BLOCKQUOTE') {
@@ -1830,33 +1892,37 @@ const parsers = {
                 }
             });
 
-            // Remove thread links.
-            [...messageContentClone.querySelectorAll('.contentRow-header > a[href^="https://simpcity.su/threads"]')]
-                .map(a => a.parentNode.parentNode.parentNode.parentNode)
+            // Remove internal forum thread/node links (SimpCity & SocialMediaGirls).
+            [...messageContentClone.querySelectorAll('.contentRow-header > a[href]')]
+                .filter(a => {
+                    const href = a.getAttribute('href') || '';
+                    return (
+                        /^https?:\/\/(?:[\w-]+\.)?(?:simpcity\.[a-z]+|socialmediagirls\.com)\/(?:threads|forums|posts)\b/i.test(href) ||
+                        /^\/(?:threads|forums|posts)\//i.test(href)
+                    );
+                })
+                .map(a => a.closest('.bbCodeBlock--unfurl, .js-unfurl') || a.parentNode?.parentNode?.parentNode?.parentNode)
+                .filter(Boolean)
                 .forEach(i => i.remove());
 
-            // Prevent duplicate detection: Simpcity attachment links often wrap a JPGX preview image.
-            // For parsing only, remove the preview <img> inside attachment links so we don't count/download it twice.
-            try {
-                messageContentClone.querySelectorAll('a[href*="/attachments/"] img').forEach((img) => img.remove());
-            } catch (e) { /* ignore */ }
-
-            // Goonbox links wrap a medium-res CDN thumbnail — suppress it so we call the API for the original instead.
-            try {
-                messageContentClone.querySelectorAll('a[href*="goonbox.cr"] img').forEach((img) => img.remove());
-            } catch (e) { /* ignore */ }
-
-
-
-            // Decode forum outbound link protection (e.g. /redirect/?to=...&m=b64) for parsing only.
-            // Some forums wrap external URLs in a redirect/proxy URL and store the real target in query params
-            // (often base64). If we don't decode it, host detection won't see the original domain.
+            // Decode forum outbound link protection (e.g. /redirect/?to=...&m=b64 and SMG's /goto/link-confirmation?url=...)
+            // BEFORE stripping preview images inside host links so decoded anchors are recognized by their real target host.
             try {
                 const __decodeB64Url = (s) => {
                     if (!s) return null;
                     let b = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
                     while (b.length % 4) b += '=';
-                    try { return atob(b); } catch (e) { return null; }
+                    try {
+                        const bin = atob(b);
+                        try {
+                            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+                            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+                        } catch (e2) {
+                            return bin;
+                        }
+                    } catch (e) {
+                        return null;
+                    }
                 };
 
                 const __decodeForumRedirect = (href) => {
@@ -1864,10 +1930,15 @@ const parsers = {
                     try {
                         const u = new URL(href, location.origin);
                         const p = (u.pathname || '').toLowerCase();
+                        const q = (u.search || '').toLowerCase();
 
                         const looksRedirect = p === '/redirect' || p === '/redirect/' || p.startsWith('/redirect/');
                         const looksLinkProxy = p.includes('link-proxy');
-                        if (!looksRedirect && !looksLinkProxy) return null;
+                        const looksGoto =
+                            p.includes('/goto/link-confirmation') ||
+                            q.includes('goto/link-confirmation') ||
+                            (p.startsWith('/goto/') && !p.startsWith('/goto/post') && !p.startsWith('/goto/quoted'));
+                        if (!looksRedirect && !looksLinkProxy && !looksGoto) return null;
 
                         const to = u.searchParams.get('to')
                                  || u.searchParams.get('url')
@@ -1883,10 +1954,12 @@ const parsers = {
                             decoded = __decodeB64Url(to);
                         }
 
-                        // Some installs omit the mode flag even though `to` is base64.
+                        // Some installs (including SMG /goto/link-confirmation) omit the mode flag even though `url` is base64.
                         if (!decoded) {
-                            const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(to) && to.length >= 16 && (to.length % 4 !== 1);
-                            if (looksB64) decoded = __decodeB64Url(to);
+                            let rawTo = to;
+                            try { rawTo = decodeURIComponent(rawTo); } catch (e) {}
+                            const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(rawTo) && rawTo.length >= 16 && (rawTo.length % 4 !== 1);
+                            if (looksB64) decoded = __decodeB64Url(rawTo);
                         }
 
                         if (!decoded) {
@@ -1910,36 +1983,14 @@ const parsers = {
                     }
                 };
 
-
-                const __imagebamFullFromThumb = (thumbUrl) => {
-                    if (!thumbUrl) return null;
-                    const s = String(thumbUrl).trim();
-                    if (!s) return null;
-
-                    try {
-                        const u = new URL(s, location.origin);
-                        const host = (u.hostname || '').toLowerCase();
-                        if (!host.endsWith('.imagebam.com')) return null;
-                        if (!host.startsWith('thumbs')) return null;
-
-                        const newHost = host.replace(/^thumbs/i, 'images');
-                        let path = u.pathname || '';
-                        // common thumb naming: *_t.jpg
-                        path = path.replace(/_t(\.[a-z0-9]+)$/i, '$1');
-                        // some variants use -t
-                        path = path.replace(/-t(\.[a-z0-9]+)$/i, '$1');
-
-                        return `${u.protocol}//${newHost}${path}`;
-                    } catch (e) {
-                        return null;
-                    }
-                };
-
                 const sel = [
                     'a[href*="/redirect/"]',
                     'a[href^="/redirect"]',
                     'a[href*="redirect?"]',
                     'a[href*="link-proxy"]',
+                    'a[href*="/goto/"]',
+                    'a[href*="goto/link-confirmation"]',
+                    'a[data-href*="/goto/"]',
                 ].join(', ');
 
                 messageContentClone.querySelectorAll(sel).forEach((a) => {
@@ -1953,9 +2004,8 @@ const parsers = {
                     for (const c of candidates) {
                         const decoded = __decodeForumRedirect(c);
                         if (decoded) {
-                            let finalUrl = decoded;
-a.setAttribute('data-url', finalUrl);
-                            a.setAttribute('href', finalUrl);
+                            a.setAttribute('data-url', decoded);
+                            a.setAttribute('href', decoded);
                             a.setAttribute('data-xfpd-decoded', '1');
                             break;
                         }
@@ -1966,7 +2016,7 @@ a.setAttribute('data-url', finalUrl);
                 // (Keeps the UI intact for non-thumb embeds, but avoids downloading *_t.jpg / thumbs.* previews.)
                 try {
                     messageContentClone.querySelectorAll('a[data-xfpd-decoded="1"] img').forEach((img) => {
-                        const u = (img.getAttribute('data-url') || img.getAttribute('src') || '').trim();
+                        const u = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
                         if (!u) return;
 
                         let host = '';
@@ -1987,6 +2037,53 @@ a.setAttribute('data-url', finalUrl);
                         if (isThumb) img.remove();
                     });
                 } catch (e) { /* ignore */ }
+            } catch (e) { /* ignore */ }
+
+            // Prevent duplicate detection: attachment links often wrap a preview image.
+            // For parsing only, remove the preview <img> inside attachment links so we don't count/download it twice.
+            try {
+                messageContentClone.querySelectorAll('a[href*="/attachments/"] img').forEach((img) => img.remove());
+            } catch (e) { /* ignore */ }
+
+            // Goonbox links wrap a medium-res CDN thumbnail — suppress it so we call the API for the original instead.
+            try {
+                messageContentClone.querySelectorAll('a[href*="goonbox.cr"] img').forEach((img) => img.remove());
+            } catch (e) { /* ignore */ }
+
+            // ImagePond links (SocialMediaGirls default host) wrap either the full media.imagepond.net image or a /thumb/ preview.
+            // Record full-res direct CDN hints + alt filenames, then remove the inner <img> so linked embeds aren't counted twice.
+            try {
+                messageContentClone
+                    .querySelectorAll('a[href*="imagepond.net"], a[href*="images.socialmediagirls.com"]')
+                    .forEach((a) => {
+                        const rawHref = (a.getAttribute('href') || '').trim().split('#')[0].split('?')[0].replace(/\/$/, '');
+                        const img = a.querySelector('img');
+                        if (!img) return;
+
+                        const imgUrl = (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src') || '').trim();
+                        const altName = (img.getAttribute('alt') || '').trim();
+
+                        if (
+                            rawHref &&
+                            /^https?:\/\/media\.imagepond\.net\/media\//i.test(imgUrl) &&
+                            !/(?:_thumb\.|\/thumb\/|\.th\.|\.md\.|android-chrome|placeholder)/i.test(imgUrl)
+                        ) {
+                            imagepondDirectByPageUrl.set(rawHref, imgUrl);
+                            if (altName && /\.[A-Za-z0-9]{2,8}$/.test(altName) && !/^https?:\/\//i.test(altName)) {
+                                imagepondNameByUrl.set(imgUrl, altName);
+                                imagepondNameByUrl.set(rawHref, altName);
+                            }
+                        }
+
+                        img.remove();
+                    });
+            } catch (e) { /* ignore */ }
+
+            // Pixhost /show/ and PutMega /image/ links wrap a thumbnail <img> — remove the inner <img> to avoid double-counting.
+            try {
+                messageContentClone
+                    .querySelectorAll('a[href*="pixhost."][href*="/show/"] img, a[href*="pixho.st/show/"] img, a[href*="putmega.com/image/"] img, a[href*="putme.ga/image/"] img')
+                    .forEach((img) => img.remove());
             } catch (e) { /* ignore */ }
 
             // Extract spoilers from the post content.
@@ -2069,7 +2166,7 @@ a.setAttribute('data-url', finalUrl);
                         pattern = pattern.replace('!!', '');
                         pattern = h.re.toRegExp(h.re.toString(pattern), 'igs');
                     } else {
-                        const pat = `(?<=data-url="|src="|href=")${h.re.toString(pattern)}.*?(?=")|https?:\/\/(www.)?${h.re.toString(pattern)}.*?(?=("|<|$|\]|'))`;
+                        const pat = `(?<=data-url="|data-src="|src="|href=")${h.re.toString(pattern)}.*?(?=")|https?:\/\/(www.)?${h.re.toString(pattern)}.*?(?=("|<|$|\]|'))`;
                         pattern = h.re.toRegExp(pat, 'igs');
                     }
 
@@ -2159,8 +2256,22 @@ const ui = {
    * @returns {string}
    */
     getTooltipBackgroundColor: () => {
-        const scheme = document.documentElement.dataset.colorScheme;
-        return scheme === 'dark' ? '#2B2B2B' : '#EDF0F3';
+        const scheme =
+            document.documentElement.dataset.colorScheme ||
+            (typeof XF !== 'undefined' && XF?.config?.style?.defaultColorScheme) ||
+            '';
+        if (scheme === 'dark') return '#2B2B2B';
+        if (scheme === 'light') return '#EDF0F3';
+        if (document.querySelector('link[href*="uix_dark"]')) return '#2B2B2B';
+        try {
+            const bg = window.getComputedStyle(document.body).backgroundColor || '';
+            const m = bg.match(/\d+/g);
+            if (m && m.length >= 3) {
+                const lum = 0.299 * Number(m[0]) + 0.587 * Number(m[1]) + 0.114 * Number(m[2]);
+                return lum < 128 ? '#2B2B2B' : '#EDF0F3';
+            }
+        } catch (e) {}
+        return '#2B2B2B';
     },
 
     /**
@@ -2752,13 +2863,35 @@ let processing = [];
  * @placeholder ~an@ -> a-zA-Z0-9
  *
  */
+const isSmgForum = () => {
+    try {
+        return typeof location !== 'undefined' && /(^|\.)socialmediagirls\.com$/i.test(location.hostname || '');
+    } catch (e) {
+        return false;
+    }
+};
+
 const hosts = [
-    ['Simpcity:Attachments', [/(\/attachments\/|\/data\/video\/)/]],
-    ['Coomer:Profiles', [/coomer.st\/[~an@._-]+\/user/]],
-    ['Coomer:image', [/(\w+\.)?coomer.st\/(data|thumbnail)/]],
+    [`${isSmgForum() ? 'SMG' : 'Simpcity'}:Attachments`, [/(\/attachments\/|\/data\/video\/|smgmedia\.socialmediagirls\.com\/)/]],
+    [
+        'ImagePond:Media',
+        [
+            /(?:(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:i|image|video|videos)\/[~an@._-]+|media\.imagepond\.net\/media\/(?!.*(?:_thumb\.|\.m3u8|android-chrome|placeholder)))/,
+            /(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\/[~an@._-]+<no_qs>/,
+        ],
+    ],
+    ['Coomer:Profiles', [/coomer\.(st|su|party)\/[~an@._-]+\/user/]],
+    ['Coomer:image', [/(\w+\.)?coomer\.(st|su|party)\/(data|thumbnail)/]],
     ['JPGX:image', [/(simp\d+\.)?(cuckcapital\.cr|jpg\d?\.(church|fish|fishing|pet|su|cr))\/(?!(img\/|a\/|album\/))/, /jpe?g\d\.(church|fish|fishing|pet|su|cr)(\/a\/|\/album\/)[~an@-_.]+<no_qs>/]],
+    [
+        'PutMega:image',
+        [
+            /(?:(?:[\w-]+\.)?putmega\.com\/images\/|(?:www\.)?(?:putmega\.com|putme\.ga)\/image\/[~an@._-]+)/,
+            /(?:www\.)?(?:putmega\.com|putme\.ga)\/(?:a|album)\/[~an@._-]+<no_qs>/,
+        ],
+    ],
     ['Goonbox:image', [/goonbox\.cr\/img\//, /goonbox\.cr\/a\//]],
-    ['kemono:direct link', [/.{2,6}\.kemono.cr\/data\//]],
+    ['kemono:direct link', [/.{2,6}\.kemono\.(cr|su|party)\/data\//]],
     ['Postimg:image', [/!!https?:\/\/(www.)?i\.?(postimg|pixxxels).cc\/(.{8})/]], //[/!!https?:\/\/(www.)?postimg.cc\/(.{8})/]],
     ['Ibb:image',
      [
@@ -2775,7 +2908,14 @@ const hosts = [
     ['Pomf2:File', [/pomf2.lain.la/]],
     ['Nitter:image', [/nitter\.(.{1,20})\/pic/]],
     ['Twitter:image', [/([~an@.]+)?twimg.com\//]],
-    ['Pixhost:image', [/(t|img)(\d+)?\.pixhost.to\//, /pixhost.to\/gallery\//]],
+    [
+        'Pixhost:image',
+        [
+            /(?:(t|img)(\d+)?\.(?:pixhost\.(?:to|cc)|pixho\.st)\/|(?:pixhost\.(?:to|cc)|pixho\.st)\/show\/)/,
+            /(?:pixhost\.(?:to|cc)|pixho\.st)\/gallery\//,
+        ],
+    ],
+    ['Erome:Albums', [/erome\.com\/a\/[~an@._-]+<no_qs>/]],
     ['Imagebam:image', [/imagebam.com\/(view|gallery)/]],
     ['Imagebam:full embed', [/images\d.imagebam.com/]],
     ['turbo:video', [/([\w-]+\.)?turbo\.cr\/(embed|v|d)\//]],
@@ -2892,6 +3032,259 @@ const xfpdTurboSignUrlWithTimeout = async (turboId, refererUrl, nameHint) => {
     return signed;
 };
 
+const xfpdNormalizeImagePondPageUrl = rawUrl => {
+    let u = String(rawUrl || '').trim().split('#')[0];
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = `https://${u.replace(/^\/+/, '')}`;
+    u = u.replace(/^https?:\/\/(?:www\.)?images\.socialmediagirls\.com\b/i, 'https://www.imagepond.net');
+    u = u.replace(/^https?:\/\/imagepond\.net\b/i, 'https://www.imagepond.net');
+
+    // Normalize /i/<id>/thumb/<size>, /i/<id>/embed, /i/<id>/download(/file), and /videos?/<id> -> /i/<id>
+    u = u.replace(/\/i\/([^\/?#]+)\/(?:thumb\/\d+|embed|download(?:\/file)?).*$/i, '/i/$1');
+    u = u.replace(/\/videos?\/([^\/?#]+).*$/i, '/i/$1');
+    return u.split('?')[0].replace(/\/+$/, '');
+};
+
+const xfpdResolveImagePondItem = async (rawUrl, http, fallbackNameHint = '') => {
+    try {
+        const cleanRaw = String(rawUrl || '').trim().split('#')[0];
+        if (!cleanRaw) return null;
+
+        if (/^https?:\/\/media\.imagepond\.net\/media\//i.test(cleanRaw)) {
+            if (/(?:_thumb\.|\.m3u8(?:$|\?)|android-chrome|placeholder)/i.test(cleanRaw)) return null;
+            if (fallbackNameHint) {
+                try { imagepondNameByUrl.set(cleanRaw, String(fallbackNameHint)); } catch (e) {}
+            }
+            return cleanRaw;
+        }
+
+        const viewUrl = xfpdNormalizeImagePondPageUrl(cleanRaw);
+        if (!viewUrl) return null;
+
+        const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+        const preHintedDirect =
+            imagepondDirectByPageUrl.get(viewUrl) ||
+            imagepondDirectByPageUrl.get(strip(cleanRaw)) ||
+            null;
+        if (preHintedDirect) {
+            const nameHint =
+                fallbackNameHint ||
+                imagepondNameByUrl.get(viewUrl) ||
+                imagepondNameByUrl.get(strip(cleanRaw)) ||
+                '';
+            if (nameHint) {
+                try { imagepondNameByUrl.set(preHintedDirect, String(nameHint)); } catch (e) {}
+            }
+            return preHintedDirect;
+        }
+
+        const res = await http.get(
+            viewUrl,
+            {},
+            {
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                Referer: 'https://forums.socialmediagirls.com/',
+            },
+            'text',
+        );
+        const src = String(res?.source || '');
+        if (!src) return null;
+
+        const doc = new DOMParser().parseFromString(src, 'text/html');
+
+        let titleHint =
+            doc.querySelector('[data-title]')?.getAttribute('data-title') ||
+            doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+            doc.querySelector('h1[title]')?.getAttribute('title') ||
+            fallbackNameHint ||
+            '';
+        titleHint = String(titleHint || '').replace(/\s*-\s*ImagePond\s*$/i, '').trim();
+
+        const ogType = (doc.querySelector('meta[property="og:type"]')?.getAttribute('content') || '').toLowerCase();
+
+        // 1) Video direct URL (<video data-src="...">, <source src="...">, og:video, or inline directUrl)
+        let mediaUrl =
+            doc.querySelector('video[data-src]')?.getAttribute('data-src') ||
+            [...doc.querySelectorAll('video source[src]')]
+                .map(s => s.getAttribute('src'))
+                .find(s => s && !/\.m3u8(?:$|\?)/i.test(s)) ||
+            doc.querySelector('meta[property="og:video"]')?.getAttribute('content') ||
+            '';
+
+        // 2) Inline JS imageUrl / directUrl
+        if (!mediaUrl) {
+            const mJs =
+                /(?:directUrl|imageUrl)\s*[:=]\s*["'](https?:\\?\/\\?\/media\.imagepond\.net\\?\/media\\?\/[^"']+)["']/i.exec(src);
+            if (mJs && mJs[1]) {
+                const candidate = mJs[1].replace(/\\\//g, '/');
+                if (!/(?:_thumb\.|\.m3u8(?:$|\?))/i.test(candidate)) {
+                    mediaUrl = candidate;
+                }
+            }
+        }
+
+        // 3) og:image (for image items, never video _thumb.jpg)
+        if (!mediaUrl && !ogType.startsWith('video')) {
+            const ogImg = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
+            if (/^https?:\/\/media\.imagepond\.net\/media\//i.test(ogImg) && !/(?:_thumb\.|\/thumb\/)/i.test(ogImg)) {
+                mediaUrl = ogImg;
+            }
+        }
+
+        // 4) Archive / fallback direct download route (/i/<realId>/download/file)
+        if (!mediaUrl) {
+            const pageUrlAttr = doc.querySelector('[data-page-url]')?.getAttribute('data-page-url') || '';
+            const dlHref = doc.querySelector('a[href*="/download"]')?.getAttribute('href') || '';
+            const mId = /\/i\/([^\/?#]+)/i.exec(pageUrlAttr) || /\/i\/([^\/?#]+)\/download/i.exec(dlHref) || /\/i\/([^\/?#]+)/i.exec(viewUrl);
+            if (mId && mId[1]) {
+                mediaUrl = `https://www.imagepond.net/i/${mId[1]}/download/file`;
+            }
+        }
+
+        mediaUrl = String(mediaUrl || '').trim();
+        if (!mediaUrl) return null;
+
+        if (titleHint && !xfpdLooksLikeCfFilenameHint(titleHint)) {
+            try {
+                imagepondNameByUrl.set(mediaUrl, titleHint);
+                imagepondNameByUrl.set(strip(mediaUrl), titleHint);
+                imagepondNameByUrl.set(viewUrl, titleHint);
+                imagepondNameByUrl.set(strip(cleanRaw), titleHint);
+            } catch (e) {}
+        }
+
+        return mediaUrl;
+    } catch (e) {
+        return null;
+    }
+};
+
+const xfpdResolveImagePondAlbum = async (rawUrl, http, progressCB) => {
+    try {
+        let baseUrl = String(rawUrl || '').trim().split('#')[0].split('?')[0].replace(/\/+$/, '');
+        if (!baseUrl) return null;
+        if (!/^https?:\/\//i.test(baseUrl)) baseUrl = `https://${baseUrl.replace(/^\/+/, '')}`;
+        baseUrl = baseUrl
+            .replace(/^https?:\/\/(?:www\.)?images\.socialmediagirls\.com\b/i, 'https://www.imagepond.net')
+            .replace(/^https?:\/\/imagepond\.net\b/i, 'https://www.imagepond.net');
+
+        const albumId = baseUrl.split('/').filter(Boolean).pop() || 'album';
+        let folderName = '';
+        let firstDom = null;
+        let firstSource = '';
+
+        const itemEntries = [];
+        const seenSlugs = new Set();
+        const MAX_PAGES = 200;
+
+        for (let page = 1; page <= MAX_PAGES; page++) {
+            const pageUrl = page === 1 ? baseUrl : `${baseUrl}?page=${page}`;
+            if (typeof progressCB === 'function') {
+                progressCB(`[ImagePond] Resolving album page ${page}...`);
+            }
+
+            let src = '';
+            try {
+                const r = await http.get(
+                    pageUrl,
+                    {},
+                    {
+                        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        Referer: 'https://forums.socialmediagirls.com/',
+                    },
+                    'text',
+                );
+                src = String(r?.source || '');
+            } catch (e) {
+                break;
+            }
+            if (!src) break;
+
+            const doc = new DOMParser().parseFromString(src, 'text/html');
+            if (page === 1) {
+                firstDom = doc;
+                firstSource = src;
+                const rawTitle =
+                    doc.querySelector('.ip-block-album-header h1, h1')?.textContent?.trim() ||
+                    (doc.querySelector('title')?.textContent || '').replace(/\s*-\s*ImagePond\s*$/i, '').trim();
+                folderName = rawTitle || `imagepond_${albumId}`;
+            }
+
+            const beforeCount = seenSlugs.size;
+
+            // ImagePond album tiles use Alpine `:href="manageMode ? ... : 'https://www.imagepond.net/i/<id>'"` as well as plain hrefs.
+            doc.querySelectorAll('.dr-tile, .ip-block-gallery a').forEach(node => {
+                const anchor = node.tagName === 'A' ? node : node.querySelector('a');
+                if (!anchor) return;
+                const attrHref =
+                    anchor.getAttribute('href') ||
+                    anchor.getAttribute(':href') ||
+                    anchor.getAttribute('x-bind:href') ||
+                    '';
+                const m = /(?:imagepond\.net|images\.socialmediagirls\.com)\/i\/([A-Za-z0-9_-]+)/i.exec(attrHref) ||
+                          /^\/i\/([A-Za-z0-9_-]+)$/i.exec(attrHref.trim());
+                if (!m || !m[1]) return;
+                const slug = m[1];
+                if (seenSlugs.has(slug)) return;
+                seenSlugs.add(slug);
+
+                const tileName = (node.querySelector?.('p')?.textContent || '').trim();
+                itemEntries.push({
+                    url: `https://www.imagepond.net/i/${slug}`,
+                    nameHint: tileName,
+                });
+            });
+
+            // Regex fallback if markup changes
+            const rx = /https?:\/\/(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/i\/([A-Za-z0-9_-]+)(?=['"\s<>?#]|$)/gi;
+            let mRx;
+            while ((mRx = rx.exec(src)) !== null) {
+                const slug = mRx[1];
+                if (!slug || seenSlugs.has(slug)) continue;
+                seenSlugs.add(slug);
+                itemEntries.push({ url: `https://www.imagepond.net/i/${slug}`, nameHint: '' });
+            }
+
+            const added = seenSlugs.size - beforeCount;
+            if (added <= 0) break;
+
+            const hasNextPage =
+                !!doc.querySelector(`a[rel="next"], a[href*="page=${page + 1}"]`) ||
+                new RegExp(`[?&]page=${page + 1}\\b`, 'i').test(src);
+            if (!hasNextPage) break;
+        }
+
+        if (!itemEntries.length) return null;
+
+        const CONCURRENCY = 5;
+        const results = new Array(itemEntries.length);
+        let cursor = 0;
+
+        const workers = Array.from({ length: Math.min(CONCURRENCY, itemEntries.length) }, async () => {
+            while (true) {
+                const idx = cursor++;
+                if (idx >= itemEntries.length) break;
+                if (typeof progressCB === 'function') {
+                    progressCB(`[ImagePond] Resolving ${idx + 1}/${itemEntries.length}`);
+                }
+                const entry = itemEntries[idx];
+                results[idx] = await xfpdResolveImagePondItem(entry.url, http, entry.nameHint);
+            }
+        });
+        await Promise.all(workers);
+
+        const resolved = results.filter(Boolean);
+        return {
+            dom: firstDom,
+            source: firstSource,
+            folderName: folderName || `imagepond_${albumId}`,
+            resolved,
+        };
+    } catch (e) {
+        return null;
+    }
+};
+
 const resolvers = [
     [
         [/https?:\/\/nitter\.(.{1,20})\/pic\/(orig\/)?media%2F(.{1,15})/i],
@@ -2905,15 +3298,31 @@ const resolvers = [
         },
     ],
     [[/pomf2.lain.la/], url => url.replace(/pomf2.lain.la\/f\/(.*)\.(\w{3,4})(\?.*)?/, 'pomf2.lain.la/f/$1.$2')],
-    [[/coomer.st\/(data|thumbnail)/], url => url],
     [
-        [/coomer.st/, /:!coomer.st\/(data|thumbnail)/],
+        [
+            /(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:i|image|video|videos)\/|media\.imagepond\.net\/media\//i,
+            /:!(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\//i,
+        ],
+        async (url, http) => {
+            return await xfpdResolveImagePondItem(url, http);
+        },
+    ],
+    [
+        [/(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\//i],
+        async (url, http, _spoilers, _postId, _postSettings, progressCB) => {
+            return await xfpdResolveImagePondAlbum(url, http, progressCB);
+        },
+    ],
+    [[/coomer\.(st|su|party)\/(data|thumbnail)/i], url => String(url || '').replace(/coomer\.(su|party)/i, 'coomer.st')],
+    [
+        [/coomer\.(st|su|party)/i, /:!coomer\.(st|su|party)\/(data|thumbnail)/i],
         async (url, http) => {
             const host = `https://coomer.st`;
 
-            const profileId = url.replace(/\?.*/, '').split('/').reverse()[0];
+            const normalizedInput = String(url || '').replace(/https?:\/\/(?:www\.)?coomer\.(?:st|su|party)/i, host);
+            const profileId = normalizedInput.replace(/\?.*/, '').split('/').reverse()[0];
 
-            let finalURL = url.replace(/\?.*/, '');
+            let finalURL = normalizedInput.replace(/\?.*/, '');
 
             let nextPage = null;
 
@@ -3014,7 +3423,7 @@ const resolvers = [
             return dom.querySelector('.controls > nobr > a').getAttribute('href');
         },
     ],
-    [[/kemono.cr\/data/], url => url],
+    [[/kemono\.(cr|su|party)\/data/i], url => String(url || '').replace(/kemono\.(su|party)/i, 'kemono.cr')],
     [
         [/goonbox\.cr\/img\//],
         async (url, http, spoilers, postId) => {
@@ -3294,26 +3703,171 @@ const resolvers = [
             };
         },
     ],
-    [[/(t|img)(\d+)?\.pixhost.to\//, /:!pixhost.to\/gallery\//], url => url.replace(/\/t(\d+)\./gi, 'img$1.').replace(/thumbs\//i, 'images/')],
     [
-        [/pixhost.to\/gallery\//],
+        [/(t|img)(\d+)?\.(?:pixhost\.(?:to|cc)|pixho\.st)\//i, /:!(?:pixhost\.(?:to|cc)|pixho\.st)\/(?:gallery|show)\//i],
+        url =>
+            String(url || '')
+                .replace(/(^|\/\/)t(\d+)\./i, '$1img$2.')
+                .replace(/\/thumbs\//i, '/images/'),
+    ],
+    [
+        [/(?:pixhost\.(?:to|cc)|pixho\.st)\/show\//i],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+            const directImg =
+                dom?.querySelector('#image.image-img, img#image, .image-img')?.getAttribute('src') ||
+                (h.re.match(/https?:\/\/img\d+\.(?:pixhost\.(?:to|cc)|pixho\.st)\/images\/[^"'\s<>]+/i, source || '') || null);
+            if (directImg) return directImg;
+            const ogImg = dom?.querySelector('meta[property="og:image"]')?.getAttribute('content');
+            if (ogImg) {
+                return ogImg.replace(/(^|\/\/)t(\d+)\./i, '$1img$2.').replace(/\/thumbs\//i, '/images/');
+            }
+            return null;
+        },
+    ],
+    [
+        [/(?:pixhost\.(?:to|cc)|pixho\.st)\/gallery\//i],
         async (url, http) => {
             const { source, dom } = await http.get(url);
 
-            let imageLinksInput = dom?.querySelector('.share > div:nth-child(2) > input');
+            let imageLinksInput =
+                dom?.querySelector('.share input[value*="[img]"]') ||
+                dom?.querySelector('.share > div:nth-child(2) > input') ||
+                dom?.querySelector('.share > input:nth-child(2)');
 
-            if (h.isNullOrUndef(imageLinksInput)) {
-                imageLinksInput = dom?.querySelector('.share > input:nth-child(2)');
+            let resolved = [];
+            if (imageLinksInput && imageLinksInput.getAttribute('value')) {
+                resolved = h.re
+                    .matchAll(/(?<=\[img])https?:\/\/t\d+.*?(?=\[\/img])/gis, imageLinksInput.getAttribute('value'))
+                    .map(u => u.replace(/(^|\/\/)t(\d+)\./gi, '$1img$2.').replace(/\/thumbs\//i, '/images/'));
             }
 
-            const resolved = h.re
-            .matchAll(/(?<=\[img])https:\/\/t\d+.*?(?=\[\/img])/gis, imageLinksInput.getAttribute('value'))
-            .map(url => url.replace(/t(\d+)\./gi, 'img$1.').replace(/thumbs\//i, 'images/'));
+            if (!resolved.length && dom) {
+                resolved = [...dom.querySelectorAll('img[src*="/thumbs/"]')]
+                    .map(img => img.getAttribute('src'))
+                    .filter(Boolean)
+                    .map(u => u.replace(/(^|\/\/)t(\d+)\./gi, '$1img$2.').replace(/\/thumbs\//i, '/images/'))
+                    .unique();
+            }
+
+            const folderName =
+                dom?.querySelector('.link > h2, .gallery-title, h1')?.textContent?.trim() ||
+                h.basename(String(url || '').replace(/\?.*/, ''));
 
             return {
                 dom,
                 source,
-                folderName: dom?.querySelector('.link > h2').innerText.trim(),
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/putmega\.com\/images\//i, /:!(?:putmega\.com|putme\.ga)\/(?:a|album|image)\//i],
+        url => String(url || '').replace('.th.', '.').replace('.md.', '.'),
+    ],
+    [
+        [/(?:putmega\.com|putme\.ga)\/image\//i, /:!(?:putmega\.com|putme\.ga)\/(?:a|album)\//i],
+        async (url, http) => {
+            const { dom } = await http.get(url);
+            return (
+                dom?.querySelector('meta[property="og:image"]')?.getAttribute('content')?.replace('.md.', '.').replace('.th.', '.') ||
+                dom?.querySelector('.header-content-right > a[href]')?.getAttribute('href') ||
+                null
+            );
+        },
+    ],
+    [
+        [/(?:putmega\.com|putme\.ga)\/(?:a|album)\//i],
+        async (url, http, spoilers, postId) => {
+            url = String(url || '').replace(/\?.*/, '');
+            let { source, dom } = await http.get(url);
+
+            if (source && h.contains('Please enter your password to continue', source)) {
+                const authToken = dom?.querySelector('input[name="auth_token"]')?.getAttribute('value');
+                if (!authToken || !spoilers || !spoilers.length) return null;
+
+                let authenticated = false;
+                for (const spoiler of spoilers) {
+                    const { source: src, dom: d } = await http.post(
+                        url,
+                        `auth_token=${authToken}&content-password=${encodeURIComponent(spoiler.trim())}`,
+                        {},
+                        {
+                            Referer: url,
+                            Origin: new URL(url).origin,
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    if (!h.contains('Please enter your password to continue', src || '')) {
+                        authenticated = true;
+                        source = src;
+                        dom = d;
+                        break;
+                    }
+                }
+                if (!authenticated) {
+                    log.host.error(postId, `::Could not resolve password protected album::: ${url}`, 'putmega.com');
+                    return null;
+                }
+            }
+
+            const resolvePageImages = async pageDom => {
+                const images = [...(pageDom?.querySelectorAll('.list-item-image > a > img, .image-container > img') || [])]
+                    .map(img => img.getAttribute('src'))
+                    .filter(Boolean)
+                    .map(u => u.replace('.md.', '.').replace('.th.', '.'));
+
+                const nextPage = pageDom?.querySelector('a[data-pagination="next"]');
+                if (nextPage && nextPage.hasAttribute('href')) {
+                    const nextHref = new URL(nextPage.getAttribute('href'), url).toString();
+                    const { dom: nextDom } = await http.get(nextHref);
+                    images.push(...(await resolvePageImages(nextDom)));
+                }
+                return images;
+            };
+
+            const resolved = await resolvePageImages(dom);
+            const folderName =
+                dom?.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() ||
+                h.basename(url);
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/erome\.com\/a\//i],
+        async (url, http) => {
+            const { source, dom } = await http.get(url, {}, { Referer: 'https://www.erome.com/' });
+            const resolved = [];
+
+            dom?.querySelectorAll('.media-group').forEach(mediaGroup => {
+                const imgSource =
+                    mediaGroup.querySelector('.img[data-src]')?.getAttribute('data-src') ||
+                    mediaGroup.querySelector('img.img-front')?.getAttribute('data-src') ||
+                    mediaGroup.querySelector('img.img-front')?.getAttribute('src');
+
+                const videoSources = [...mediaGroup.querySelectorAll('video source[src]')];
+                videoSources.sort((a, b) => (Number(b.getAttribute('res') || 0) - Number(a.getAttribute('res') || 0)));
+                const videoSource = videoSources[0]?.getAttribute('src') || mediaGroup.querySelector('source')?.getAttribute('src');
+
+                const chosen = videoSource || imgSource || null;
+                if (chosen) resolved.push(chosen);
+            });
+
+            const folderName =
+                dom?.querySelector('h1.album-title-page, .page-content > h1, h1')?.textContent?.trim() ||
+                h.basename(String(url || '').replace(/\?.*/, ''));
+
+            return {
+                dom,
+                source,
+                folderName,
                 resolved,
             };
         },
@@ -5391,7 +5945,7 @@ if (page === 1) {
         },
     ],
     [
-        [/(\/attachments\/|\/data\/video\/)/],
+        [/(\/attachments\/|\/data\/video\/|smgmedia\.socialmediagirls\.com\/)/i],
         async (url) => {
             // Normalize broken "https:///..." and accidental double-scheme cases.
             url = String(url || '').trim();
@@ -5401,14 +5955,15 @@ if (page === 1) {
             // If it's already absolute, keep it (don't rewrite hosts).
             if (/^https?:\/\//i.test(url)) return url;
 
-            // Otherwise it's a path; prefix with Simpcity origin.
+            // Otherwise it's a path; prefix with the active forum's origin (SimpCity or SocialMediaGirls).
             if (!url.startsWith('/')) url = '/' + url;
 
-            if (url.startsWith('/attachments/') || url.startsWith('/data/video/')) {
-                return `https://simpcity.su${url}`;
-            }
+            const currentOrigin =
+                typeof location !== 'undefined' && location && /^https?:\/\//i.test(location.origin)
+                    ? location.origin
+                    : 'https://simpcity.cr';
 
-            return `https://simpcity.su${url}`;
+            return `${currentOrigin}${url}`;
         },
     ],
     [[/(thumbs|images)(\d+)?.imgbox.com\//, /:!imgbox.com\/g\//], url => url.replace(/_t\./gi, '_o.').replace(/thumbs/i, 'images')],
@@ -7467,6 +8022,12 @@ if (tmp.length) {
                 if (url.includes('turbocdn.st')){
                     reflink = "https://turbo.cr/"
                 }
+                if (/erome\.com/i.test(String(url || ''))){
+                    reflink = "https://www.erome.com/"
+                }
+                if (/(?:imagepond\.net|images\.socialmediagirls\.com)/i.test(String(url || ''))){
+                    reflink = "https://www.imagepond.net/"
+                }
                 if (isFilesterUrl(url)){
                     // Prefer the exact /d/ page the token was issued against; the CDN accepts any
                     // Filester referer, but a v2 stream URL is not on a filester.* host at all, so
@@ -7564,6 +8125,16 @@ if (tmp.length) {
                             basename = turboExtractFn(url) || '';
                         }
 
+                        if (!basename) {
+                            const stripIp = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+                            const hintedIp =
+                                imagepondNameByUrl.get(String(url)) ||
+                                imagepondNameByUrl.get(stripIp(url)) ||
+                                imagepondNameByUrl.get(String((resource && resource.original) || '')) ||
+                                imagepondNameByUrl.get(stripIp((resource && resource.original) || '')) ||
+                                '';
+                            if (hintedIp) basename = String(hintedIp).trim();
+                        }
                         if (!basename) {
                             basename = (filename && filename.name) ? String(filename.name) : '';
                         }
@@ -7774,7 +8345,8 @@ if (tmp.length) {
                             } catch (e) {}
                         }
 
-const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : null;
+const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
+const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : (isEromeCdnUrl(url) ? { Referer: 'https://www.erome.com/' } : null);
                         const dlOpts = {
                             url: directUrl,
                             name: saveAsName,
@@ -7934,6 +8506,9 @@ if (isGoFile || isPixeldrain || isFilester) {
                 let abortReason = '';
                 let bunkrMaintenanceHandled = false;
 
+                const isForumAttachment =
+                    /(?:simpcity\.[a-z]+|socialmediagirls\.com)\/(?:attachments|data\/video)\//i.test(String(url || '')) ||
+                    /smgmedia\.socialmediagirls\.com\//i.test(String(url || ''));
                 const isTurboCdn = /turbocdn\.st/i.test(String(url || ''));
                 const filesterRef = isFilester ? String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/') : '';
                 const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
@@ -7943,12 +8518,17 @@ if (isGoFile || isPixeldrain || isFilester) {
                     headers: reqHeaders,
                     responseType: 'blob',
                     anonymous: false,
-                    ...(isFilester ? { withCredentials: true } : {}),
+                    ...((isFilester || isForumAttachment) ? { withCredentials: true } : {}),
                     onreadystatechange: response => {
                         if (response.readyState === 2) {
                             let matches = h.re.matchAll(/(?<=attachment;filename=").*?(?=")/gis, response.responseHeaders);
                             if (matches.length && !filenames.find(f => f.url === url)) {
                                 filenames.push({ url, name: matches[0] });
+                            } else if (!filenames.find(f => f.url === url)) {
+                                const dispName = parseDispositionFilename(response.responseHeaders || '');
+                                if (dispName) {
+                                    filenames.push({ url, name: dispName });
+                                }
                             }
                             matches = h.re.matchAll(/(?<=content-type:\s).*$/gi, response.responseHeaders);
                             if (matches.length && !mimeTypes.find(m => m.url === url)) {
@@ -8373,6 +8953,18 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
                         }
 
+                        if (!filename) {
+                            const stripIp = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+                            const hintedImagePond =
+                                imagepondNameByUrl.get(String(url)) ||
+                                imagepondNameByUrl.get(stripIp(url)) ||
+                                imagepondNameByUrl.get(String((resource && resource.original) || '')) ||
+                                imagepondNameByUrl.get(stripIp((resource && resource.original) || ''));
+                            if (hintedImagePond) {
+                                filename = { url, name: String(hintedImagePond) };
+                            }
+                        }
+
                         let basename;
 
                         if (/(?:pixeldrain\.(?:com|net)|pixeldra\.in)/i.test(String(url || ''))) {
@@ -8380,9 +8972,9 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             basename =
                                 parseDispositionFilename(rh) ||
                                 (filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, ''));
-                        } else if (url.includes('https://simpcity.su/attachments/')) {
-                            basename = filename ? filename.name : h.basename(url).replace(/(.*)-(.{3,4})\.\d*$/i, '$1.$2');
-                        } else if (url.includes('kemono.cr')) {
+                        } else if (/\/attachments\//i.test(String(url || ''))) {
+                            basename = filename ? filename.name : h.basename(url).replace(/(.*)-([a-z0-9]{3,4})\.\d+$/i, '$1.$2');
+                        } else if (/kemono\.(cr|su|party)/i.test(String(url || ''))) {
                             basename = filename
                                 ? filename.name
                             : h
@@ -8895,44 +9487,61 @@ if (needZipBlob) {
  * @param post
  */
 const addDuplicateTabLink = post => {
+    const parent = post?.parentNode;
+    if (!parent) return;
+    const attrMain = parent.querySelector('.message-attribution-main');
+    const templateLI = parent.querySelector('.u-concealed');
+    if (!attrMain || !templateLI || attrMain.querySelector('.duplicate-tab')) return;
+
     const span = document.createElement('span');
     span.innerHTML = '<i class="fa fa-copy"></i> Duplicate Tab';
 
-    const dupTabLI = post.parentNode.querySelector('.u-concealed').cloneNode(true);
+    const dupTabLI = templateLI.cloneNode(true);
     dupTabLI.setAttribute('class', 'duplicate-tab');
 
     const anchor = dupTabLI.querySelector('a');
+    if (!anchor) return;
     anchor.style.color = 'rgb(138, 138, 138)';
     anchor.setAttribute('target', '_blank');
-    anchor.querySelector('time').remove();
-    anchor.parentNode.style.marginLeft = '10px';
+    anchor.querySelector('time')?.remove();
+    if (anchor.parentNode) anchor.parentNode.style.marginLeft = '10px';
     anchor.append(span);
 
-    post.parentNode.querySelector('.message-attribution-main').append(dupTabLI);
+    attrMain.append(dupTabLI);
 };
 
 /**
  * @param post
  */
 const addShowDownloadPageBtnLink = post => {
+    const parent = post?.parentNode;
+    if (!parent) return;
+    const attrMain = parent.querySelector('.message-attribution-main');
+    const templateLI = parent.querySelector('.u-concealed');
+    if (!attrMain || !templateLI || attrMain.querySelector('.show-download-page')) return;
+
     const span = document.createElement('span');
     span.innerHTML = '<i class="fa fa-arrow-up"></i> Download Page';
 
-    const dupTabLI = post.parentNode.querySelector('.u-concealed').cloneNode(true);
+    const dupTabLI = templateLI.cloneNode(true);
     dupTabLI.setAttribute('class', 'show-download-page');
 
     const anchor = dupTabLI.querySelector('a');
+    if (!anchor) return;
     anchor.style.color = 'rgb(138, 138, 138)';
     anchor.setAttribute('href', '#download-page');
-    anchor.querySelector('time').remove();
-    anchor.parentNode.style.marginLeft = '10px';
+    anchor.querySelector('time')?.remove();
+    if (anchor.parentNode) anchor.parentNode.style.marginLeft = '10px';
     anchor.append(span);
 
-    post.parentNode.querySelector('.message-attribution-main').append(dupTabLI);
+    attrMain.append(dupTabLI);
 };
 
 // TODO: Extract to ui.js
 const addDownloadPageButton = () => {
+    const existing = h.element('#download-page');
+    if (existing) return existing;
+
     const downloadAllButton = document.createElement('a');
     downloadAllButton.setAttribute('id', 'download-page');
     downloadAllButton.setAttribute('href', '#');
@@ -8944,8 +9553,27 @@ const addDownloadPageButton = () => {
 
     downloadAllButton.appendChild(buttonTextSpan);
 
-    const buttonGroup = h.element('.buttonGroup');
-    buttonGroup.prepend(downloadAllButton);
+    let buttonGroup =
+        h.element('.block--messages .block-outer .buttonGroup') ||
+        h.element('.buttonGroup');
+
+    // SocialMediaGirls omits .buttonGroup on guest/locked views or when only sort tabs are rendered.
+    if (!buttonGroup) {
+        const outerOpposite =
+            h.element('.block--messages .block-outer .block-outer-opposite') ||
+            h.element('.block--messages .block-outer');
+        if (outerOpposite) {
+            buttonGroup = document.createElement('div');
+            buttonGroup.setAttribute('class', 'buttonGroup');
+            buttonGroup.style.display = 'inline-block';
+            buttonGroup.style.marginRight = '6px';
+            outerOpposite.prepend(buttonGroup);
+        }
+    }
+
+    if (buttonGroup) {
+        buttonGroup.prepend(downloadAllButton);
+    }
 
     return downloadAllButton;
 };
@@ -8954,11 +9582,16 @@ const addDownloadPageButton = () => {
  * @param postFooter
  */
 const registerPostReaction = postFooter => {
+    if (!postFooter || !postFooter.querySelector) return;
     const hasReaction = postFooter.querySelector('.has-reaction');
     if (!hasReaction) {
         const reactionAnchor = postFooter.querySelector('.reaction--imageHidden');
         if (reactionAnchor) {
-            reactionAnchor.setAttribute('href', reactionAnchor.getAttribute('href').replace('_id=1', '_id=33'));
+            const href = reactionAnchor.getAttribute('href') || '';
+            // SimpCity uses reaction_id=33 for love/thanks; on SocialMediaGirls reaction_id=33 is DMCA, so keep _id=1 (React/Like).
+            if (href && /(^|\.)simpcity\./i.test(location.hostname || '')) {
+                reactionAnchor.setAttribute('href', href.replace('_id=1', '_id=33'));
+            }
             reactionAnchor.click();
         }
     }
@@ -9090,9 +9723,15 @@ const selectedPosts = [];
         }
     });
 
-    document.addEventListener('DOMContentLoaded', async () => {
+    const onReady = cb => {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', cb, { once: true });
+        } else {
+            cb();
+        }
+    };
 
-
+    onReady(async () => {
         try {
             const { source, status } = await h.http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
             if (status !== 200) { throw new Error(`HTTP ${status}`); }
@@ -9107,34 +9746,165 @@ const selectedPosts = [];
 
         init.injectCustomStyles();
 
-        h.elements('.message-attribution-opposite').forEach(post => {
-            const settings = {
+        let downloadPageTippy = null;
+
+        const buildDownloadPageFormHtml = () => {
+            const color = ui.getTooltipBackgroundColor();
+            const threadTitle = parsers.thread.parseTitle();
+            let html = ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, false);
+
+            parsedPosts
+                .filter(p => p.parsedHosts.length)
+                .forEach(post => {
+                    const { postId, postNumber, textContent } = post.parsedPost;
+                    let selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                    if (!selected) {
+                        selected = { post, enabled: false };
+                        selectedPosts.push(selected);
+                    } else {
+                        selected.post = post;
+                    }
+
+                    const defaultPostContent = (textContent || '').trim().replace('​', '');
+                    const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
+                    const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
+                    html += ui.forms.createCheckbox(`config-download-post-${postId}`, `Post #${postNumber} ${summary}`, !!selected.enabled);
+                });
+
+            html = `${ui.forms.createRow(ui.forms.createLabel('Post Selection'))} ${html}`;
+            return ui.forms.config.page.createForm(color, html);
+        };
+
+        const syncDownloadPageUI = () => {
+            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            if (!downloadablePosts.length) return;
+
+            const btnDownloadPage = addDownloadPageButton();
+            if (!btnDownloadPage) return;
+
+            if (btnDownloadPage.dataset.xfpdClickBound !== '1') {
+                btnDownloadPage.dataset.xfpdClickBound = '1';
+                btnDownloadPage.addEventListener('click', e => {
+                    e.preventDefault();
+
+                    selectedPosts
+                        .filter(s => s.enabled)
+                        .forEach(s => {
+                            downloadPost(
+                                s.post.parsedPost,
+                                s.post.parsedHosts,
+                                s.post.enabledHostsCB,
+                                s.post.resolvers,
+                                s.post.getSettingsCB,
+                                s.post.statusUI,
+                                s.post.postDownloadCallbacks,
+                            );
+                        });
+                });
+            }
+
+            const formContent = buildDownloadPageFormHtml();
+
+            if (downloadPageTippy && typeof downloadPageTippy.setContent === 'function') {
+                downloadPageTippy.setContent(formContent);
+                return;
+            }
+
+            downloadPageTippy = ui.tooltip(btnDownloadPage, formContent, {
+                placement: 'bottom',
+                interactive: true,
+                onShown: () => {
+                    const downloadableNow = parsedPosts.filter(p => p.parsedHosts.length);
+
+                    downloadableNow.forEach(post => {
+                        const { postId, contentContainer } = post.parsedPost;
+                        const linkEl = document.querySelector(`#post-content-${postId}`);
+                        if (linkEl && linkEl.dataset.xfpdTipBound !== '1') {
+                            linkEl.dataset.xfpdTipBound = '1';
+                            ui.tooltip(
+                                linkEl,
+                                `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
+                          ${contentContainer.innerHTML}
+                         </div>`,
+                                { placement: 'right', offset: [10, 15] },
+                            );
+                        }
+
+                        const postCheckbox = document.querySelector(`#config-download-post-${postId}`);
+                        if (postCheckbox && postCheckbox.dataset.xfpdBound !== '1') {
+                            postCheckbox.dataset.xfpdBound = '1';
+                            postCheckbox.addEventListener('change', e => {
+                                const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                                if (selectedPost) selectedPost.enabled = e.target.checked;
+
+                                const checkAllCB = h.element('#config-toggle-all-posts');
+                                if (checkAllCB) {
+                                    checkAllCB.checked =
+                                        selectedPosts.filter(s => s.enabled).length === downloadableNow.length;
+                                }
+                            });
+                        }
+                    });
+
+                    const toggleAllEl = h.element('#config-toggle-all-posts');
+                    if (toggleAllEl && toggleAllEl.dataset.xfpdBound !== '1') {
+                        toggleAllEl.dataset.xfpdBound = '1';
+                        toggleAllEl.addEventListener('change', async e => {
+                            e.preventDefault();
+
+                            const checked = e.target.checked;
+                            const postCheckboxes = parsedPosts
+                                .filter(p => p.parsedHosts.length)
+                                .map(p => h.element(`#config-download-post-${p.parsedPost.postId}`))
+                                .filter(Boolean);
+
+                            const checkedPostCheckboxes = postCheckboxes.filter(el => el.checked);
+                            const unCheckedPostCheckboxes = postCheckboxes.filter(el => !el.checked);
+
+                            if (checked) {
+                                unCheckedPostCheckboxes.forEach(c => c.click());
+                            } else {
+                                checkedPostCheckboxes.forEach(c => c.click());
+                            }
+                        });
+                    }
+                },
+            });
+        };
+
+        const initPostElement = post => {
+            if (!post || post.dataset?.xfpdInitialized === '1') return false;
+
+            const parsedPost = parsers.thread.parsePost(post);
+            if (!parsedPost) return false;
+
+            const { postId, content, contentContainer } = parsedPost;
+
+            addDuplicateTabLink(post);
+            addShowDownloadPageBtnLink(post);
+
+            const parsedHosts = parsers.hosts.parseHosts(content);
+            const getEnabledHostsCB = hostsList => hostsList.filter(host => host.enabled);
+
+            if (!parsedHosts.length) {
+                return false;
+            }
+
+            post.dataset.xfpdInitialized = '1';
+
+            const postSettings = {
                 zipped: true,
                 flatten: false,
                 generateLinks: false,
                 generateLog: false,
                 skipDuplicates: false,
                 skipDownload: false,
-                verifyBunkrLinks: false,                output: [],
+                verifyBunkrLinks: false,
+                output: [],
             };
 
-            const parsedPost = parsers.thread.parsePost(post);
-
-            const { content, contentContainer } = parsedPost;
-
-            addDuplicateTabLink(post);
-            addShowDownloadPageBtnLink(post);
-
-            const parsedHosts = parsers.hosts.parseHosts(content);
-
-            const getEnabledHostsCB = parsedHosts => parsedHosts.filter(host => host.enabled);
-
-            if (!parsedHosts.length) {
-                return;
-            }
-
-            const getTotalDownloadableResourcesForPostCB = parsedHosts => {
-                return parsedHosts.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
+            const getTotalDownloadableResourcesForPostCB = hostsList => {
+                return hostsList.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
             };
 
             // Create and attach the download button to post.
@@ -9165,7 +9935,7 @@ const selectedPosts = [];
                 parsedPost,
                 parsedHosts,
                 `#${parsedPost.postNumber}.zip`,
-                settings,
+                postSettings,
                 onFormSubmitCB,
                 getTotalDownloadableResourcesForPostCB,
                 btnDownloadPost,
@@ -9185,9 +9955,11 @@ const selectedPosts = [];
                 },
             };
 
-            let getSettingsCB = () => settings;
+            const getSettingsCB = () => postSettings;
 
-            parsedPosts.push({
+            // Replace any stale entry if a post was re-rendered dynamically (e.g. XenSoluce [HIDEREACT] unlock on SMG).
+            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
+            const postEntry = {
                 parsedPost,
                 parsedHosts,
                 enabledHostsCB: getEnabledHostsCB,
@@ -9195,103 +9967,70 @@ const selectedPosts = [];
                 getSettingsCB,
                 statusUI,
                 postDownloadCallbacks,
-            });
+            };
+            if (existingIdx > -1) {
+                parsedPosts[existingIdx] = postEntry;
+            } else {
+                parsedPosts.push(postEntry);
+            }
 
             btnDownloadPost.addEventListener('click', e => {
                 e.preventDefault();
                 downloadPost(parsedPost, parsedHosts, getEnabledHostsCB, resolvers, getSettingsCB, statusUI, postDownloadCallbacks);
             });
-        });
 
-        if (parsedPosts.filter(p => p.parsedHosts.length).length > 0) {
-            const btnDownloadPage = addDownloadPageButton();
+            return true;
+        };
 
-            btnDownloadPage.addEventListener('click', e => {
-                e.preventDefault();
-
-                selectedPosts
-                    .filter(s => s.enabled)
-                    .forEach(s => {
-                    downloadPost(
-                        s.post.parsedPost,
-                        s.post.parsedHosts,
-                        s.post.enabledHostsCB,
-                        s.post.resolvers,
-                        s.post.getSettingsCB,
-                        s.post.statusUI,
-                        s.post.postDownloadCallbacks,
-                    );
-                });
+        const scanPosts = () => {
+            let addedDownloadable = false;
+            h.elements('.message-attribution-opposite').forEach(post => {
+                try {
+                    if (initPostElement(post)) {
+                        addedDownloadable = true;
+                    }
+                } catch (e) {
+                    console.error('[XFPD] Error initializing post:', e);
+                }
             });
+            if (addedDownloadable) {
+                syncDownloadPageUI();
+            }
+        };
 
-            // TODO: Extract to ui.js
-            const color = ui.getTooltipBackgroundColor();
+        scanPosts();
 
-            let html = ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, false);
-
-            parsedPosts
-                .filter(p => p.parsedHosts.length)
-                .forEach(post => {
-                const { postId, postNumber, textContent } = post.parsedPost;
-
-                selectedPosts.push({ post, enabled: false });
-
-                const threadTitle = parsers.thread.parseTitle();
-
-                let defaultPostContent = textContent.trim().replace('​', '');
-
-                const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
-
-                const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
-                html += ui.forms.createCheckbox(`config-download-post-${postId}`, `Post #${postNumber} ${summary}`, false);
+        // Watch for dynamically unlocked/inserted posts (e.g. SMG [HIDEREACT]/[HIDETHANKS] AJAX post replacement or quick replies).
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            let rescanTimer = null;
+            const observer = new MutationObserver(mutations => {
+                let shouldScan = false;
+                for (const m of mutations) {
+                    if (!m.addedNodes || !m.addedNodes.length) continue;
+                    for (const node of m.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        if (
+                            (node.matches && node.matches('article.message, .js-post, .message-attribution-opposite')) ||
+                            (node.querySelector && node.querySelector('.message-attribution-opposite')) ||
+                            (node.closest && node.closest('.message-body, .message-userContent'))
+                        ) {
+                            shouldScan = true;
+                            break;
+                        }
+                    }
+                    if (shouldScan) break;
+                }
+                if (shouldScan) {
+                    if (rescanTimer) clearTimeout(rescanTimer);
+                    rescanTimer = setTimeout(() => {
+                        rescanTimer = null;
+                        scanPosts();
+                    }, 120);
+                }
             });
-
-            html = `${ui.forms.createRow(ui.forms.createLabel('Post Selection'))} ${html}`;
-            ui.tooltip(btnDownloadPage, ui.forms.config.page.createForm(color, html), {
-                placement: 'bottom',
-                interactive: true,
-                onShown: () => {
-                    parsedPosts
-                        .filter(p => p.parsedHosts.length)
-                        .forEach(post => {
-                        const { postId, contentContainer } = post.parsedPost;
-                        ui.tooltip(
-                            `#post-content-${postId}`,
-                            `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
-                          ${contentContainer.innerHTML}
-                         </div>`,
-                            { placement: 'right', offset: [10, 15] },
-                        );
-
-                        document.querySelector(`#config-download-post-${postId}`).addEventListener('change', e => {
-                            const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
-                            selectedPost.enabled = e.target.checked;
-
-                            const checkAllCB = h.element('#config-toggle-all-posts');
-                            checkAllCB.checked = selectedPosts.filter(s => s.enabled).length === parsedPosts.length;
-                        });
-
-                        h.element('#config-toggle-all-posts').addEventListener('change', async e => {
-                            e.preventDefault();
-
-                            const checked = e.target.checked;
-
-                            const postCheckboxes = parsedPosts
-                            .filter(p => p.parsedHosts.length)
-                            .map(p => p.parsedPost)
-                            .flatMap(p => h.element(`#config-download-post-${p.postId}`));
-
-                            const checkedPostCheckboxes = postCheckboxes.filter(e => e.checked);
-                            const unCheckedPostCheckboxes = postCheckboxes.filter(e => !e.checked);
-
-                            if (checked) {
-                                unCheckedPostCheckboxes.forEach(c => c.click());
-                            } else {
-                                checkedPostCheckboxes.forEach(c => c.click());
-                            }
-                        });
-                    });
-                },
+            observer.observe(h.element('.block--messages') || document.body, {
+                childList: true,
+                subtree: true,
             });
         }
     });

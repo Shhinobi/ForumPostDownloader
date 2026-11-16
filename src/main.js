@@ -41,65 +41,83 @@ let processing = [];
  * @placeholder ~an@ -> a-zA-Z0-9
  *
  */
+const isSmgForum = () => {
+    try {
+        return typeof location !== 'undefined' && /(^|\.)socialmediagirls\.com$/i.test(location.hostname || '');
+    } catch (e) {
+        return false;
+    }
+};
+
 const hosts = [
-  ['simpcity.su:Attachments', [/simpcity.su\/attachments/]],
-  ['anonfiles.com:', [/anonfiles.com/]],
-  ['coomer.party:Profiles', [/coomer.party\/[~an@._-]+\/user/]],
-  ['coomer.party:image', [/(\w+\.)?coomer.party\/(data|thumbnail)/]],
-  ['jpg.fish:image', [/(simp\d+.)?jpg.(church|fish|fishing)\/(?!(images\/0fya082315al\.png|img\/))/, /jpg.(church|fish|fishing)\/a\/[~an@-_.]+<no_qs>/]],
-  ['kemono.party:direct link', [/.{2,6}\.kemono.party\/data\//]],
-  ['postimg.cc:image', [/!!https?:\/\/(www.)?i\.?(postimg|pixxxels).cc\/(.{8})/]], //[/!!https?:\/\/(www.)?postimg.cc\/(.{8})/]],
-  [
-    'ibb.co:image',
+    [`${isSmgForum() ? 'SMG' : 'Simpcity'}:Attachments`, [/(\/attachments\/|\/data\/video\/|smgmedia\.socialmediagirls\.com\/)/]],
     [
-      /!!((?<=href="|data-src="))https?:\/\/(www.)?([a-z](\d+)?\.)?ibb\.co\/([a-zA-Z0-9_.-]){7}((?=")|\/)(([a-zA-Z0-9_.-])+(?="))?/,
-      /ibb.co\/album\/[~an@_.-]+/,
+        'ImagePond:Media',
+        [
+            /(?:(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:i|image|video|videos)\/[~an@._-]+|media\.imagepond\.net\/media\/(?!.*(?:_thumb\.|\.m3u8|android-chrome|placeholder)))/,
+            /(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\/[~an@._-]+<no_qs>/,
+        ],
     ],
-  ],
-  ['imagevenue.com:image', [/!!https?:\/\/(www.)?imagevenue\.com\/(.{8})/]],
-  ['img.kiwi:image', [/img.kiwi\/images\//, /img.kiwi\/album\//]],
-  ['imgvb:image', [/imgvb.com\/images\//, /imgvb.com\/album/]],
-  ['imgbox.com:image', [/(thumbs|images)(\d+)?.imgbox.com\//, /imgbox.com\/g\//]],
-  [
-    'imgur.com:Media',
+    ['Coomer:Profiles', [/coomer\.(st|su|party)\/[~an@._-]+\/user/]],
+    ['Coomer:image', [/(\w+\.)?coomer\.(st|su|party)\/(data|thumbnail)/]],
+    ['JPGX:image', [/(simp\d+\.)?(cuckcapital\.cr|jpg\d?\.(church|fish|fishing|pet|su|cr))\/(?!(img\/|a\/|album\/))/, /jpe?g\d\.(church|fish|fishing|pet|su|cr)(\/a\/|\/album\/)[~an@-_.]+<no_qs>/]],
     [
-      /!!https:(\/|\\\/){2}s9e.github.io(\/|\\\/)iframe(\/|\\\/)2(\/|\\\/)imgur.*?(?="|&quot;)|(?<=")https:\/\/(www.)?imgur.(com|io).*?(?=")/,
+        'PutMega:image',
+        [
+            /(?:(?:[\w-]+\.)?putmega\.com\/images\/|(?:www\.)?(?:putmega\.com|putme\.ga)\/image\/[~an@._-]+)/,
+            /(?:www\.)?(?:putmega\.com|putme\.ga)\/(?:a|album)\/[~an@._-]+<no_qs>/,
+        ],
     ],
-  ],
-  ['onlyfans.com:image', [/public.onlyfans.com\/files/]],
-  ['dailystar.co.uk:image', [/i(\d+)?-prod\.dailystar.co.uk\/.*?\.(jpg|jpeg|png)/]],
-  ['pinuderest.com:image', [/pinuderest.com\/wp-content\/.*?\.(jpg|jpeg|png)/]],
-  ['imgur.com:image', [/\w+\.imgur.(com|io)/]],
-  ['reddit.com:image', [/(\w+)?.redd.it/]],
-  ['instagram.com:Media', [/!!https:(\/|\\\/){2}s9e.github.io(\/|\\\/)iframe(\/|\\\/)2(\/|\\\/)instagram.*?(?="|&quot;)/]],
-  ['instagram.com:Profile', [/!!instagram.com\/[~an@_.-]+|((instagram|insta):(\s+)?)@?[a-zA-Z0-9_.-]+/]],
-  ['nitter:image', [/nitter\.(.{1,20})\/pic/]],
-  ['twitter.com:image', [/([~an@.]+)?twimg.com\//]],
-  ['pixl.li:image', [/([a-z](\d+)?\.)pixl.(li|is)\/((img|image)\/)?/, /pixl.(li|is)\/album\//]],
-  ['pixhost.to:image', [/t(\d+)?\.pixhost.to\//, /pixhost.to\/gallery\//]],
-  ['imagebam.com:image', [/imagebam.com\/(view|gallery)/]],
-  ['saint.to:video', [/(saint.to\/embed\/|([~an@]+\.)?saint.to\/videos)/]],
-  ['redgifs.com:video', [/!!redgifs.com(\/|\\\/)ifr.*?(?="|&quot;)/]],
-  ['gfycat.com:video', [/!!gfycat.com(\/|\\\/)ifr.*?(?="|&quot;)/]],
-  [
-    'bunkr.su:',
+    ['Goonbox:image', [/goonbox\.cr\/img\//, /goonbox\.cr\/a\//]],
+    ['kemono:direct link', [/.{2,6}\.kemono\.(cr|su|party)\/data\//]],
+    ['Postimg:image', [/!!https?:\/\/(www.)?i\.?(postimg|pixxxels).cc\/(.{8})/]], //[/!!https?:\/\/(www.)?postimg.cc\/(.{8})/]],
+    ['Ibb:image',
+     [
+         /!!(?<=href=")https?:\/\/(www.)?([a-z](\d+)?\.)?ibb\.co\/([a-zA-Z0-9_.-]){7}((?=")|\/)(([a-zA-Z0-9_.-])+(?="))?/,
+         /ibb.co\/album\/[~an@_.-]+/,
+     ],
+    ],
+    ['Ibb:direct link', [/!!(?<=data-src=")https?:\/\/(www.)?([a-z](\d+)?\.)?ibb\.co\/([a-zA-Z0-9_.-]){7}((?=")|\/)(([a-zA-Z0-9_.-])+(?="))?/]],
+    ['Imagevenue:image', [/!!https?:\/\/(www.)?imagevenue\.com\/(.{8})/]],
+    ['Imgvb:image', [/imgvb.com\/images\//, /imgvb.com\/album/]],
+    ['Imgbox:image', [/(thumbs|images)(\d+)?.imgbox.com\//, /imgbox.com\/g\//]],
+    ['Onlyfans:image', [/public.onlyfans.com\/files/]],
+    ['Reddit:image', [/(\w+)?.redd.it/]],
+    ['Pomf2:File', [/pomf2.lain.la/]],
+    ['Nitter:image', [/nitter\.(.{1,20})\/pic/]],
+    ['Twitter:image', [/([~an@.]+)?twimg.com\//]],
     [
-      /!!(?<=href=")https:\/\/((stream|cdn(\d+)?)\.)?bunkr.(ru|su|la).*?\.[a-zA-Z0-9]{3,4}.*?(?=")|(?<=(href="|src="))https:\/\/i(\d+)?.bunkr.(ru|su|la)\/(v\/)?.*?(?=")/,
-      /bunkr.(ru|su|la)\/a\//,
+        'Pixhost:image',
+        [
+            /(?:(t|img)(\d+)?\.(?:pixhost\.(?:to|cc)|pixho\.st)\/|(?:pixhost\.(?:to|cc)|pixho\.st)\/show\/)/,
+            /(?:pixhost\.(?:to|cc)|pixho\.st)\/gallery\//,
+        ],
     ],
-  ],
-  ['give.xxx:Profiles', [/give.xxx\/[~an@_-]+/]],
-  ['zippyshare.com:', [/(\w+\.)?zippyshare.com\/v\//]],
-  ['pixeldrain.com:', [/pixeldrain.com\/[lu]\//]],
-  ['gofile.com:', [/gofile.io\/d/]],
-  ['erome.com:', [/erome.com\/a\//]],
-  ['box.com:', [/m\.box\.com\//]],
-  ['yandex.ru:', [/(disk\.)?yandex\.[a-z]+/]],
-  ['cyberfile.me:', [/!!https:\/\/cyberfile.(su|me)\/\w+(\/)?(?=")/, /cyberfile.(su|me)\/folder\//]],
-  ['cyberdrop.me:', [/fs-\d+.cyberdrop.(me|to|cc|nl)\//, /cyberdrop.(me|to|cc|nl)\/a\//]],
-  ['pornhub.com:video', [/([~an@]+\.)?pornhub.com\/view_video/]],
-  ['noodlemagazine.com:video', [/(adult.)?noodlemagazine.com\/watch\//]],
-  ['spankbang.com:video', [/spankbang.com\/.*?\/video/]],
+    ['Erome:Albums', [/erome\.com\/a\/[~an@._-]+<no_qs>/]],
+    ['Imagebam:image', [/imagebam.com\/(view|gallery)/]],
+    ['Imagebam:full embed', [/images\d.imagebam.com/]],
+    ['turbo:video', [/([\w-]+\.)?turbo\.cr\/(embed|v|d)\//]],
+    ['turbo:albums', [/([\w-]+\.)?turbo\.cr\/a\//]],
+    ['Redgifs:video', [/!!redgifs.com(\/|\\\/)ifr.*?(?=["']|&quot;)/]],
+    ['Redgifs:user', [/redgifs\.com\/users\//]],
+    ['Bunkr:',
+     [
+         /!!(?<=href=")https:\/\/((stream|cdn(\d+)?)\.)?bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|ru|su|org)(?!(\/a\/)).*?(?=")|(?<=(href=")|(src="))https:\/\/((i|cdn|i-pizza|big-taco-1img)(\d+)?\.)?bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|ru|su|org)(?!(\/a\/))\/(v\/)?.*?(?=")/,
+     ]
+    ],
+    ['Bunkr:Albums', [/bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|ru|su|org)\/a\//]],
+    ['Give.xxx:Profiles', [/give.xxx\/[~an@_-]+/]],
+    ['Pixeldrain:', [/(focus\.)?(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/[lu]\//]],
+    ['Gofile:', [/gofile.io\/d/]],
+    ['Filester:links', [/filester\.(me|sh|si|gg)\/d\//]],
+    ['Filester:albums', [/filester\.(me|sh|si|gg)\/f\/[~an@-_.]+<no_qs>/]],
+    ['Box.com:', [/m\.box\.com\//]],
+    ['Yandex:', [/(disk\.)?yandex\.[a-z]+/]],
+    ['Cyberfile:', [/!!https:\/\/cyberfile.(su|me)\/\w+(\/)?(?=")/, /cyberfile.(su|me)\/folder\//]],
+    ['Cyberdrop:', [/fs-\d+\.cyberdrop\.[a-z]{2,}\/|cyberdrop\.[a-z]{2,}\/(f|e)\//, /cyberdrop\.[a-z]{2,}\/a\//]],
+    ['Pornhub:video', [/([~an@]+\.)?pornhub.com\/view_video/]],
+    ['Noodlemagazine:video', [/(adult.)?noodlemagazine.com\/watch\//]],
+    ['Spankbang:video', [/spankbang.com\/.*?\/video/]],
 ];
 
 /**
@@ -107,2160 +125,7091 @@ const hosts = [
  *
  * @type {((RegExp[]|(function(*): *))[]|(RegExp[]|(function(*, *): Promise<{dom: *, source: *, folderName: *, resolved}>))[]|(RegExp[]|(function(*, *): Promise<string>))[]|(RegExp[]|(function(*, *): Promise<{dom: *, source: *, folderName: *, resolved}>))[]|(RegExp[]|(function(*): *))[])[]}
  */
+/* -------------------------------------------------------------------------
+ * Turbo sign hardening:
+ * - timeout 5000ms
+ * - retry 2x with jitter delay 700–1400ms
+ * This avoids rare ~50s "waiting" stalls on https://turbo.cr/api/sign
+ * ------------------------------------------------------------------------- */
+const XFPD_TURBO_SIGN_TIMEOUT_MS = 5000;
+const XFPD_TURBO_SIGN_RETRIES = 2;
+const XFPD_TURBO_SIGN_JITTER_MIN_MS = 700;
+const XFPD_TURBO_SIGN_JITTER_MAX_MS = 1400;
+
+const xfpdSleepMs = ms => new Promise(r => setTimeout(r, ms));
+const xfpdJitterMs = (minMs, maxMs) => {
+    const lo = Math.min(minMs, maxMs);
+    const hi = Math.max(minMs, maxMs);
+    return lo + Math.floor(Math.random() * (hi - lo + 1));
+};
+
+const xfpdGmGetText = (getUrl, headers, timeoutMs) => new Promise(resolve => {
+    try {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: String(getUrl),
+            headers: headers || {},
+            responseType: 'text',
+            anonymous: false,
+            timeout: Number(timeoutMs) || 0,
+            onload: r => resolve({ ok: true, status: r.status || 0, text: String(r.responseText || r.response || '') }),
+            onerror: () => resolve({ ok: false, status: 0, text: '' }),
+            ontimeout: () => resolve({ ok: false, status: 0, text: '' }),
+        });
+    } catch (e) {
+        resolve({ ok: false, status: 0, text: '' });
+    }
+});
+
+const xfpdTurboFetchSignJsonWithTimeout = async (turboId, refererUrl) => {
+    const id = String(turboId || '').trim();
+    if (!id) return null;
+
+    const embedUrl = String(refererUrl || `https://turbo.cr/embed/${id}`);
+    const headers = {
+        Accept: 'application/json, text/plain, */*',
+        Referer: embedUrl,
+    };
+
+    const signUrls = [
+        `https://turbo.cr/api/sign?v=${encodeURIComponent(id)}`,
+        `https://turbo.cr/sign?v=${encodeURIComponent(id)}`, // legacy fallback
+    ];
+
+    for (let attempt = 0; attempt <= XFPD_TURBO_SIGN_RETRIES; attempt++) {
+        for (const signUrl of signUrls) {
+            const r = await xfpdGmGetText(signUrl, headers, XFPD_TURBO_SIGN_TIMEOUT_MS);
+            if (!r || !r.ok || r.status !== 200 || !r.text) continue;
+
+            let j = null;
+            try { j = JSON.parse(r.text); } catch (e) { j = null; }
+            if (!j || !j.url) continue;
+
+            const ok = (j.success === undefined) ? true : !!j.success;
+            if (ok) return j;
+        }
+        if (attempt < XFPD_TURBO_SIGN_RETRIES) {
+            await xfpdSleepMs(xfpdJitterMs(XFPD_TURBO_SIGN_JITTER_MIN_MS, XFPD_TURBO_SIGN_JITTER_MAX_MS));
+        }
+    }
+    return null;
+};
+
+const xfpdTurboSignUrlWithTimeout = async (turboId, refererUrl, nameHint) => {
+    const j = await xfpdTurboFetchSignJsonWithTimeout(turboId, refererUrl);
+    if (!j || !j.url) return null;
+
+    let signed = j.url;
+    const originalName = j.original_filename || nameHint;
+
+    // Preserve filename for Turbo CDN downloads (used later for saveAs)
+    if (signed && originalName && !/[?&]fn=/.test(String(signed))) {
+        const enc = encodeURIComponent(String(originalName)).replace(/%20/g, '+');
+        signed += (signed.includes('?') ? '&' : '?') + 'fn=' + enc;
+    }
+    return signed;
+};
+
+const xfpdNormalizeImagePondPageUrl = rawUrl => {
+    let u = String(rawUrl || '').trim().split('#')[0];
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = `https://${u.replace(/^\/+/, '')}`;
+    u = u.replace(/^https?:\/\/(?:www\.)?images\.socialmediagirls\.com\b/i, 'https://www.imagepond.net');
+    u = u.replace(/^https?:\/\/imagepond\.net\b/i, 'https://www.imagepond.net');
+
+    // Normalize /i/<id>/thumb/<size>, /i/<id>/embed, /i/<id>/download(/file), and /videos?/<id> -> /i/<id>
+    u = u.replace(/\/i\/([^\/?#]+)\/(?:thumb\/\d+|embed|download(?:\/file)?).*$/i, '/i/$1');
+    u = u.replace(/\/videos?\/([^\/?#]+).*$/i, '/i/$1');
+    return u.split('?')[0].replace(/\/+$/, '');
+};
+
+const xfpdResolveImagePondItem = async (rawUrl, http, fallbackNameHint = '') => {
+    try {
+        const cleanRaw = String(rawUrl || '').trim().split('#')[0];
+        if (!cleanRaw) return null;
+
+        if (/^https?:\/\/media\.imagepond\.net\/media\//i.test(cleanRaw)) {
+            if (/(?:_thumb\.|\.m3u8(?:$|\?)|android-chrome|placeholder)/i.test(cleanRaw)) return null;
+            if (fallbackNameHint) {
+                try { imagepondNameByUrl.set(cleanRaw, String(fallbackNameHint)); } catch (e) {}
+            }
+            return cleanRaw;
+        }
+
+        const viewUrl = xfpdNormalizeImagePondPageUrl(cleanRaw);
+        if (!viewUrl) return null;
+
+        const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+        const preHintedDirect =
+            imagepondDirectByPageUrl.get(viewUrl) ||
+            imagepondDirectByPageUrl.get(strip(cleanRaw)) ||
+            null;
+        if (preHintedDirect) {
+            const nameHint =
+                fallbackNameHint ||
+                imagepondNameByUrl.get(viewUrl) ||
+                imagepondNameByUrl.get(strip(cleanRaw)) ||
+                '';
+            if (nameHint) {
+                try { imagepondNameByUrl.set(preHintedDirect, String(nameHint)); } catch (e) {}
+            }
+            return preHintedDirect;
+        }
+
+        const res = await http.get(
+            viewUrl,
+            {},
+            {
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                Referer: 'https://forums.socialmediagirls.com/',
+            },
+            'text',
+        );
+        const src = String(res?.source || '');
+        if (!src) return null;
+
+        const doc = new DOMParser().parseFromString(src, 'text/html');
+
+        let titleHint =
+            doc.querySelector('[data-title]')?.getAttribute('data-title') ||
+            doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
+            doc.querySelector('h1[title]')?.getAttribute('title') ||
+            fallbackNameHint ||
+            '';
+        titleHint = String(titleHint || '').replace(/\s*-\s*ImagePond\s*$/i, '').trim();
+
+        const ogType = (doc.querySelector('meta[property="og:type"]')?.getAttribute('content') || '').toLowerCase();
+
+        // 1) Video direct URL (<video data-src="...">, <source src="...">, og:video, or inline directUrl)
+        let mediaUrl =
+            doc.querySelector('video[data-src]')?.getAttribute('data-src') ||
+            [...doc.querySelectorAll('video source[src]')]
+                .map(s => s.getAttribute('src'))
+                .find(s => s && !/\.m3u8(?:$|\?)/i.test(s)) ||
+            doc.querySelector('meta[property="og:video"]')?.getAttribute('content') ||
+            '';
+
+        // 2) Inline JS imageUrl / directUrl
+        if (!mediaUrl) {
+            const mJs =
+                /(?:directUrl|imageUrl)\s*[:=]\s*["'](https?:\\?\/\\?\/media\.imagepond\.net\\?\/media\\?\/[^"']+)["']/i.exec(src);
+            if (mJs && mJs[1]) {
+                const candidate = mJs[1].replace(/\\\//g, '/');
+                if (!/(?:_thumb\.|\.m3u8(?:$|\?))/i.test(candidate)) {
+                    mediaUrl = candidate;
+                }
+            }
+        }
+
+        // 3) og:image (for image items, never video _thumb.jpg)
+        if (!mediaUrl && !ogType.startsWith('video')) {
+            const ogImg = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
+            if (/^https?:\/\/media\.imagepond\.net\/media\//i.test(ogImg) && !/(?:_thumb\.|\/thumb\/)/i.test(ogImg)) {
+                mediaUrl = ogImg;
+            }
+        }
+
+        // 4) Archive / fallback direct download route (/i/<realId>/download/file)
+        if (!mediaUrl) {
+            const pageUrlAttr = doc.querySelector('[data-page-url]')?.getAttribute('data-page-url') || '';
+            const dlHref = doc.querySelector('a[href*="/download"]')?.getAttribute('href') || '';
+            const mId = /\/i\/([^\/?#]+)/i.exec(pageUrlAttr) || /\/i\/([^\/?#]+)\/download/i.exec(dlHref) || /\/i\/([^\/?#]+)/i.exec(viewUrl);
+            if (mId && mId[1]) {
+                mediaUrl = `https://www.imagepond.net/i/${mId[1]}/download/file`;
+            }
+        }
+
+        mediaUrl = String(mediaUrl || '').trim();
+        if (!mediaUrl) return null;
+
+        if (titleHint && !xfpdLooksLikeCfFilenameHint(titleHint)) {
+            try {
+                imagepondNameByUrl.set(mediaUrl, titleHint);
+                imagepondNameByUrl.set(strip(mediaUrl), titleHint);
+                imagepondNameByUrl.set(viewUrl, titleHint);
+                imagepondNameByUrl.set(strip(cleanRaw), titleHint);
+            } catch (e) {}
+        }
+
+        return mediaUrl;
+    } catch (e) {
+        return null;
+    }
+};
+
+const xfpdResolveImagePondAlbum = async (rawUrl, http, progressCB) => {
+    try {
+        let baseUrl = String(rawUrl || '').trim().split('#')[0].split('?')[0].replace(/\/+$/, '');
+        if (!baseUrl) return null;
+        if (!/^https?:\/\//i.test(baseUrl)) baseUrl = `https://${baseUrl.replace(/^\/+/, '')}`;
+        baseUrl = baseUrl
+            .replace(/^https?:\/\/(?:www\.)?images\.socialmediagirls\.com\b/i, 'https://www.imagepond.net')
+            .replace(/^https?:\/\/imagepond\.net\b/i, 'https://www.imagepond.net');
+
+        const albumId = baseUrl.split('/').filter(Boolean).pop() || 'album';
+        let folderName = '';
+        let firstDom = null;
+        let firstSource = '';
+
+        const itemEntries = [];
+        const seenSlugs = new Set();
+        const MAX_PAGES = 200;
+
+        for (let page = 1; page <= MAX_PAGES; page++) {
+            const pageUrl = page === 1 ? baseUrl : `${baseUrl}?page=${page}`;
+            if (typeof progressCB === 'function') {
+                progressCB(`[ImagePond] Resolving album page ${page}...`);
+            }
+
+            let src = '';
+            try {
+                const r = await http.get(
+                    pageUrl,
+                    {},
+                    {
+                        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        Referer: 'https://forums.socialmediagirls.com/',
+                    },
+                    'text',
+                );
+                src = String(r?.source || '');
+            } catch (e) {
+                break;
+            }
+            if (!src) break;
+
+            const doc = new DOMParser().parseFromString(src, 'text/html');
+            if (page === 1) {
+                firstDom = doc;
+                firstSource = src;
+                const rawTitle =
+                    doc.querySelector('.ip-block-album-header h1, h1')?.textContent?.trim() ||
+                    (doc.querySelector('title')?.textContent || '').replace(/\s*-\s*ImagePond\s*$/i, '').trim();
+                folderName = rawTitle || `imagepond_${albumId}`;
+            }
+
+            const beforeCount = seenSlugs.size;
+
+            // ImagePond album tiles use Alpine `:href="manageMode ? ... : 'https://www.imagepond.net/i/<id>'"` as well as plain hrefs.
+            doc.querySelectorAll('.dr-tile, .ip-block-gallery a').forEach(node => {
+                const anchor = node.tagName === 'A' ? node : node.querySelector('a');
+                if (!anchor) return;
+                const attrHref =
+                    anchor.getAttribute('href') ||
+                    anchor.getAttribute(':href') ||
+                    anchor.getAttribute('x-bind:href') ||
+                    '';
+                const m = /(?:imagepond\.net|images\.socialmediagirls\.com)\/i\/([A-Za-z0-9_-]+)/i.exec(attrHref) ||
+                          /^\/i\/([A-Za-z0-9_-]+)$/i.exec(attrHref.trim());
+                if (!m || !m[1]) return;
+                const slug = m[1];
+                if (seenSlugs.has(slug)) return;
+                seenSlugs.add(slug);
+
+                const tileName = (node.querySelector?.('p')?.textContent || '').trim();
+                itemEntries.push({
+                    url: `https://www.imagepond.net/i/${slug}`,
+                    nameHint: tileName,
+                });
+            });
+
+            // Regex fallback if markup changes
+            const rx = /https?:\/\/(?:www\.)?(?:imagepond\.net|images\.socialmediagirls\.com)\/i\/([A-Za-z0-9_-]+)(?=['"\s<>?#]|$)/gi;
+            let mRx;
+            while ((mRx = rx.exec(src)) !== null) {
+                const slug = mRx[1];
+                if (!slug || seenSlugs.has(slug)) continue;
+                seenSlugs.add(slug);
+                itemEntries.push({ url: `https://www.imagepond.net/i/${slug}`, nameHint: '' });
+            }
+
+            const added = seenSlugs.size - beforeCount;
+            if (added <= 0) break;
+
+            const hasNextPage =
+                !!doc.querySelector(`a[rel="next"], a[href*="page=${page + 1}"]`) ||
+                new RegExp(`[?&]page=${page + 1}\\b`, 'i').test(src);
+            if (!hasNextPage) break;
+        }
+
+        if (!itemEntries.length) return null;
+
+        const CONCURRENCY = 5;
+        const results = new Array(itemEntries.length);
+        let cursor = 0;
+
+        const workers = Array.from({ length: Math.min(CONCURRENCY, itemEntries.length) }, async () => {
+            while (true) {
+                const idx = cursor++;
+                if (idx >= itemEntries.length) break;
+                if (typeof progressCB === 'function') {
+                    progressCB(`[ImagePond] Resolving ${idx + 1}/${itemEntries.length}`);
+                }
+                const entry = itemEntries[idx];
+                results[idx] = await xfpdResolveImagePondItem(entry.url, http, entry.nameHint);
+            }
+        });
+        await Promise.all(workers);
+
+        const resolved = results.filter(Boolean);
+        return {
+            dom: firstDom,
+            source: firstSource,
+            folderName: folderName || `imagepond_${albumId}`,
+            resolved,
+        };
+    } catch (e) {
+        return null;
+    }
+};
+
 const resolvers = [
-  [
-    [/https?:\/\/nitter\.(.{1,20})\/pic\/(orig\/)?media%2F(.{1,15})/i],
-    url => url.replace(/https?:\/\/nitter\.(.{1,20})\/pic\/(orig\/)?media%2F(.{1,15})/i, 'https://pbs.twimg.com/media/$3'),
-  ],
-  [
-    [/imagevenue.com/],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-      return dom.querySelector('.col-md-12 > a > img').getAttribute('src');
-    },
-  ],
-  [[/coomer.party\/(data|thumbnail)/], url => url],
-  [
-    [/coomer.party/, /:!coomer.party\/(data|thumbnail)/],
-    async (url, http) => {
-      const host = `https://coomer.party`;
+    [
+        [/https?:\/\/nitter\.(.{1,20})\/pic\/(orig\/)?media%2F(.{1,15})/i],
+        url => url.replace(/https?:\/\/nitter\.(.{1,20})\/pic\/(orig\/)?media%2F(.{1,15})/i, 'https://pbs.twimg.com/media/$3'),
+    ],
+    [
+        [/imagevenue.com/],
+        async (url, http) => {
+            const { dom } = await http.get(url);
+            return dom.querySelector('.col-md-12 > a > img').getAttribute('src');
+        },
+    ],
+    [[/pomf2.lain.la/], url => url.replace(/pomf2.lain.la\/f\/(.*)\.(\w{3,4})(\?.*)?/, 'pomf2.lain.la/f/$1.$2')],
+    [
+        [
+            /(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:i|image|video|videos)\/|media\.imagepond\.net\/media\//i,
+            /:!(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\//i,
+        ],
+        async (url, http) => {
+            return await xfpdResolveImagePondItem(url, http);
+        },
+    ],
+    [
+        [/(?:imagepond\.net|images\.socialmediagirls\.com)\/(?:a|album)\//i],
+        async (url, http, _spoilers, _postId, _postSettings, progressCB) => {
+            return await xfpdResolveImagePondAlbum(url, http, progressCB);
+        },
+    ],
+    [[/coomer\.(st|su|party)\/(data|thumbnail)/i], url => String(url || '').replace(/coomer\.(su|party)/i, 'coomer.st')],
+    [
+        [/coomer\.(st|su|party)/i, /:!coomer\.(st|su|party)\/(data|thumbnail)/i],
+        async (url, http) => {
+            const host = `https://coomer.st`;
 
-      const profileId = url.replace(/\?.*/, '').split('/').reverse()[0];
+            const normalizedInput = String(url || '').replace(/https?:\/\/(?:www\.)?coomer\.(?:st|su|party)/i, host);
+            const profileId = normalizedInput.replace(/\?.*/, '').split('/').reverse()[0];
 
-      let finalURL = url.replace(/\?.*/, '');
+            let finalURL = normalizedInput.replace(/\?.*/, '');
 
-      let nextPage = null;
+            let nextPage = null;
 
-      const posts = [];
+            const posts = [];
 
-      console.log(`[coomer.party] Resolving profile: ${profileId}`);
+            console.log(`[coomer.st] Resolving profile: ${profileId}`);
 
-      let page = 1;
+            let page = 1;
 
-      do {
-        const { dom } = await http.get(finalURL);
+            do {
+                const { dom } = await http.get(finalURL);
 
-        const links = [...dom.querySelectorAll('.card-list__items > article')]
-          .map(a => a.querySelector('.post-card__heading > a'))
-          .map(a => {
+                const links = [...dom.querySelectorAll('.card-list__items > article')]
+                .map(a => a.querySelector('.post-card__heading > a'))
+                .map(a => {
+                    return {
+                        link: `${host}${a.getAttribute('href')}`,
+                        id: a.getAttribute('href').split('/').reverse()[0],
+                    };
+                });
+
+                posts.push(...links);
+                nextPage = dom.querySelector('a[title="Next page"]');
+
+                if (nextPage) {
+                    finalURL = `${host}${nextPage.getAttribute('href')}`;
+                }
+
+                console.log(`[coomer.st] Resolved page: ${page}`);
+
+                page++;
+            } while (nextPage);
+
+            const resolved = [];
+
+            let index = 1;
+
+            for (const post of posts) {
+                const { dom } = await http.get(post.link);
+                const filesContainer = dom.querySelector('.post__files');
+
+                if (filesContainer) {
+                    const images = filesContainer.querySelectorAll('.post__thumbnail > .fileThumb');
+
+                    if (images.length) {
+                        resolved.push(
+                            ...[...images].map(a => {
+                                return {
+                                    url: `${host}${a.getAttribute('href')}`,
+                                    folderName: post.id,
+                                };
+                            }),
+                        );
+                    }
+                }
+
+                const attachments = dom.querySelectorAll('.post__attachments > .post__attachment > .post__attachment-link');
+
+                if (attachments.length) {
+                    resolved.push(
+                        ...[...attachments].map(a => {
+                            const url = `${host}${a.getAttribute('href')}`;
+
+                            let folder = 'Images';
+
+                            const ext = h.ext(url.replace(/\?.*/, ''));
+
+                            if (settings.extensions.video.includes(`.${ext.toLowerCase()}`)) {
+                                folder = 'Videos';
+                            }
+
+                            {
+                                return {
+                                    url,
+                                    folderName: `${post.id}/${folder}`,
+                                };
+                            }
+                        }),
+                    );
+                }
+
+                console.log(`[coomer.st] Resolved post ${index} / ${posts.length}`);
+
+                index++;
+            }
+
             return {
-              link: `${host}${a.getAttribute('href')}`,
-              id: a.getAttribute('href').split('/').reverse()[0],
+                folderName: profileId,
+                resolved,
             };
-          });
+        },
+    ],
+    [
+        [/(postimg|pixxxels).cc/],
+        async (url, http) => {
+            url = url.replace(/https?:\/\/(www.)?i\.?(postimg|pixxxels).cc\/(.{8})(.*)/, 'https://postimg.cc/$3');
+            const { dom } = await http.get(url);
+            return dom.querySelector('.controls > nobr > a').getAttribute('href');
+        },
+    ],
+    [[/kemono\.(cr|su|party)\/data/i], url => String(url || '').replace(/kemono\.(su|party)/i, 'kemono.cr')],
+    [
+        [/goonbox\.cr\/img\//],
+        async (url, http, spoilers, postId) => {
+            const id = url.split('/').pop().split('?')[0];
+            const fallback = goonboxThumbByUrl.get(url.replace(/\?.*/, '').replace(/\/$/, '')) || null;
 
-        posts.push(...links);
-        nextPage = dom.querySelector('a[title="Next page"]');
+            // Direct request first, same-origin bridge tab only if Cloudflare rejects it -- see
+            // goonboxApiJson.
+            const data = await goonboxApiJson(http, `/api/images/${id}`, url, postId);
 
-        if (nextPage) {
-          finalURL = `${host}${nextPage.getAttribute('href')}`;
-        }
+            // Take the first original_url anywhere in the response rather than pinning to
+            // data.image.original_url. That pin yields undefined the moment Goonbox moves the
+            // field, and the only symptom is a silently lower-resolution file -- observed
+            // 2026-08-06, where the album endpoint (images[].original_url) returned full-res
+            // originals for the very same images this path was quietly downgrading.
+            const findOriginal = (obj, depth = 0) => {
+                if (!obj || typeof obj !== 'object' || depth > 6) return null;
+                if (Array.isArray(obj)) {
+                    for (const it of obj) {
+                        const v = findOriginal(it, depth + 1);
+                        if (v) return v;
+                    }
+                    return null;
+                }
+                for (const k of ['original_url', 'originalUrl', 'original']) {
+                    const v = obj[k];
+                    if (typeof v === 'string' && /^https?:\/\//i.test(v.trim())) return v.trim();
+                }
+                for (const k of Object.keys(obj)) {
+                    const v = findOriginal(obj[k], depth + 1);
+                    if (v) return v;
+                }
+                return null;
+            };
 
-        console.log(`[coomer.party] Resolved page: ${page}`);
+            const originalUrl = findOriginal(data);
 
-        page++;
-      } while (nextPage);
+            if (!originalUrl) {
+                // Silent downgrade to a thumbnail is the worst failure mode here, so say so.
+                try {
+                    log.host.info(postId, `::No original_url in API response -> thumbnail::: ${url}`, 'goonbox.cr');
+                } catch (e) {}
+                return fallback;
+            }
 
-      const resolved = [];
+            // Post-migration, some "original_url" targets genuinely 404 even though the medium-res
+            // thumbnail on the same cuckcapital.cr host still exists, so the original is worth
+            // verifying. But only a definitive "gone" justifies discarding it: a HEAD that is
+            // refused outright (0 / 403 / 405) says nothing about whether the file is there --
+            // plenty of CDN edges simply do not serve HEAD -- and treating that as absent throws
+            // away a perfectly good original. Confirm with a ranged GET before falling back.
+            const probe = async (method, headers) => {
+                try {
+                    const r = await http.base(method, originalUrl, {}, { Referer: url, ...headers }, null, 'text');
+                    return Number((r && r.status) || 0) || 0;
+                } catch (e) {
+                    return 0;
+                }
+            };
 
-      let index = 1;
+            let status = await probe('HEAD', {});
+            let reachable = status >= 200 && status < 400;
 
-      for (const post of posts) {
-        const { dom } = await http.get(post.link);
-        const filesContainer = dom.querySelector('.post__files');
+            if (!reachable) {
+                // A refused HEAD is not evidence of absence, so let the ranged GET be the
+                // authority: it is the same method the download itself will use.
+                status = await probe('GET', { Range: 'bytes=0-0' });
+                reachable = status >= 200 && status < 400;
+            }
 
-        if (filesContainer) {
-          const images = filesContainer.querySelectorAll('.post__thumbnail > .fileThumb');
+            if (!reachable) {
+                try {
+                    log.host.info(postId, `::Original unreachable (${status}) -> thumbnail::: ${originalUrl}`, 'goonbox.cr');
+                } catch (e) {}
+                return fallback || originalUrl;
+            }
 
-          if (images.length) {
-            resolved.push(
-              ...[...images].map(a => {
-                return {
-                  url: `${host}${a.getAttribute('href')}`,
-                  folderName: post.id,
-                };
-              }),
-            );
-          }
-        }
+            return originalUrl;
+        },
+    ],
+    [
+        [/goonbox\.cr\/a\//],
+        async (url, http, spoilers, postId) => {
+            const albumSlug = url.replace(/\?.*/, '').split('/').filter(Boolean).pop();
 
-        const attachments = dom.querySelectorAll('.post__attachments > .post__attachment > .post__attachment-link');
+            // Direct request first, same-origin bridge tab only if Cloudflare rejects it -- see
+            // goonboxApiJson. The helper tab is reused across every page of the album.
+            const fetchPage = async page =>
+            await goonboxApiJson(http, `/api/albums/${albumSlug}/images?page=${page}`, url, postId);
 
-        if (attachments.length) {
-          resolved.push(
-            ...[...attachments].map(a => {
-              const url = `${host}${a.getAttribute('href')}`;
+            const first = await fetchPage(1);
+            if (!first || !h.isArray(first.images)) return null;
 
-              let folder = 'Images';
+            const resolved = first.images.map(img => img.original_url).filter(Boolean);
+            const lastPage = first.pagination?.last_page || 1;
 
-              const ext = h.ext(url.replace(/\?.*/, ''));
+            for (let page = 2; page <= lastPage; page++) {
+                const data = await fetchPage(page);
+                if (data && h.isArray(data.images)) {
+                    resolved.push(...data.images.map(img => img.original_url).filter(Boolean));
+                }
+            }
 
-              if (settings.extensions.video.includes(`.${ext.toLowerCase()}`)) {
-                folder = 'Videos';
-              }
-
-              {
-                return {
-                  url,
-                  folderName: `${post.id}/${folder}`,
-                };
-              }
-            }),
-          );
-        }
-
-        console.log(`[coomer.party] Resolved post ${index} / ${posts.length}`);
-
-        index++;
-      }
-
-      return {
-        folderName: profileId,
-        resolved,
-      };
-    },
-  ],
-  [
-    [/(postimg|pixxxels).cc/],
-    async (url, http) => {
-      url = url.replace(/https?:\/\/(www.)?i\.?(postimg|pixxxels).cc\/(.{8})(.*)/, 'https://postimg.cc/$3');
-      const { dom } = await http.get(url);
-      return dom.querySelector('.controls > nobr > a').getAttribute('href');
-    },
-  ],
-  [[/kemono.party\/data/], url => url],
-  [
-    [/jpg.(church|fish|fishing)\//i, /:!jpg.(church|fish|fishing)\/a\//i],
-    url =>
-      url
+            return {
+                folderName: `goonbox_${albumSlug}`,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/(jpg\d\.(church|fish|fishing|pet|su|cr))|cuckcapital\.cr\//i, /:!jpe?g\d\.(church|fish|fishing|pet|su|cr)(\/a\/|\/album\/)/i],
+        url =>
+        url
         .replace('.th.', '.')
         .replace('.md.', '.')
-        .replace(/simp([1-5])\.jpg\.church/, 'simp$1.jpg.fish'),
-  ],
-  [
-    [/jpg.(church|fish|fishing)\/a\//i],
-    async (url, http, spoilers, postId) => {
-      url = url.replace(/\?.*/, '');
+    ],
+    [
+        [/jpe?g\d\.(church|fish|fishing|pet|su|cr)(\/a\/|\/album\/)/i],
+        async (url, http, spoilers, postId) => {
+            url = url.replace(/\?.*/, '');
 
-      let reFetch = false;
+            let reFetch = false;
 
-      let { source, dom } = await http.get(url, {
-        onStateChange: response => {
-          // If it's a redirect, we'll have to fetch the new url.
-          if (response.readyState === 2 && response.finalUrl !== url) {
-            url = response.finalUrl;
-            reFetch = true;
-          }
-        },
-      });
+            let { source, dom } = await http.get(url, {
+                onStateChange: response => {
+                    // If it's a redirect, we'll have to fetch the new url.
+                    if (response.readyState === 2 && response.finalUrl !== url) {
+                        url = response.finalUrl;
+                        reFetch = true;
+                    }
+                },
+            });
 
-      if (reFetch) {
-        const { source: src, dom: d } = await http.get(url);
-        source = src;
-        dom = d;
-      }
+            if (reFetch) {
+                const { source: src, dom: d } = await http.get(url);
+                source = src;
+                dom = d;
+            }
 
-      if (h.contains('Please enter your password to continue', source)) {
-        const authTokenNode = dom.querySelector('input[name="auth_token"]');
-        const authToken = !authTokenNode ? null : authTokenNode.getAttribute('value');
+            if (h.contains('Please enter your password to continue', source)) {
+                const authTokenNode = dom.querySelector('input[name="auth_token"]');
+                const authToken = !authTokenNode ? null : authTokenNode.getAttribute('value');
 
-        if (!authToken || !spoilers || !spoilers.length) {
-          return null;
-        }
+                if (!authToken || !spoilers || !spoilers.length) {
+                    return null;
+                }
 
-        const attemptWithPassword = async password => {
-          const { source, dom } = await http.post(
-            url,
-            `auth_token=${authToken}&content-password=${password}`,
-            {},
-            {
-              Referer: url,
-              Origin: 'https://jpg.fishing',
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          );
-          return { source, dom };
-        };
+                const attemptWithPassword = async password => {
+                    const { source, dom } = await http.post(
+                        url,
+                        `auth_token=${authToken}&content-password=${password}`,
+                        {},
+                        {
+                            Referer: url,
+                            Origin: 'https://jpg6.su',
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    return { source, dom };
+                };
 
-        let authenticated = false;
+                let authenticated = false;
 
-        spoilers = ['ramona'];
+                spoilers = ['ramona'];
 
-        for (const spoiler of spoilers) {
-          const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
-          if (!h.contains('Please enter your password to continue', src)) {
-            authenticated = true;
-            source = src;
-            dom = d;
-            break;
-          }
-        }
+                for (const spoiler of spoilers) {
+                    const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
+                    if (!h.contains('Please enter your password to continue', src)) {
+                        authenticated = true;
+                        source = src;
+                        dom = d;
+                        break;
+                    }
+                }
 
-        if (!authenticated) {
-          log.host.error(postId, `::Could not resolve password protected album::: ${url}`, 'jpg.fishing');
-          return null;
-        }
-      }
+                if (!authenticated) {
+                    log.host.error(postId, `::Could not resolve password protected album::: ${url}`, 'jpg6.su');
+                    return null;
+                }
+            }
 
-      const resolvePageImages = async dom => {
-        const images = [...dom.querySelectorAll('.list-item-image > a > img')]
-          .map(img => img.getAttribute('src'))
-          .map(url =>
-            url
-              .replace('.md.', '.')
-              .replace('.th.', '.')
-              .replace(/simp([1-5])\.jpg\.church/, 'simp$1.jpg.fish'),
-          );
+            const resolvePageImages = async dom => {
+                const images = [...dom.querySelectorAll('.list-item-image > a > img')]
+                .map(img => img.getAttribute('src'))
+                .map(url =>
+                     url
+                     .replace('.md.', '.')
+                     .replace('.th.', '.')
+                    );
 
-        const nextPage = dom.querySelector('a[data-pagination="next"]');
+                const nextPage = dom.querySelector('a[data-pagination="next"]');
 
-        if (nextPage && nextPage.hasAttribute('href')) {
-          const { dom } = await http.get(nextPage.getAttribute('href'));
-          images.push(...(await resolvePageImages(dom)));
-        }
+                if (nextPage && nextPage.hasAttribute('href')) {
+                    const { dom } = await http.get(nextPage.getAttribute('href'));
+                    images.push(...(await resolvePageImages(dom)));
+                }
 
-        return images;
-      };
-
-      const resolved = await resolvePageImages(dom);
-
-      return {
-        dom,
-        source,
-        folderName: dom.querySelector('meta[property="og:title"]').content.trim(),
-        resolved,
-      };
-    },
-  ],
-  [
-    [/([a-z](\d+)?\.)?ibb.co\/[a-zA-Z0-9-_.]+/, /:!([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-      return dom.querySelector('.header-content-right > a').getAttribute('href');
-    },
-  ],
-  [
-    [/([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
-    async (url, http) => {
-      const albumId = url.replace(/\?.*/, '').split('/').reverse()[0];
-      const { source, dom } = await http.get(url);
-      const imageCount = Number(dom.querySelector('span[data-text="image-count"]').innerText);
-      const pageCount = Math.ceil(imageCount / 32);
-      const authToken = h.re.match(/(?<=auth_token=").*?(?=")/i, source);
-
-      const fetchPageData = async (albumId, page, seekEnd, authToken) => {
-        const seek = seekEnd || '';
-        const data = `action=list&list=images&sort=date_desc&page=${page}&from=album&albumid=${albumId}&params_hidden%5Blist%5D=images&params_hidden%5Bfrom%5D=album&params_hidden%5Balbumid%5D=${albumId}&auth_token=${authToken}&seek=${seek}&items_per_page=32`;
-        const { source: response } = await http.post(
-          'https://ibb.co/json',
-          data,
-          {},
-          {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        );
-
-        try {
-          const parsed = JSON.parse(response);
-
-          if (parsed && parsed.status_code && parsed.status_code === 200) {
-            const html = parsed.html.replace('"', '"');
-            return {
-              urls: h.re.matchAll(/(?<=data-object=').*?(?=')/gi, html).map(o => JSON.parse(decodeURIComponent(o)).url),
-              parsed,
+                return images;
             };
-          }
 
-          return { urls: [], parsed };
-        } catch (e) {
-          return { urls: [], parsed };
-        }
-      };
+            const resolved = await resolvePageImages(dom);
 
-      const resolved = [];
-
-      let seekEnd = '';
-
-      for (let i = 1; i <= pageCount; i++) {
-        const data = await fetchPageData(albumId, i, seekEnd, authToken);
-        seekEnd = data.parsed.seekEnd;
-        resolved.push(...data.urls);
-      }
-
-      return {
-        dom,
-        source,
-        folderName: dom.querySelector('meta[property="og:title"]').content.trim(),
-        resolved,
-      };
-    },
-  ],
-  [[/([a-z](\d+)?\.)pixl.(li|is)\/((img|image)\/)?/, /:!pixl.(li|is)\/album\//], url => url.replace('.th.', '.').replace('.md.', '.')],
-  [
-    [/pixl.(li|is)\/(album)\//],
-    async (url, http, spoilers, postId) => {
-      let reFetch = false;
-
-      let { source, dom } = await http.get(url, {
-        onStateChange: response => {
-          // If it's a redirect, we'll have to fetch the new url.
-          if (response.readyState === 2 && response.finalUrl !== url) {
-            url = response.finalUrl;
-            reFetch = true;
-          }
-        },
-      });
-
-      if (reFetch) {
-        const { source: src, dom: d } = await http.get(url);
-        source = src;
-        dom = d;
-      }
-
-      if (h.contains('Please enter your password to continue', source)) {
-        const authTokenNode = dom.querySelector('input[name="auth_token"]');
-        const authToken = !authTokenNode ? null : authTokenNode.getAttribute('value');
-
-        if (!authToken || !spoilers || !spoilers.length) {
-          return null;
-        }
-
-        const attemptWithPassword = async password => {
-          const { source, dom } = await http.post(
-            url,
-            `auth_token=${authToken}&content-password=${password}`,
-            {},
-            {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          );
-          return { source, dom };
-        };
-
-        let authenticated = false;
-
-        for (const spoiler of spoilers) {
-          const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
-          if (!h.contains('Please enter your password to continue', src)) {
-            authenticated = true;
-            source = src;
-            dom = d;
-            break;
-          }
-        }
-
-        if (!authenticated) {
-          log.host.error(postId, `::Could not resolve password protected album::: ${url}`, 'pixl.li');
-          return null;
-        }
-      }
-
-      const extractImages = dom => {
-        return [...dom.querySelectorAll('.image-container > img')]
-          .map(img => img.getAttribute('src'))
-          .map(url => url.replace('.th.', '.').replace('.md.', '.'));
-      };
-
-      let resolved = extractImages(dom);
-
-      let nextPage = dom.querySelector('.pagination-next > a')?.getAttribute('href');
-
-      while (nextPage) {
-        const { dom } = await http.get(nextPage);
-        resolved = resolved.concat(extractImages(dom));
-        nextPage = dom.querySelector('.pagination-next > a')?.getAttribute('href');
-      }
-
-      return {
-        dom,
-        source,
-        folderName: dom.querySelector('meta[property="og:title"]').content.trim(),
-        resolved,
-      };
-    },
-  ],
-  [[/t(\d+)?\.pixhost.to\//, /:!pixhost.to\/gallery\//], url => url.replace(/t(\d+)\./gi, 'img$1.').replace(/thumbs\//i, 'images/')],
-  [
-    [/pixhost.to\/gallery\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-
-      let imageLinksInput = dom?.querySelector('.share > div:nth-child(2) > input');
-
-      if (h.isNullOrUndef(imageLinksInput)) {
-        imageLinksInput = dom?.querySelector('.share > input:nth-child(2)');
-      }
-
-      const resolved = h.re
-        .matchAll(/(?<=\[img])https:\/\/t\d+.*?(?=\[\/img])/gis, imageLinksInput.getAttribute('value'))
-        .map(url => url.replace(/t(\d+)\./gi, 'img$1.').replace(/thumbs\//i, 'images/'));
-
-      return {
-        dom,
-        source,
-        folderName: dom?.querySelector('.link > h2').innerText.trim(),
-        resolved,
-      };
-    },
-  ],
-  [
-    [/((stream|cdn(\d+)?)\.)?bunkr.(ru|su|la).*?\.[a-zA-Z0-9]{3,4}|i(\d+)?.bunkr.(ru|su|la)\/(v\/)?/i, /:!bunkr.(ru|su|la)\/a\//],
-    async (url, http) => {
-      url = url.replace('stream.bunkr', 'bunkr').replace(/cdn(\d+)?\.bunkr/, 'bunkr');
-
-      const ext = h.ext(url).toLowerCase();
-
-      if (settings.extensions.video.includes(`.${ext}`) && !h.contains('/v/', url)) {
-        url = url.replace(/(bunkr.(ru|su|la))\//, '$1/v/');
-      }
-
-      if (settings.extensions.image.includes(`.${ext}`)) {
-        url = url.replace(/cdn(\d+)?/, 'i$1');
-        return url;
-      }
-
-      if (['zip', 'pdf'].includes(ext) && !h.contains('/d/', url)) {
-        url = url.replace(/(bunkr.(ru|su|la))\//, '$1/d/');
-      }
-
-      const { dom } = await http.get(url);
-
-      const btnDownload = dom.querySelector(
-        'body > main > section:nth-child(1) > div > div > div > div.w-full.px-0.lg\\:w-2\\/4 > div > a',
-      );
-
-      return !btnDownload ? null : btnDownload.getAttribute('href');
-    },
-  ],
-  [
-    [/bunkr.(ru|su|la)\/a\//],
-    async (url, http) => {
-      const { dom, source } = await http.get(url);
-
-      const files = [...dom.querySelectorAll('.grid-images > div')].map(f => {
-        const a = f.querySelector('a');
-        const img = f.querySelector('a > img');
-        const url = `https://bunkr.la${a.getAttribute('href')}`;
-
-        const src = img?.getAttribute('src');
-
-        let cdn = null;
-
-        if (src) {
-          const matches = /i((\d+)?).bunkr/i.exec(src);
-          if (matches && matches.length) {
-            cdn = matches[1];
-          }
-        }
-
-        return {
-          name: h.basename(url),
-          url,
-          cdn,
-          img: src,
-        };
-      });
-
-      const resolved = files.map(file => {
-        let host = `https://media-files${file.cdn}.bunkr.ru`;
-        if (h.contains('media-files12', host)) {
-          host = host.replace('.bunkr.ru', '.bunkr.la');
-        }
-        return `${host}/${file.name}`;
-      });
-
-      const infoContainer = dom.querySelector('h1.text-\\[24px\\]');
-      const parts = infoContainer?.outerText
-        .split('\n')
-        .map(t => t.trim())
-        .filter(t => t !== '');
-      const albumName = parts.length ? parts[0].trim() : url.split('/').reverse()[0];
-
-      return {
-        dom,
-        source,
-        folderName: albumName,
-        resolved,
-      };
-    },
-  ],
-  [
-    [/give.xxx\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-      const profileId = h.re.match(/(?<=profile-id=")\d+/, source);
-
-      const resolved = [];
-
-      let username = null;
-
-      let firstMediaId = null;
-
-      let mediaId = 1;
-
-      let iteration = 1;
-
-      while (true) {
-        let endpoint = `https://give.xxx/api/web/v1/accounts/${profileId}/statuses?only_media=true`;
-        endpoint += iteration === 1 ? '&min_id=1' : `&max_id=${mediaId}`;
-        const { source } = await http.get(endpoint);
-        if (h.contains('_v', source)) {
-          const parsed = JSON.parse(source);
-
-          if (username === null) {
-            username = parsed[0].account.username;
-          }
-
-          if (firstMediaId === null) {
-            firstMediaId = parsed[0].id;
-          } else {
-            if (firstMediaId === parsed[0].id) {
-              break;
-            }
-          }
-          resolved.push(
-            ...parsed.flatMap(i => {
-              return i.media_attachments
-                .map(a => {
-                  return a.sizes;
-                })
-                .map(s => s.large || s.normal || s.small);
-            }),
-          );
-          mediaId = parsed[parsed.length - 1].id;
-        } else {
-          break;
-        }
-
-        iteration++;
-      }
-
-      return {
-        dom,
-        source,
-        folderName: username,
-        resolved,
-      };
-    },
-  ],
-  [
-    [/zippyshare.com\//],
-    async (url, http) => {
-      const { source } = await http.get(url);
-      const expr = h.re
-        .match(/(?<=\('dlbutton'\).href\s=\s).*?(?=;)/i, source)
-        .replace(/"(.*?)"/g, `new String("$1")`)
-        .replace('/', '\\/');
-      const subDomain = h.re.match(/ww\w+/, url);
-      return `https://${subDomain}.zippyshare.com${eval(expr)}`;
-    },
-  ],
-  [
-    [/pixeldrain.com\/[ul]/],
-    url => {
-      let resolved = url.replace('/u/', '/api/file/').replace('/l/', '/api/list/');
-      resolved = h.contains('/api/list', resolved) ? `${resolved}/zip` : resolved;
-      resolved = h.contains('/api/file', resolved) ? `${resolved}?download` : resolved;
-      return resolved;
-    },
-  ],
-
-  [
-    [/anonfiles.com\//],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-      return dom.querySelector('#download-url').getAttribute('href');
-    },
-  ],
-  [
-    [/([~an@]+\.)?pornhub.com\/view_video/],
-    async (url, http) => {
-      url = url.replace(/([a-zA-Z0-9]+\.)?pornhub/, 'pornhub');
-
-      const resolvePH = async url => {
-        const { dom } = await http.get(
-          url,
-          {},
-          {
-            referer: url,
-            cookie: 'age-verified: 1; platform=tv; cookiesBannerSeen=1; hasVisited=1',
-          },
-        );
-        const script = [...dom.querySelectorAll('script')]
-          .map(s => s.innerText)
-          .filter(s => /var\smedia_\d+/gis.test(s))
-          .map(s => {
             return {
-              mediaVars: h.re.matchAll(/var\smedia_\d+=.*?;/gis, s),
-              flashVars: s,
+                dom,
+                source,
+                folderName: dom.querySelector('meta[property="og:title"]').content.trim(),
+                resolved,
             };
-          })[0];
-
-        const { mediaVars, flashVars } = script;
-
-        return mediaVars
-          .map(m => {
-            const cleaned = m
-              .replace(/\/\*.*?\*\//gis, '')
-              .replace(/var\smedia_\d+=/i, '')
-              .replace(';', '');
-
-            return cleaned
-              .split('+')
-              .map(s => s.trim())
-              .map(s => {
-                let value = new RegExp(`var ${s}=".*?"`, 'isg').exec(flashVars)[0];
-                value = value.replace(/.*?"/i, '').replace(/"/i, '');
-                return value;
-              })
-              .join('');
-          })
-          .find(url => url.indexOf('pornhub.com/video/get_media?s=') > -1);
-      };
-
-      let parsed = null;
-
-      let tries = 0;
-
-      // Scumbag pornhub won't send the right json link the first time.
-      // Still, there are ocassional 403s / redirects.
-      // TODO: Fix me
-      do {
-        const infoURL = await resolvePH(url);
-
-        if (!infoURL) {
-          continue;
-        }
-
-        try {
-          const { source } = await h.http.get(infoURL);
-          const json = JSON.parse(source);
-          const fetchedFormats = json.reverse();
-          const qualities = ['1080', '720', '480', '320', '240'];
-          for (const q of qualities) {
-            const f = fetchedFormats.find(f => f.quality === q);
-            if (f && f.videoUrl) {
-              parsed = f.videoUrl;
-              break;
+        },
+    ],
+    [
+        [/\/\/ibb.co\/[a-zA-Z0-9-_.]+/, /:!([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
+        async (url, http) => {
+            try{
+                const { dom } = await http.get(url);
+                return dom.querySelector('.header-content-right > a').getAttribute('href');
+            } catch (err){
+                url => url;
             }
-          }
-        } catch (e) {}
-        await h.delayedResolve(1000);
-        tries++;
-      } while (!parsed && tries < 20);
+        },
+    ],
 
-      return parsed;
-    },
-  ],
-  [
-    [/gofile.io\/d/],
-    async (url, http, spoilers, postId) => {
-      const resolveAlbum = async (url, spoilers) => {
-        const contentId = url.split('/').reverse()[0];
+    [[/i\.ibb\.co\/[a-zA-Z0-9-_.]+/, /:!([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/], url => url],
+    [
+        [/([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
+        async (url, http) => {
+            const albumId = url.replace(/\?.*/, '').split('/').reverse()[0];
+            const { source, dom } = await http.get(url);
+            const imageCount = Number(dom.querySelector('span[data-text="image-count"]').innerText);
+            const pageCount = Math.ceil(imageCount / 32);
+            const authToken = h.re.match(/(?<=auth_token=").*?(?=")/i, source);
 
-        const apiUrl = `https://api.gofile.io/getContent?contentId=${contentId}&token=${settings.hosts.goFile.token}&websiteToken=12345&cache=true`;
+            const fetchPageData = async (albumId, page, seekEnd, authToken) => {
+                const seek = seekEnd || '';
+                const data = `action=list&list=images&sort=date_desc&page=${page}&from=album&albumid=${albumId}&params_hidden%5Blist%5D=images&params_hidden%5Bfrom%5D=album&params_hidden%5Balbumid%5D=${albumId}&auth_token=${authToken}&seek=${seek}&items_per_page=32`;
+                const { source: response } = await http.post(
+                    'https://ibb.co/json',
+                    data,
+                    {},
+                    {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                );
 
-        let { source } = await http.get(apiUrl);
+                try {
+                    const parsed = JSON.parse(response);
 
-        if (h.contains('error-notFound', source)) {
-          log.host.error(postId, `::Album not found::: ${url}`, 'gofile.io');
-          return null;
-        }
+                    if (parsed && parsed.status_code && parsed.status_code === 200) {
+                        const html = parsed.html.replace('"', '"');
+                        return {
+                            urls: h.re.matchAll(/(?<=data-object=').*?(?=')/gi, html).map(o => JSON.parse(decodeURIComponent(o)).url),
+                            parsed,
+                        };
+                    }
 
-        if (h.contains('error-notPublic', source)) {
-          log.host.error(postId, `::Album not public::: ${url}`, 'gofile.io');
-          return null;
-        }
+                    return { urls: [], parsed };
+                } catch (e) {
+                    return { urls: [], parsed };
+                }
+            };
 
-        let props = JSON.parse(source?.toString());
+            const resolved = [];
 
-        if (h.contains('error-passwordRequired', source) && spoilers.length) {
-          log.host.info(postId, `::Album requires password::: ${url}`, 'gofile.io');
+            let seekEnd = '';
 
-          if (spoilers.length) {
-            log.host.info(postId, `::Trying with ${spoilers.length} available password(s)::`, 'gofile.io');
-          }
-
-          for (const spoiler of spoilers) {
-            const hash = sha256(spoiler);
-
-            const { source } = await http.get(`${apiUrl}&password=${hash}`);
-
-            props = JSON.parse(source?.toString());
-
-            if (props && props.status === 'ok') {
-              log.host.info(postId, `::Successfully authenticated with:: ${spoiler}`, 'gofile.io');
+            for (let i = 1; i <= pageCount; i++) {
+                const data = await fetchPageData(albumId, i, seekEnd, authToken);
+                seekEnd = data.parsed.seekEnd;
+                resolved.push(...data.urls);
             }
-          }
+
+            return {
+                dom,
+                source,
+                folderName: dom.querySelector('meta[property="og:title"]').content.trim(),
+                resolved,
+            };
+        },
+    ],
+    [
+        [/(t|img)(\d+)?\.(?:pixhost\.(?:to|cc)|pixho\.st)\//i, /:!(?:pixhost\.(?:to|cc)|pixho\.st)\/(?:gallery|show)\//i],
+        url =>
+            String(url || '')
+                .replace(/(^|\/\/)t(\d+)\./i, '$1img$2.')
+                .replace(/\/thumbs\//i, '/images/'),
+    ],
+    [
+        [/(?:pixhost\.(?:to|cc)|pixho\.st)\/show\//i],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+            const directImg =
+                dom?.querySelector('#image.image-img, img#image, .image-img')?.getAttribute('src') ||
+                (h.re.match(/https?:\/\/img\d+\.(?:pixhost\.(?:to|cc)|pixho\.st)\/images\/[^"'\s<>]+/i, source || '') || null);
+            if (directImg) return directImg;
+            const ogImg = dom?.querySelector('meta[property="og:image"]')?.getAttribute('content');
+            if (ogImg) {
+                return ogImg.replace(/(^|\/\/)t(\d+)\./i, '$1img$2.').replace(/\/thumbs\//i, '/images/');
+            }
+            return null;
+        },
+    ],
+    [
+        [/(?:pixhost\.(?:to|cc)|pixho\.st)\/gallery\//i],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+
+            let imageLinksInput =
+                dom?.querySelector('.share input[value*="[img]"]') ||
+                dom?.querySelector('.share > div:nth-child(2) > input') ||
+                dom?.querySelector('.share > input:nth-child(2)');
+
+            let resolved = [];
+            if (imageLinksInput && imageLinksInput.getAttribute('value')) {
+                resolved = h.re
+                    .matchAll(/(?<=\[img])https?:\/\/t\d+.*?(?=\[\/img])/gis, imageLinksInput.getAttribute('value'))
+                    .map(u => u.replace(/(^|\/\/)t(\d+)\./gi, '$1img$2.').replace(/\/thumbs\//i, '/images/'));
+            }
+
+            if (!resolved.length && dom) {
+                resolved = [...dom.querySelectorAll('img[src*="/thumbs/"]')]
+                    .map(img => img.getAttribute('src'))
+                    .filter(Boolean)
+                    .map(u => u.replace(/(^|\/\/)t(\d+)\./gi, '$1img$2.').replace(/\/thumbs\//i, '/images/'))
+                    .unique();
+            }
+
+            const folderName =
+                dom?.querySelector('.link > h2, .gallery-title, h1')?.textContent?.trim() ||
+                h.basename(String(url || '').replace(/\?.*/, ''));
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/putmega\.com\/images\//i, /:!(?:putmega\.com|putme\.ga)\/(?:a|album|image)\//i],
+        url => String(url || '').replace('.th.', '.').replace('.md.', '.'),
+    ],
+    [
+        [/(?:putmega\.com|putme\.ga)\/image\//i, /:!(?:putmega\.com|putme\.ga)\/(?:a|album)\//i],
+        async (url, http) => {
+            const { dom } = await http.get(url);
+            return (
+                dom?.querySelector('meta[property="og:image"]')?.getAttribute('content')?.replace('.md.', '.').replace('.th.', '.') ||
+                dom?.querySelector('.header-content-right > a[href]')?.getAttribute('href') ||
+                null
+            );
+        },
+    ],
+    [
+        [/(?:putmega\.com|putme\.ga)\/(?:a|album)\//i],
+        async (url, http, spoilers, postId) => {
+            url = String(url || '').replace(/\?.*/, '');
+            let { source, dom } = await http.get(url);
+
+            if (source && h.contains('Please enter your password to continue', source)) {
+                const authToken = dom?.querySelector('input[name="auth_token"]')?.getAttribute('value');
+                if (!authToken || !spoilers || !spoilers.length) return null;
+
+                let authenticated = false;
+                for (const spoiler of spoilers) {
+                    const { source: src, dom: d } = await http.post(
+                        url,
+                        `auth_token=${authToken}&content-password=${encodeURIComponent(spoiler.trim())}`,
+                        {},
+                        {
+                            Referer: url,
+                            Origin: new URL(url).origin,
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    if (!h.contains('Please enter your password to continue', src || '')) {
+                        authenticated = true;
+                        source = src;
+                        dom = d;
+                        break;
+                    }
+                }
+                if (!authenticated) {
+                    log.host.error(postId, `::Could not resolve password protected album::: ${url}`, 'putmega.com');
+                    return null;
+                }
+            }
+
+            const resolvePageImages = async pageDom => {
+                const images = [...(pageDom?.querySelectorAll('.list-item-image > a > img, .image-container > img') || [])]
+                    .map(img => img.getAttribute('src'))
+                    .filter(Boolean)
+                    .map(u => u.replace('.md.', '.').replace('.th.', '.'));
+
+                const nextPage = pageDom?.querySelector('a[data-pagination="next"]');
+                if (nextPage && nextPage.hasAttribute('href')) {
+                    const nextHref = new URL(nextPage.getAttribute('href'), url).toString();
+                    const { dom: nextDom } = await http.get(nextHref);
+                    images.push(...(await resolvePageImages(nextDom)));
+                }
+                return images;
+            };
+
+            const resolved = await resolvePageImages(dom);
+            const folderName =
+                dom?.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() ||
+                h.basename(url);
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/erome\.com\/a\//i],
+        async (url, http) => {
+            const { source, dom } = await http.get(url, {}, { Referer: 'https://www.erome.com/' });
+            const resolved = [];
+
+            dom?.querySelectorAll('.media-group').forEach(mediaGroup => {
+                const imgSource =
+                    mediaGroup.querySelector('.img[data-src]')?.getAttribute('data-src') ||
+                    mediaGroup.querySelector('img.img-front')?.getAttribute('data-src') ||
+                    mediaGroup.querySelector('img.img-front')?.getAttribute('src');
+
+                const videoSources = [...mediaGroup.querySelectorAll('video source[src]')];
+                videoSources.sort((a, b) => (Number(b.getAttribute('res') || 0) - Number(a.getAttribute('res') || 0)));
+                const videoSource = videoSources[0]?.getAttribute('src') || mediaGroup.querySelector('source')?.getAttribute('src');
+
+                const chosen = videoSource || imgSource || null;
+                if (chosen) resolved.push(chosen);
+            });
+
+            const folderName =
+                dom?.querySelector('h1.album-title-page, .page-content > h1, h1')?.textContent?.trim() ||
+                h.basename(String(url || '').replace(/\?.*/, ''));
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/((stream|cdn(\d+)?)\.)?bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|su|org).*?\.|((i|cdn)(\d+)?\.)?bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|su|org)\/(v\/)?/i, /:!bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|su|org)\/a\//],
+        async (url, http) => {
+            try {
+                const cleanUrl = String(url || '').split('#')[0];
+
+                // Legacy Bunkr CDN hosts no longer serve files directly: as of 2026-07-28,
+                // cdn*.bunkr.*/<name>.mp4 responds 301 -> bunkr.*/f/<slug>, an HTML page. So these
+                // links still need the metadata + signing flow, and must NOT be treated as final.
+                const isLegacyBunkrCdn = /^https?:\/\/(?:cdn\d*|stream)\.bunkrr?r?\./i.test(cleanUrl);
+
+                // If this already looks like a direct media file URL, keep it (don't call /api/vs).
+                // (CDN links usually include the real filename already.)
+                if (
+                    !isLegacyBunkrCdn &&
+                    /\.(?:mp4|m4v|webm|mov|mkv|jpg|jpeg|png|gif|webp|zip|rar|7z|pdf)(?:$|\?)/i.test(cleanUrl) &&
+                    !/\/(?:v|f|d)\//i.test(cleanUrl)
+                ) {
+                    return cleanUrl;
+                }
+
+                const u = new URL(cleanUrl);
+                const origin = u.origin;
+                const pathname = u.pathname || '';
+
+                const segments = pathname.split('/').filter(Boolean);
+                const index = segments.findIndex(s => ['f', 'v', 'd'].includes(s));
+                const id = index > -1 ? segments.slice(index + 1).join('/') : segments.pop();
+                let bunkrDataId = null;
+
+// Best-effort: read the human filename from the view page (og:title / h1 / <title>).
+// This lets us rename CDN GUID links back to the original filename.
+try {
+    const strip = (s) => String(s || '').split('#')[0].split('?')[0];
+    const bases = xfpdBunkrFilterBases(
+        isLegacyBunkrCdn
+            ? ['https://bunkr.cr', 'https://bunkr.pk']
+            : [origin, 'https://bunkr.pk', 'https://bunkr.cr']
+    );
+    // DIAGNOSTIC (b02): tracing why some /f/ links resolve to nothing and get downloaded as HTML.
+    console.log(`[Bunkr] resolve start: url=${cleanUrl} origin=${origin} id=${id} legacyCdn=${isLegacyBunkrCdn} bases=${JSON.stringify(bases)}`);
+
+    for (const base of bases) {
+        const base0 = String(base || '').replace(/\/$/, '');
+        const candidates = [];
+        if (/\/v\//i.test(pathname) && base0 === origin) candidates.push(cleanUrl);
+        candidates.push(`${base0}/v/${id}`);
+        candidates.push(`${base0}/f/${id}`);
+
+        const uniq = candidates.filter((v, i, a) => a.indexOf(v) === i);
+        let found = false;
+
+        for (const viewUrl of uniq) {
+            const viewRes = await xfpdBunkrGetWithCfRetry(http, viewUrl, base0, base0 === 'https://bunkr.cr');
+            const dom = viewRes?.dom;
+            const viewSource = viewRes?.source || '';
+
+            const cfHit = xfpdLooksLikeCfChallenge(viewSource, dom);
+            console.log(`[Bunkr] view ${viewUrl}: bytes=${viewSource.length} dom=${!!dom} cfChallenge=${cfHit}`);
+
+            // If Cloudflare interstitial is active, don't capture a bogus "Just a moment..." title as a filename hint.
+            if (cfHit) continue;
+
+            if (!bunkrDataId) {
+                bunkrDataId = dom?.querySelector?.('[data-file-id]')?.getAttribute?.('data-file-id') || null;
+                console.log(`[Bunkr] data-file-id from ${viewUrl}: ${bunkrDataId || 'NOT FOUND'}`
+                    + (bunkrDataId ? '' : ` (page mentions dl.bunkr link: ${/dl\.bunkr\.[a-z]+\/file\/\d+/i.test(viewSource)})`));
+            }
+
+            let title =
+                dom?.querySelector?.('meta[property="og:title"]')?.getAttribute?.('content') ||
+                dom?.querySelector?.('h1')?.textContent ||
+                dom?.querySelector?.('title')?.textContent ||
+                '';
+            title = String(title || '').replace(/\s+/g, ' ').trim();
+            title = title.replace(/\s*\|\s*Bunkr\s*$/i, '').trim();
+
+            if (title && !xfpdLooksLikeCfFilenameHint(title)) {
+                bunkrNameByUrl.set(cleanUrl, title);
+                bunkrNameByUrl.set(strip(cleanUrl), title);
+                bunkrNameByUrl.set(viewUrl, title);
+                bunkrNameByUrl.set(strip(viewUrl), title);
+                found = true;
+                break;
+            }
         }
 
-        return props;
-      };
+        if (found) break;
+    }
+} catch (e) {}
 
-      const props = await resolveAlbum(url, spoilers);
+                const decodeFinalUrl = data => {
+                    try {
+                        if (!data || !data.url) return null;
+                        if (!data.encrypted) return data.url;
 
-      let folderName = h.basename(url);
+                        const binaryString = atob(data.url);
+                        const keyBytes = new TextEncoder().encode(`SECRET_KEY_${Math.floor(data.timestamp / 3600)}`);
 
-      if (!props) {
-        log.host.error(postId, `::Unable to resolve album::: ${url}`, 'gofile.io');
+                        return Array.from(binaryString)
+                            .map((char, i) => String.fromCharCode(char.charCodeAt(0) ^ keyBytes[i % keyBytes.length]))
+                            .join('');
+                    } catch (e) {
+                        return null;
+                    }
+                };
 
-        return {
-          dom: null,
-          source: null,
-          folderName,
-          resolved: [],
-        };
-      }
+                const tryNewApi = async () => {
+                    if (!bunkrDataId) {
+                        console.log('[Bunkr] tryNewApi skipped: no data-file-id was found on any view page');
+                        return null;
+                    }
+                    try {
+                        const refererUrl = `https://get.bunkrr.su/file/${bunkrDataId}`;
+                        const response = await http.post(
+                            'https://apidl.bunkr.ru/api/_001_v2',
+                            JSON.stringify({ id: bunkrDataId }),
+                            {},
+                            {
+                                'Content-Type': 'application/json',
+                                Referer: refererUrl,
+                                Origin: 'https://get.bunkrr.su',
+                            }
+                        );
+                        const text = String(response?.source || '');
+                        console.log(`[Bunkr] api _001_v2 id=${bunkrDataId}: bytes=${text.length} head=${text.slice(0, 160)}`);
+                        if (!text) return null;
+                        const data = JSON.parse(text);
+                        if (!data) return null;
 
-      const resolved = [];
+                        let finalUrl = decodeFinalUrl(data);
+                        console.log(`[Bunkr] decoded final url: ${finalUrl || 'DECODE FAILED'}`);
+                        if (!finalUrl || typeof finalUrl !== 'string') return null;
+                        finalUrl = finalUrl.trim();
+                        if (finalUrl.startsWith('//')) finalUrl = 'https:' + finalUrl;
 
-      const getChildAlbums = async (props, spoilers) => {
-        if (!props || props.status !== 'ok' || !props.data || !props.data.childs || !props.data.childs.length) {
-          return [];
-        }
+                        finalUrl = await xfpdBunkrSignCdnUrl(http, finalUrl);
+
+                        try {
+                            const strip = (s) => String(s || '').split('#')[0].split('?')[0];
+                            const hint =
+                                xfpdBunkrExtractNameFromVsData(data) ||
+                                bunkrNameByUrl.get(cleanUrl) ||
+                                bunkrNameByUrl.get(strip(cleanUrl)) ||
+                                '';
+                            if (hint && String(hint).trim()) {
+                                const h0 = String(hint).trim();
+                                bunkrNameByUrl.set(cleanUrl, h0);
+                                bunkrNameByUrl.set(strip(cleanUrl), h0);
+                                bunkrNameByUrl.set(finalUrl, h0);
+                                bunkrNameByUrl.set(strip(finalUrl), h0);
+                            }
+                        } catch (e) {}
+
+                        return finalUrl;
+                    } catch (e) {
+                        console.log(`[Bunkr] tryNewApi threw: ${(e && e.message) || e}`);
+                        return null;
+                    }
+                };
+
+                const finalURL = await tryNewApi();
+                if (!finalURL) {
+                    console.log(`[Bunkr] UNRESOLVED -> falling back to the page URL, which will download as HTML: ${cleanUrl}`);
+                }
+                return finalURL || cleanUrl;
+            } catch (error) {
+                console.error(error?.message || error);
+                return url;
+            }
+        },
+    ],
+[
+    [/bunkrr?r?\.(lu|lv|bi|cm|at|by|cx|sx|ac|ax|black|cat|ci|cr|fi|is|media|nu|pk|ph|ps|red|ru|se|si|site|sk|ws|su|org)\/a\//],
+    async (url, http, _, __, ___, progressCB) => {
+        const cleanUrl = String(url || '').split('#')[0];
+        const baseUrl = cleanUrl.split('?')[0].replace(/\/+$/, '');
 
         const resolved = [];
+        const seen = new Set();
 
-        folderName = props.data.name;
+        // Bunkr album: keep the human filename from the album grid (title / .theName) and attach it to resolved CDN URLs.
+        const nameHintBySlug = new Map();
 
-        const files = props.data.contents;
+        let firstDom = null;
+        let firstSource = null;
 
-        for (const file in files) {
-          const obj = files[file];
-          if (obj.type === 'file') {
-            resolved.push(files[file].link);
-          } else {
-            const folderProps = await resolveAlbum(obj.code, spoilers);
-            resolved.push(...(await getChildAlbums(folderProps, spoilers)));
-          }
+        const sanitizeName = s => String(s || '')
+            .replace(/[\\/:*?"<>|]/g, '-')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const decodeFinalUrl = data => {
+            try {
+                if (!data || !data.url) return null;
+                if (!data.encrypted) return data.url;
+
+                const binaryString = atob(data.url);
+                const keyBytes = new TextEncoder().encode(`SECRET_KEY_${Math.floor(data.timestamp / 3600)}`);
+
+                return Array.from(binaryString)
+                    .map((char, i) => String.fromCharCode(char.charCodeAt(0) ^ keyBytes[i % keyBytes.length]))
+                    .join('');
+            } catch (e) {
+                return null;
+            }
+        };
+
+        const extractSlugsFromDom = dom => {
+            const containers = dom?.querySelectorAll?.('.grid-images > div') || [];
+            const slugs = [];
+
+            for (const c of containers) {
+                const a =
+                    c.querySelector('a[class="after:absolute after:z-10 after:inset-0"]') ||
+                    c.querySelector('a[href*="/f/"]') ||
+                    c.querySelector('a[href*="/v/"]') ||
+                    c.querySelector('a[href*="/d/"]');
+
+                const href = a?.getAttribute?.('href') || '';
+                const m = href.match(/\/(f|v|d)\/([^\/?#]+)/i);
+                if (m && m[2]) {
+                    const slug = m[2];
+                    slugs.push(slug);
+
+                    // Name hint is visible on /a/ pages (e.g. <div title="...mp4"> or .theName). Use it later when we only have a CDN GUID URL.
+                    try {
+                        let hint = c?.getAttribute?.('title') || '';
+                        if (!hint) hint = c?.querySelector?.('.theName')?.textContent || '';
+                        if (!hint) hint = c?.querySelector?.('p.truncate')?.textContent || '';
+                        if (!hint) hint = c?.querySelector?.('.grid-images_box-txt p')?.textContent || '';
+                        hint = String(hint || '').replace(/\s+/g, ' ').trim();
+                        if (hint) nameHintBySlug.set(slug, hint);
+                    } catch (e) {}
+                }
+            }
+
+            return slugs;
+        };
+
+        const asyncPool = async (limit, items, worker) => {
+            const results = new Array(items.length);
+            let i = 0;
+
+            const runners = Array.from({ length: Math.max(1, limit) }, async () => {
+                while (true) {
+                    const idx = i++;
+                    if (idx >= items.length) break;
+                    try {
+                        results[idx] = await worker(items[idx], idx);
+                    } catch (e) {
+                        results[idx] = null;
+                    }
+                }
+            });
+
+            await Promise.all(runners);
+            return results;
+        };
+
+        const origin = (() => {
+            try { return new URL(baseUrl).origin; } catch (e) { return 'https://bunkr.cr'; }
+        })();
+
+        const vsBasesAll = [origin, 'https://bunkr.pk', 'https://bunkr.cr'].filter((v, i, a) => a.indexOf(v) === i);
+
+        let folderName = null;
+
+        const MAX_PAGES = 500;
+        const CONCURRENCY = 8;
+
+        const albumUrlObj = (() => {
+            try { return new URL(baseUrl); } catch (e) { return null; }
+        })();
+        const albumPath = (albumUrlObj && albumUrlObj.pathname) ? albumUrlObj.pathname : (() => {
+            try { return new URL(cleanUrl).pathname; } catch (e) { return '/'; }
+        })();
+        const albumBasesAll = [origin, 'https://bunkr.pk', 'https://bunkr.cr'].filter((v, i, a) => a.indexOf(v) === i);
+        let albumBaseChosen = null;
+
+        for (let page = 1; page <= MAX_PAGES; page++) {
+            const requestedPageUrl = `${baseUrl}?page=${page}`;
+
+            if (typeof progressCB === 'function') {
+                progressCB(`Resolving: ${requestedPageUrl}`);
+            }
+
+            const pageBases = albumBaseChosen
+                ? [albumBaseChosen, ...xfpdBunkrFilterBases(albumBasesAll).filter(b => b !== albumBaseChosen)]
+                : xfpdBunkrFilterBases(albumBasesAll);
+
+            let dom = null, source = '';
+            let pageUrl = requestedPageUrl;
+            let slugs = [];
+
+            for (const base of pageBases) {
+                const base0 = String(base || '').replace(/\/$/, '');
+                const candidate = `${base0}${albumPath}?page=${page}`;
+                pageUrl = candidate;
+
+                try {
+                    ({ dom, source } = await xfpdBunkrGetWithCfRetry(http, candidate, base0, base0 === 'https://bunkr.cr'));
+                } catch (e) {
+                    dom = null;
+                    source = '';
+                }
+
+                if (xfpdLooksLikeCfChallenge(source, dom)) continue;
+
+                slugs = extractSlugsFromDom(dom);
+                if (page === 1 && !slugs.length) {
+                    continue;
+                }
+
+                if (!albumBaseChosen) albumBaseChosen = base0;
+                break;
+            }
+
+            if (!dom) break;
+            if (!slugs.length) break;
+if (page === 1) {
+                firstDom = dom;
+                firstSource = source;
+
+                const h1 = dom?.querySelector?.('h1');
+                const title = (h1?.innerText || h1?.textContent || '').split('\n')[0]?.trim();
+                if (title) folderName = sanitizeName(title);
+            }
+
+            const fresh = [];
+            for (const s of slugs) {
+                if (!s || seen.has(s)) continue;
+                seen.add(s);
+                fresh.push(s);
+            }
+
+            if (!fresh.length) break;
+
+            const urls = await asyncPool(CONCURRENCY, fresh, async (slug) => {
+                // Fetch /f/{slug} to get the numeric file ID required by the new API.
+                const fileBase = String(albumBaseChosen || origin || 'https://bunkr.cr').replace(/\/$/, '');
+                const filePageUrl = `${fileBase}/f/${slug}`;
+                let dataId = null;
+                try {
+                    const fileRes = await xfpdBunkrGetWithCfRetry(http, filePageUrl, fileBase, fileBase === 'https://bunkr.cr');
+                    const fileDom = fileRes?.dom;
+                    if (fileDom && !xfpdLooksLikeCfChallenge(fileRes?.source || '', fileDom)) {
+                        dataId = fileDom?.querySelector?.('[data-file-id]')?.getAttribute?.('data-file-id') || null;
+                    }
+                } catch (e) {}
+                if (!dataId) return null;
+
+                let data = null;
+                try {
+                    const refererUrl = `https://get.bunkrr.su/file/${dataId}`;
+                    const response = await http.post(
+                        'https://apidl.bunkr.ru/api/_001_v2',
+                        JSON.stringify({ id: dataId }),
+                        {},
+                        {
+                            'Content-Type': 'application/json',
+                            Referer: refererUrl,
+                            Origin: 'https://get.bunkrr.su',
+                        }
+                    );
+                    const text = String(response?.source || '');
+                    data = text ? JSON.parse(text) : null;
+                } catch (e) {}
+                if (!data) return null;
+
+                let finalUrl = decodeFinalUrl(data);
+                if (!finalUrl || typeof finalUrl !== 'string') return null;
+                finalUrl = finalUrl.trim();
+                if (finalUrl.startsWith('//')) finalUrl = 'https:' + finalUrl;
+
+                finalUrl = await xfpdBunkrSignCdnUrl(http, finalUrl);
+
+                try {
+                    const strip = (s) => String(s || '').split('#')[0].split('?')[0];
+                    const hint = nameHintBySlug.get(slug) || xfpdBunkrExtractNameFromVsData(data) || '';
+                    if (hint && String(hint).trim()) {
+                        const h0 = String(hint).trim();
+                        bunkrNameByUrl.set(finalUrl, h0);
+                        bunkrNameByUrl.set(strip(finalUrl), h0);
+                    }
+                } catch (e) {}
+
+                return finalUrl;
+            });
+
+            for (const u of urls) if (u) resolved.push(u);
         }
 
-        return resolved;
-      };
-
-      resolved.push(...(await getChildAlbums(props, spoilers)));
-
-      if (!resolved.length) {
-        log.host.error(postId, `::Empty album::: ${url}`, 'gofile.io');
-      }
-
-      return {
-        dom: null,
-        source: null,
-        folderName,
-        resolved,
-      };
-    },
-  ],
-  [
-    [/erome.com\/a\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-
-      const resolved = [];
-
-      dom?.querySelectorAll('.media-group').forEach(mediaGroup => {
-        const imgSource = mediaGroup.querySelector('.img-front')?.getAttribute('data-src');
-        const videoSource = mediaGroup.querySelector('source')?.getAttribute('src');
-        resolved.push(imgSource || videoSource || null);
-      });
-
-      return {
-        dom,
-        source,
-        folderName: dom.querySelector('.col-sm-12.page-content > h1')?.innerText,
-        resolved,
-      };
-    },
-  ],
-  [
-    [/cyberfile.(su|me)\//, /:!cyberfile.(su|me)\/folder\//],
-    async (url, http, spoilers) => {
-      const { source } = await http.get(url);
-      const u = h.re.matchAll(/(?<=showFileInformation\()\d+(?=\))/gis, source)[0];
-
-      const getFileInfo = async () => {
-        const { source } = await http.post(
-          'https://cyberfile.me/account/ajax/file_details',
-          `u=${u}`,
-          {},
-          {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        );
-        return source;
-      };
-
-      let response = await getFileInfo();
-
-      let requiredPassword = false;
-      let unlocked = false;
-
-      if ((h.contains('albumPasswordModel', response) || h.contains('This folder requires a password', response)) && spoilers.length) {
-        const html = JSON.parse(response).html;
-
-        const matches = /value="(\d+)"\sid="folderId"|value="(\d+)"\sname="folderId"/is.exec(html);
-
-        const folderId = matches.length ? matches[1] : null;
-
-        if (!folderId) {
-          return null;
-        }
-
-        requiredPassword = true;
-        for (const password of spoilers) {
-          const { source } = await http.post(
-            'https://cyberfile.me/ajax/folder_password_process',
-            `submitme=1&folderId=${folderId}&folderPassword=${password}`,
-            {},
-            {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          );
-
-          if (h.contains('success', source) && JSON.parse(source).success === true) {
-            unlocked = true;
-            break;
-          }
-        }
-      }
-
-      if (requiredPassword && unlocked) {
-        response = await getFileInfo();
-      }
-
-      return h.re.matchAll(/(?<=openUrl\(').*?(?=')/gi, response)[0]?.replace(/\\\//gi, '/');
-    },
-  ],
-  [
-    [/cyberfile.(su|me)\/folder\//],
-    async (url, http, spoilers) => {
-      const { source, dom } = await http.get(url);
-
-      const script = [...dom.querySelectorAll('script')].map(s => s.innerText).filter(s => h.contains('data-toggle="tab"', s))[0];
-
-      const nodeId = h.re.matchAll(/(?<='folder',\s').*?(?=')/gis, script);
-
-      const loadFiles = async () => {
-        const { source } = await http.post(
-          'https://cyberfile.me/account/ajax/load_files',
-          `pageType=folder&nodeId=${nodeId}`,
-          {},
-          {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        );
-        return source;
-      };
-
-      let response = await loadFiles();
-
-      let requiredPassword = false;
-      let unlocked = false;
-
-      if ((h.contains('albumPasswordModel', response) || h.contains('This folder requires a password', response)) && spoilers.length) {
-        requiredPassword = true;
-        for (const password of spoilers) {
-          const { source } = await http.post(
-            'https://cyberfile.me/ajax/folder_password_process',
-            `submitme=1&folderId=${nodeId}&folderPassword=${password}`,
-            {},
-            {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          );
-
-          if (h.contains('success', source) && JSON.parse(source).success === true) {
-            unlocked = true;
-            break;
-          }
-        }
-      }
-
-      if (!unlocked) {
-        return null;
-      }
-
-      if (requiredPassword && unlocked) {
-        response = await loadFiles();
-      }
-
-      const resolved = [];
-
-      let folderName = h.basename(url);
-
-      const props = JSON.parse(response);
-
-      if (props && props.html) {
-        folderName = props.page_title || folderName;
-
-        const urls = h.re.matchAll(/(?<=dtfullurl=").*?(?=")/gis, props.html);
-
-        for (const fileUrl of urls) {
-          const { source } = await http.get(fileUrl);
-          const u = h.re.matchAll(/(?<=showFileInformation\()\d+(?=\))/gis, source)[0];
-          const { source: response } = await http.post(
-            'https://cyberfile.me/account/ajax/file_details',
-            `u=${u}`,
-            {},
-            {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          );
-          resolved.push(h.re.matchAll(/(?<=openUrl\(').*?(?=')/gi, response)[0]?.replace(/\\\//gi, '/'));
-        }
-      }
-
-      return {
-        dom,
-        source,
-        folderName,
-        resolved,
-      };
-    },
-  ],
-  [[/([~an@]+\.)?saint.to\/videos/], async url => url],
-  [[/public.onlyfans.com\/files/], async url => url],
-  [[/dailystar.co.uk\//], async url => url],
-  [[/pinuderest.com\//], async url => url],
-  [
-    [/saint.to\/embed/],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-      return dom.querySelector('source')?.getAttribute('src');
-    },
-  ],
-  [
-    [/redgifs.com(\/|\\\/)ifr/],
-    async (url, http) => {
-      const id = url.split('/').reverse()[0];
-      url = `https://api.redgifs.com/v2/gifs/${id}`;
-      const token = GM_getValue('redgifs_token', null);
-      const { source } = await http.get(url, {}, { Authorization: `Bearer ${token}` });
-      if (h.contains('urls', source)) {
-        const urls = JSON.parse(source).gif.urls;
-        if (urls.hd) {
-          return urls.hd;
-        }
-
-        return urls.sd;
-      }
-
-      return null;
-    },
-  ],
-  [[/fs-\d+.cyberdrop.(me|to|cc|nl)\//, /:!cyberdrop.(me|to|cc|nl)\/a\//], url => url.replace(/(fs|img)-\d+/i, 'fs-01')],
-  [
-    [/cyberdrop.me\/a\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-
-      let resolved = [...dom?.querySelectorAll('#file')].map(file => file.getAttribute('href').replace(/fs-\d+/is, 'fs-01'));
-
-      return {
-        dom,
-        source,
-        folderName: dom.querySelector('#title').innerText.trim(),
-        resolved,
-      };
-    },
-  ],
-  [
-    [/noodlemagazine.com\/watch\//],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-      let playerIFrameUrl = dom.querySelector('#iplayer')?.getAttribute('src');
-
-      if (!playerIFrameUrl) {
-        return null;
-      }
-
-      playerIFrameUrl = playerIFrameUrl.replace('/player/', 'https://noodlemagazine.com/playlist/');
-
-      const { source } = await http.get(playerIFrameUrl);
-
-      // noinspection JSCheckFunctionSignatures
-      const props = JSON.parse(source || JSON.stringify([]));
-
-      if (props.sources && props.sources.length) {
-        return props.sources[0].file;
-      }
-
-      return null;
-    },
-  ],
-  [
-    [/spankbang.com\/.*?\/video/],
-    async (url, http) => {
-      const { source } = await http.get(url);
-
-      let streamData = h.re.matchAll(/(?<=stream_data\s=\s){.*?}.*?(?=;)/gis, source)[0].replace(/'/g, '"');
-
-      streamData = JSON.parse(streamData);
-
-      const qualities = ['240p', '320p', '480p', '720p', '1080p', '4k'].reverse();
-
-      for (const quality of qualities) {
-        if (streamData[quality].length) {
-          return streamData[quality][0];
-        }
-      }
-
-      return null;
-    },
-  ],
-  [
-    [/imagebam.com\/(view|gallery)/],
-    async (url, http) => {
-      const date = new Date();
-      date.setTime(date.getTime() + 6 * 60 * 60 * 1000);
-      const expires = '; expires=' + date.toUTCString();
-      const { source, dom } = await http.get(
-        url,
-        {},
-        {
-          cookie: 'nsfw_inter=1' + expires + '; path=/',
-        },
-      );
-
-      if (h.contains('gallery-name', source)) {
-        const resolved = [];
-
-        const imageLinksInput = dom.querySelector('.links.gallery > div:nth-child(2) > div > input');
-
-        const rawImageLinks = h.re.matchAll(/(?<=\[URL=).*?(?=])/gis, imageLinksInput.getAttribute('value'));
-
-        for (const link of rawImageLinks) {
-          const { dom } = await http.get(link);
-          resolved.push(dom?.querySelector('.main-image')?.getAttribute('src'));
-        }
+        if (!folderName) folderName = h.basename(baseUrl);
 
         return {
-          dom,
-          source,
-          folderName: dom?.querySelector('#gallery-name').innerText.trim(),
-          resolved,
-        };
-      } else {
-        return dom?.querySelector('.main-image')?.getAttribute('src');
-      }
-    },
-  ],
-  [[/img.kiwi\/images\//, /:!img.kiwi\/album\//], url => url.replace('.th.', '.').replace('.md.', '.')],
-  [
-    [/img.kiwi\/album\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-      const resolved = [...dom.querySelectorAll('.image-container > img')]
-        .map(i => i.getAttribute('src'))
-        .map(url => url.replace('.th.', '.').replace('.md.', '.'));
-
-      return {
-        dom,
-        source,
-        folderName: dom?.querySelector('meta[property="og:title"]').content.trim(),
-        resolved,
-      };
-    },
-  ],
-  [[/imgvb.com\/images\//, /:!imgvb.com\/album\//], url => url.replace('.th.', '.').replace('.md.', '.')],
-  [
-    [/imgvb.com\/album\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-      const resolved = [...dom.querySelectorAll('.image-container > img')]
-        .map(i => i.getAttribute('src'))
-        .map(url => url.replace('.th.', '.').replace('.md.', '.'));
-
-      return {
-        dom,
-        source,
-        folderName: dom?.querySelector('meta[property="og:title"]').content.trim(),
-        resolved,
-      };
-    },
-  ],
-  [[/simpcity.su\/attachments/], url => url],
-  [[/(thumbs|images)(\d+)?.imgbox.com\//, /:!imgbox.com\/g\//], url => url.replace(/_t\./gi, '_o.').replace(/thumbs/i, 'images')],
-  [
-    [/imgbox.com\/g\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-
-      const resolved = [...dom?.querySelectorAll('#gallery-view-content > a > img')]
-        .map(img => img.getAttribute('src'))
-        .map(url => url.replace(/(thumbs|t)(\d+)\./gis, 'images$2.').replace('_b.', '_o.'));
-
-      return {
-        dom,
-        source,
-        folderName: dom?.querySelector('#gallery-view > h1').innerText.trim(),
-        resolved,
-      };
-    },
-  ],
-  [
-    [/gfycat.com(\/|\\\/)/],
-    async (url, http) => {
-      url = `https://gfycat.com/${url.replace(/&amp;/g, '&').split('/').reverse()[0].replace(/\?.*/is, '')}?hd=1`;
-      const { dom } = await http.get(url);
-      return [...dom.querySelectorAll('source')].map(el => el.getAttribute('src')).filter(src => src && h.contains('giant.gfycat', src))[0];
-    },
-  ],
-  [
-    [/m\.box\.com\//],
-    async (url, http) => {
-      const { source, dom } = await http.get(url);
-      const files = [...dom.querySelectorAll('.files-item-anchor')].map(el => `https://m.box.com${el.getAttribute('href')}`);
-
-      const resolved = [];
-
-      for (const fileUrl of files) {
-        const { source, dom } = await http.get(fileUrl);
-        if (h.contains('image-preview', source)) {
-          resolved.push(dom.querySelector('.image-preview').getAttribute('src'));
-        } else {
-          resolved.push(dom.querySelector('.mtl > a').getAttribute('href'));
-        }
-      }
-
-      return {
-        source,
-        dom,
-        folderName: dom.querySelector('.folder-nav-title')?.innerText.trim(),
-        resolved: resolved.map(u => `https://m.box.com${u}`),
-      };
-    },
-  ],
-  [
-    [/imgur\.min\.|imgur.(com|io)/, /:!\w+\.imgur.(com|io)/],
-    async (url, http) => {
-      url = url.replace(/\\\//, '/');
-
-      let id;
-      let type = 'single';
-
-      if (h.contains('s9e.github.io', url)) {
-        id = h.re.matchAll(/(?<=#).*/gis, url)[0];
-        if (id[0] === 'a') {
-          type = 'album';
-          id = id.substring(2);
-        }
-      } else {
-        if (h.contains(url, 'a/')) {
-          type = 'album';
-        }
-        id = url.split('/').reverse()[0];
-      }
-
-      if (type === 'album') {
-        const { source } = await http.get(`https://api.imgur.com/3/album/${id}.json`);
-
-        const props = JSON.parse(source);
-
-        if (props.data && props.data.images) {
-          const resolved = [];
-          for (const image of props.data.images) {
-            resolved.push(image.link);
-          }
-          return {
-            dom: null,
-            source: null,
-            folderName: null,
+            dom: firstDom,
+            source: firstSource,
+            folderName,
             resolved,
-          };
-        }
-
-        return null;
-      } else {
-        const { source, dom } = await http.get(`https://imgur.com/${id}`);
-        return h.contains('og:video', source)
-          ? dom?.querySelector('meta[property="og:video"]')?.content
-          : dom?.querySelector('meta[property="og:image"]')?.content;
-      }
-    },
-  ],
-  [[/\w+\.imgur.(com|io)/], url => url],
-  [
-    [/twimg.com\//],
-    url => url.replace(/https?:\/\/pbs.twimg\.com\/media\/(.{1,15})(\?format=)?(.*)&amp;name=(.*)/, 'https://pbs.twimg.com/media/$1.$3'),
-  ],
-  [
-    [/(disk\.)?yandex\.[a-z]+/],
-    async (url, http) => {
-      const { dom } = await http.get(url);
-
-      const script = dom.querySelector('script[id="store-prefetch"]');
-
-      if (!script) {
-        return null;
-      }
-
-      const json = JSON.parse(script.innerText);
-
-      let sk,
-        hash = null;
-
-      if (json && json.environment && json.resources) {
-        sk = json.environment.sk;
-        const resourcesKeys = Object.keys(json.resources);
-        hash = json.resources[resourcesKeys[0]]?.hash;
-      }
-
-      const data = JSON.stringify({ hash, sk });
-
-      const { source } = await http.post(
-        'https://disk.yandex.ru/public/api/download-url',
-        data,
-        {},
-        {
-          'Content-Type': 'text/plain',
-        },
-      );
-
-      const response = JSON.parse(source);
-
-      if (response && response.error !== 'true' && response.data) {
-        return response.data.url;
-      }
-
-      return null;
-    },
-  ],
-  [
-    [/instagram\.min/],
-    async (url, http) => {
-      const id = url
-        .replace(/#theme.*/gis, '')
-        .split('#')
-        .reverse()[0];
-
-      const { source, dom } = await http.get(`https://www.instagram.com/p/${id}/embed`);
-      const script = [...dom.querySelectorAll('script')].map(s => s.innerText).filter(s => h.contains('shortcode_media', s))[0];
-
-      const resolved = [];
-
-      if (script) {
-        if (h.contains('"is_video":true', script)) {
-          let videoUrls = h.re.matchAll(/(?<=video_url":").*?(?=")/gis, script);
-          videoUrls.forEach(v => {
-            resolved.push(v.replace(/\\u0026/g, '&'));
-          });
-        }
-      }
-
-      if (!resolved.length) {
-        return null;
-      }
-
-      if (resolved.length > 1) {
-        return {
-          dom,
-          source,
-          folderName: null,
-          resolved,
         };
-      }
+    }
+],
 
-      return resolved[0];
-    },
-  ],
-  [
-    [/instagram.com\/[a-zA-Z0-9_.-]+|((instagram|insta):(\s+)?)@?[a-zA-Z0-9_.-]+/i],
-    async (url, http) => {
-      let id;
+    [
+        [/give.xxx\//],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+            const profileId = h.re.match(/(?<=profile-id=")\d+/, source);
 
-      if (/(instagram|insta):/is.test(url)) {
-        id = h.re
-          .matchAll(/@?.*/gis, url)[0]
-          .replace('@', '')
-          .replace(/(instagram:|insta:)/is, '')
-          .trim();
-      } else {
-        id = url.split('/').reverse()[0];
-      }
+            const resolved = [];
 
-      const headers = { 'User-Agent': 'Instagram 219.0.0.12.117 Android' };
+            let username = null;
 
-      const { source, dom } = await http.get(`https://instagram.com/${id}`, {}, headers);
+            let firstMediaId = null;
 
-      const profileId = h.re.matchAll(/(?<="profile_id":")\d+/gis, source)[0];
+            let mediaId = 1;
 
-      const apiBaseUrl = `https://www.instagram.com/api/v1/feed/user/`;
+            let iteration = 1;
 
-      const { source: response } = await h.http.get(`${apiBaseUrl}${profileId}/?count=100`, {}, headers);
+            while (true) {
+                let endpoint = `https://give.xxx/api/web/v1/accounts/${profileId}/statuses?only_media=true`;
+                endpoint += iteration === 1 ? '&min_id=1' : `&max_id=${mediaId}`;
+                const { source } = await http.get(endpoint);
+                if (h.contains('_v', source)) {
+                    const parsed = JSON.parse(source);
 
-      const collect = async response => {
-        const props = JSON.parse(response);
-        const resolved = [];
-        if (props && props.status === 'ok' && props.num_results > 0) {
-          const items = Object.values(props.items);
-          for (const item of items) {
-            if (item.product_type === 'feed') {
-              resolved.push(item.image_versions2.candidates[0].url);
-            } else if (item.product_type === 'carousel_container') {
-              resolved.push(...item.carousel_media.map(m => m.image_versions2.candidates[0].url));
-            } else if (item.product_type === 'clips') {
-              resolved.push(item.video_versions[0].url);
+                    if (username === null) {
+                        username = parsed[0].account.username;
+                    }
+
+                    if (firstMediaId === null) {
+                        firstMediaId = parsed[0].id;
+                    } else {
+                        if (firstMediaId === parsed[0].id) {
+                            break;
+                        }
+                    }
+                    resolved.push(
+                        ...parsed.flatMap(i => {
+                            return i.media_attachments
+                                .map(a => {
+                                return a.sizes;
+                            })
+                                .map(s => s.large || s.normal || s.small);
+                        }),
+                    );
+                    mediaId = parsed[parsed.length - 1].id;
+                } else {
+                    break;
+                }
+
+                iteration++;
             }
-          }
 
-          if (props.more_available === true && props.next_max_id) {
-            await h.delayedResolve(3000);
-            const { source } = await h.http.get(`${apiBaseUrl}/${profileId}/?count=100&max_id=${props.next_max_id}`, {}, headers);
-            resolved.push(...(await collect(source)));
-          }
-        }
+            return {
+                dom,
+                source,
+                folderName: username,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/(?:focus\.)?(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/[ul]/],
+        url => {
+            let resolved = url.replace('/u/', '/api/file/').replace('/l/', '/api/list/');
+            resolved = h.contains('/api/list', resolved) ? `${resolved}/zip` : resolved;
+            resolved = h.contains('/api/file', resolved) ? `${resolved}?download` : resolved;
+            return resolved;
+        },
+    ],
+    [
+        [/([~an@]+\.)?pornhub.com\/view_video/],
+        async (url, http) => {
+            url = url.replace(/([a-zA-Z0-9]+\.)?pornhub/, 'pornhub');
 
-        return resolved;
-      };
+            const resolvePH = async url => {
+                const { dom } = await http.get(
+                    url,
+                    {},
+                    {
+                        referer: url,
+                        cookie: 'age-verified: 1; platform=tv; cookiesBannerSeen=1; hasVisited=1',
+                    },
+                );
+                const script = [...dom.querySelectorAll('script')]
+                .map(s => s.innerText)
+                .filter(s => /var\smedia_\d+/gis.test(s))
+                .map(s => {
+                    return {
+                        mediaVars: h.re.matchAll(/var\smedia_\d+=.*?;/gis, s),
+                        flashVars: s,
+                    };
+                })[0];
 
-      const resolved = await collect(response);
+                const { mediaVars, flashVars } = script;
 
-      const props = JSON.parse(response);
+                return mediaVars
+                    .map(m => {
+                    const cleaned = m
+                    .replace(/\/\*.*?\*\//gis, '')
+                    .replace(/var\smedia_\d+=/i, '')
+                    .replace(';', '');
 
-      const folderName = props && props.user ? props.user.full_name : id;
+                    return cleaned
+                        .split('+')
+                        .map(s => s.trim())
+                        .map(s => {
+                        let value = new RegExp(`var ${s}=".*?"`, 'isg').exec(flashVars)[0];
+                        value = value.replace(/.*?"/i, '').replace(/"/i, '');
+                        return value;
+                    })
+                        .join('');
+                })
+                    .find(url => url.indexOf('pornhub.com/video/get_media?s=') > -1);
+            };
 
-      if (resolved.length > 1) {
-        return {
-          dom,
-          source,
-          folderName,
-          resolved: resolved.map(url => url.replace(/\\u0026/g, '&')),
+            let parsed = null;
+
+            let tries = 0;
+
+            // Scumbag pornhub won't send the right json link the first time.
+            // Still, there are ocassional 403s / redirects.
+            // TODO: Fix me
+            do {
+                const infoURL = await resolvePH(url);
+
+                if (!infoURL) {
+                    continue;
+                }
+
+                try {
+                    const { source } = await h.http.get(infoURL);
+                    const json = JSON.parse(source);
+                    const fetchedFormats = json.reverse();
+                    const qualities = ['1080', '720', '480', '320', '240'];
+                    for (const q of qualities) {
+                        const f = fetchedFormats.find(f => f.quality === q);
+                        if (f && f.videoUrl) {
+                            parsed = f.videoUrl;
+                            break;
+                        }
+                    }
+                } catch (e) {}
+                await h.delayedResolve(1000);
+                tries++;
+            } while (!parsed && tries < 20);
+
+            return parsed;
+        },
+    ],
+    [
+        [/gofile.io\/d/],
+        async (url, http, spoilers, postId) => {
+        const WT_KEY = 'xfpd_gofile_wt';
+        const AT_KEY = 'xfpd_gofile_at';
+        const WT_MAX_AGE_MS = 24 * 3600 * 1000;
+        const AT_MAX_AGE_MS = 24 * 3600 * 1000;
+
+        const gmGet = (key, fallback) => {
+            try {
+                return typeof GM_getValue === 'function' ? GM_getValue(key, fallback) : fallback;
+            } catch (e) {
+                return fallback;
+            }
         };
-      }
+
+        const gmSet = (key, val) => {
+            try {
+                if (typeof GM_setValue === 'function') GM_setValue(key, val);
+            } catch (e) {}
+        };
+
+        const gmReq = async (method, url, data = null, headers = {}, responseType = 'text') => {
+            return await http.base(method, url, {}, headers, data, responseType);
+        };
+
+        // GoFile no longer uses the static appdata.wt from config.js for /contents.
+        // The website now derives a per-request X-Website-Token from the account token
+        // via generateWT() in https://gofile.io/js/wt.obf.js (moved from /dist/js/ in a
+        // 2026-08-13 site redesign -- the old path now 404s to the SPA shell's index.html,
+        // which silently fails the /generateWT/ source check below), i.e.:
+        //   WT = sha256(navigator.userAgent + "::" + navigator.language + "::" + token + "::<time>::<salt>")
+        // <time> is NOT a static value -- it's Math.floor(Date.now() / 1000 / 14400) (a
+        // 4-hour bucket), recomputed live inside generateWT() itself. <salt> is the one
+        // actual fixed constant, which can still change whenever GoFile updates the file.
+        // We fetch the script live, eval it in a scoped Function (it only reads navigator,
+        // and the function declaration stays local, not leaked to global), and cache the
+        // source for a day -- safe because we call the eval'd generateWT() fresh on every
+        // request, so Date.now() is always evaluated at call time, not baked in when the
+        // source was cached. WT must be computed with the same UA/language the request is
+        // sent with; the language is also echoed back to the server via the X-BL header.
+        let cachedGenerateWT = null;
+
+        const getGenerateWT = async (force = false) => {
+            if (!force && cachedGenerateWT) return cachedGenerateWT;
+
+            const now = Date.now();
+            const cached = gmGet(WT_KEY, null);
+            let src =
+                !force && cached && cached.src && cached.ts && now - cached.ts < WT_MAX_AGE_MS
+                    ? cached.src
+                    : null;
+
+            if (!src) {
+                const { source } = await gmReq('GET', 'https://gofile.io/js/wt.obf.js', null, {}, 'text');
+                src = source || '';
+                if (!src || !/generateWT/.test(src)) {
+                    throw new Error('Could not fetch GoFile wt.obf.js (generateWT).');
+                }
+                gmSet(WT_KEY, { src, ts: now });
+            }
+
+            try {
+                const factory = new Function(
+                    'navigator',
+                    `${src}\nreturn (typeof generateWT === 'function') ? generateWT : null;`,
+                );
+                const fn = factory(navigator);
+                if (typeof fn !== 'function') throw new Error('no generateWT');
+                cachedGenerateWT = fn;
+                return fn;
+            } catch (e) {
+                throw new Error('Could not evaluate GoFile generateWT().');
+            }
+        };
+
+        const computeWebsiteToken = async (token, force = false) => {
+            const gen = await getGenerateWT(force);
+            return gen(token);
+        };
+
+        const createAccountToken = async () => {
+            // Live site creates the guest account with a plain POST (no website-token).
+            const { source } = await gmReq(
+                'POST',
+                'https://api.gofile.io/accounts',
+                JSON.stringify({}),
+                {
+                    accept: 'application/json',
+                    'content-type': 'application/json',
+                },
+                'text',
+            );
+
+            const json = JSON.parse(source || '{}');
+
+            if (!json || json.status !== 'ok' || !json.data || !json.data.token) {
+                throw new Error(`createAccount failed: ${json?.message || json?.status || 'unknown'}`);
+            }
+
+            const token = json.data.token;
+
+            // Sync/activate the fresh guest token server-side. The website does this via
+            // GET /accounts/website before it will resolve /contents for that token.
+            try {
+                await gmReq(
+                    'GET',
+                    'https://api.gofile.io/accounts/website',
+                    null,
+                    { accept: 'application/json', authorization: `Bearer ${token}` },
+                    'text',
+                );
+            } catch (e) {}
+
+            try {
+                settings.hosts.goFile.token = token;
+            } catch (e) {}
+
+            gmSet(AT_KEY, { token, ts: Date.now() });
+            await gofileSyncCookie(token);
+            return token;
+        };
+
+        const getAccountToken = async (force = false) => {
+            // If the user provided a personal Bearer token, always use it.
+            // (This is optional; leaving it empty keeps the anonymous account-token flow.)
+            let token = null;
+            try {
+                const override = settings?.hosts?.goFile?.bearerOverride;
+                if (override && String(override).trim() !== '') {
+                    token = String(override).trim();
+                }
+            } catch (e) {}
+
+            if (!token) {
+                const now = Date.now();
+                const cached = gmGet(AT_KEY, null);
+                if (!force && cached && cached.token && cached.ts && now - cached.ts < AT_MAX_AGE_MS) {
+                    token = cached.token;
+                    try {
+                        settings.hosts.goFile.token = token;
+                    } catch (e) {}
+                }
+            }
+
+            if (!token) {
+                try {
+                    if (!force && settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) {
+                        token = settings.hosts.goFile.token;
+                    }
+                } catch (e) {}
+            }
+
+            if (!token) {
+                // createAccountToken() already syncs the cookie for this token; avoid a double sync below.
+                return await createAccountToken();
+            }
+
+            await gofileSyncCookie(token);
+            return token;
+        };
+
+        const apiContentsRaw = async (contentId, passwordHash, token) => {
+            const wt = await computeWebsiteToken(token);
+
+            // Match the website's getContent() query shape (pagination + sort) exactly.
+            const params = [
+                'contentFilter=',
+                'page=1',
+                'pageSize=1000',
+                'sortField=createTime',
+                'sortDirection=-1',
+            ];
+            if (passwordHash) params.push(`password=${encodeURIComponent(passwordHash)}`);
+            const apiUrl = `https://api.gofile.io/contents/${encodeURIComponent(contentId)}?${params.join('&')}`;
+
+            const { source } = await gmReq(
+                'GET',
+                apiUrl,
+                null,
+                {
+                    accept: 'application/json',
+                    authorization: `Bearer ${token}`,
+                    'x-website-token': wt,
+                    'x-bl': (typeof navigator !== 'undefined' && navigator.language) || '',
+                },
+                'text',
+            );
+
+            return JSON.parse(source || '{}');
+        };
+
+        const apiContents = async (contentId, passwordHash) => {
+            let token = await getAccountToken(false);
+
+            let json = await apiContentsRaw(contentId, passwordHash, token);
+            if (json && json.status === 'ok') return json;
+
+            const s = String(json?.status || json?.message || '').toLowerCase();
+
+            if (s.includes('unauthorized') || s.includes('token') || s.includes('invalid')) {
+                // Refresh both the salts (wt.obf.js may have rotated) and the guest token.
+                await getGenerateWT(true);
+                token = await getAccountToken(true);
+                json = await apiContentsRaw(contentId, passwordHash, token);
+                return json;
+            }
+
+            return json;
+        };
+
+        const resolveAlbum = async (urlOrId, spoilers) => {
+            const id = String(urlOrId).includes('gofile.io/d/') ? String(urlOrId).split('/').reverse()[0] : String(urlOrId);
+
+            let props = await apiContents(id, null);
+
+            if (props && props.status === 'error-notFound') {
+                log.host.error(postId, `::Album not found::: ${urlOrId}`, 'gofile.io');
+                    return null;
+                }
+
+            if (props && props.status === 'error-notPublic') {
+                log.host.error(postId, `::Album not public::: ${urlOrId}`, 'gofile.io');
+                    return null;
+                }
+
+            if (props && props.status === 'error-passwordRequired') {
+                log.host.info(postId, `::Album requires password::: ${urlOrId}`, 'gofile.io');
+
+                if (!spoilers || !spoilers.length) {
+                    return props;
+                }
+
+                        log.host.info(postId, `::Trying with ${spoilers.length} available password(s)::`, 'gofile.io');
+
+                    for (const spoiler of spoilers) {
+                        const hash = sha256(spoiler);
+                    const attempt = await apiContents(id, hash);
+
+                    if (attempt && attempt.status === 'ok') {
+                            log.host.info(postId, `::Successfully authenticated with:: ${spoiler}`, 'gofile.io');
+                        props = attempt;
+                        break;
+                        }
+                    }
+                }
+
+                return props;
+            };
+
+            const props = await resolveAlbum(url, spoilers);
+
+            let folderName = h.basename(url);
+
+        if (!props || props.status !== 'ok' || !props.data) {
+            if (props && props.status === 'error-passwordRequired') {
+                log.host.error(postId, `::Password required (no valid password found)::: ${url}`, 'gofile.io');
+            } else {
+                log.host.error(postId, `::Unable to resolve album::: ${url}`, 'gofile.io');
+            }
+
+                return {
+                    dom: null,
+                    source: null,
+                    folderName,
+                    resolved: [],
+                };
+            }
+
+            const resolved = [];
+
+            // Some /d/ links point directly at a file, not a folder -- /contents/{id} then
+            // returns data.type === 'file' with no data.children. Shared by the root-level
+            // case below and the folder-iteration loop, so the link-picking logic (and the
+            // filename-cache side effect) only lives in one place.
+            const resolveGofileFileLink = obj => {
+                if (!obj) return null;
+
+                const fileId = obj.id || obj.code;
+                const fileName = encodeURIComponent(obj.name || fileId || 'file');
+
+                // Prefer direct/CDN links when available. Do NOT force /download/web/
+                // (web flow can return album HTML).
+                const candidates = [obj.directLink, obj.link, obj.downloadLink].filter(Boolean);
+                const link =
+                    candidates.find(u => /\/download\/direct\//i.test(String(u))) ||
+                    candidates[0] ||
+                    (fileId ? `https://gofile.io/download/web/${fileId}/${fileName}` : null);
+
+                if (link) {
+                    // Preserve original GoFile filename (from API) so we don't rely on URL-encoded path segment.
+                    try {
+                        if (obj.name) {
+                            if (fileId) gofileNameById.set(String(fileId), String(obj.name));
+                            gofileNameByUrl.set(String(link), String(obj.name));
+                        }
+                    } catch (e) {}
+                }
+
+                return link;
+            };
+
+            const getChildAlbums = async (props, spoilers) => {
+                if (!props || props.status !== 'ok' || !props.data) {
+                    return [];
+                }
+
+                const resolved = [];
+
+            folderName = props.data.name || folderName;
+
+                if (props.data.type === 'file') {
+                    const link = resolveGofileFileLink(props.data);
+                    if (link) resolved.push(link);
+                    return resolved;
+                }
+
+                if (!props.data.children) {
+                    return [];
+                }
+
+                const files = props.data.children;
+
+                for (const file in files) {
+                    const obj = files[file];
+
+                if (!obj) continue;
+
+                    if (obj.type === 'file') {
+                        const link = resolveGofileFileLink(obj);
+                        if (link) resolved.push(link);
+                } else if (obj.type === 'folder') {
+                    const folderId = obj.id || obj.code;
+                    if (!folderId) continue;
+
+                    const folderProps = await resolveAlbum(folderId, spoilers);
+                        resolved.push(...(await getChildAlbums(folderProps, spoilers)));
+                    }
+                }
+
+                return resolved;
+            };
+
+            resolved.push(...(await getChildAlbums(props, spoilers)));
+
+            if (!resolved.length) {
+                log.host.error(postId, `::Empty album::: ${url}`, 'gofile.io');
+            }
+
+            return {
+                dom: null,
+                source: null,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/cyberfile.(su|me)\//, /:!cyberfile.(su|me)\/folder\//],
+        async (url, http, spoilers) => {
+            const { source } = await http.get(url);
+            const u = h.re.matchAll(/(?<=showFileInformation\()\d+(?=\))/gis, source)[0];
+
+            const getFileInfo = async () => {
+                const { source } = await http.post(
+                    'https://cyberfile.me/account/ajax/file_details',
+                    `u=${u}`,
+                    {},
+                    {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                );
+                return source;
+            };
+
+            let response = await getFileInfo();
+
+            let requiredPassword = false;
+            let unlocked = false;
+
+            if ((h.contains('albumPasswordModel', response) || h.contains('This folder requires a password', response)) && spoilers.length) {
+                const html = JSON.parse(response).html;
+
+                const matches = /value="(\d+)"\sid="folderId"|value="(\d+)"\sname="folderId"/is.exec(html);
+
+                const folderId = matches.length ? matches[1] : null;
+
+                if (!folderId) {
+                    return null;
+                }
+
+                requiredPassword = true;
+                for (const password of spoilers) {
+                    const { source } = await http.post(
+                        'https://cyberfile.me/ajax/folder_password_process',
+                        `submitme=1&folderId=${folderId}&folderPassword=${password}`,
+                        {},
+                        {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+
+                    if (h.contains('success', source) && JSON.parse(source).success === true) {
+                        unlocked = true;
+                        break;
+                    }
+                }
+            }
+
+            if (requiredPassword && unlocked) {
+                response = await getFileInfo();
+            }
+
+            return h.re.matchAll(/(?<=openUrl\(').*?(?=')/gi, response)[0]?.replace(/\\\//gi, '/');
+        },
+    ],
+    [
+        [/cyberfile.(su|me)\/folder\//],
+        async (url, http, spoilers) => {
+            const { source, dom } = await http.get(url);
+
+            const script = [...dom.querySelectorAll('script')].map(s => s.innerText).filter(s => h.contains('data-toggle="tab"', s))[0];
+
+            const nodeId = h.re.matchAll(/(?<='folder',\s').*?(?=')/gis, script);
+
+            const loadFiles = async () => {
+                const { source } = await http.post(
+                    'https://cyberfile.me/account/ajax/load_files',
+                    `pageType=folder&nodeId=${nodeId}`,
+                    {},
+                    {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                );
+                return source;
+            };
+
+            let response = await loadFiles();
+
+            let requiredPassword = false;
+            let unlocked = false;
+
+            if ((h.contains('albumPasswordModel', response) || h.contains('This folder requires a password', response)) && spoilers.length) {
+                requiredPassword = true;
+                for (const password of spoilers) {
+                    const { source } = await http.post(
+                        'https://cyberfile.me/ajax/folder_password_process',
+                        `submitme=1&folderId=${nodeId}&folderPassword=${password}`,
+                        {},
+                        {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+
+                    if (h.contains('success', source) && JSON.parse(source).success === true) {
+                        unlocked = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!unlocked) {
+                return null;
+            }
+
+            if (requiredPassword && unlocked) {
+                response = await loadFiles();
+            }
+
+            const resolved = [];
+
+            let folderName = h.basename(url);
+
+            const props = JSON.parse(response);
+
+            if (props && props.html) {
+                folderName = props.page_title || folderName;
+
+                const urls = h.re.matchAll(/(?<=dtfullurl=").*?(?=")/gis, props.html);
+
+                for (const fileUrl of urls) {
+                    const { source } = await http.get(fileUrl);
+                    const u = h.re.matchAll(/(?<=showFileInformation\()\d+(?=\))/gis, source)[0];
+                    const { source: response } = await http.post(
+                        'https://cyberfile.me/account/ajax/file_details',
+                        `u=${u}`,
+                        {},
+                        {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    resolved.push(h.re.matchAll(/(?<=openUrl\(').*?(?=')/gi, response)[0]?.replace(/\\\//gi, '/'));
+                }
+            }
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/([\w-]+\.)?turbo\.cr\/a\//],
+        async (url, http) => {
+            const { dom, source } = await http.get(url);
+
+            // Album folder naming (stable + readable): turbo_<albumId> - <title>
+            const mAlbum = url.match(/\/a\/([^\/?#]+)/i);
+            const albumId = mAlbum ? mAlbum[1] : null;
+            const base = albumId ? `turbo_${albumId}` : 'turbo_album';
+
+            const rawTitle = dom?.querySelector('h1')?.textContent?.trim() || '';
+            const invalidSub = settings.naming.invalidCharSubstitute || '_';
+
+            let safeTitle = rawTitle
+            .replace(/[\\/:*?"<>|]/g, invalidSub)
+            .replace(/\s+/g, ' ')
+            .trim();
+
+            // Cap title to avoid extremely long Windows paths
+            if (safeTitle.length > 120) safeTitle = safeTitle.slice(0, 120).trim();
+
+            let folderName = base;
+            if (safeTitle && safeTitle.toLowerCase() !== base.toLowerCase()) {
+                folderName = `${safeTitle} - ${base}`;
+            }
+
+            // Final sanitize (defensive)
+            folderName = folderName
+                .replace(/[\\/:*?"<>|]/g, invalidSub)
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            // Hard cap for safety
+            if (folderName.length > 180) folderName = folderName.slice(0, 180).trim();
+
+            // Map videoId -> original filename (from album HTML)
+            const idToName = new Map();
+
+            // Collect video ids (and names) from the table rows (server-rendered HTML)
+            let ids = Array.from(dom?.querySelectorAll('tr.file-row') || [])
+            .map(row => {
+                const a = row.querySelector('a[href^="/v/"]');
+                const id = (a?.getAttribute('href') || '').match(/\/v\/([^\/?#]+)/i)?.[1];
+                if (id) {
+                    const nm = row.getAttribute('data-name') || row.dataset?.name;
+                    if (nm) idToName.set(id, nm);
+                }
+                return id;
+            })
+            .filter(Boolean)
+            .unique();
+
+            // Fallback: regex scan (if DOM parsing fails)
+            if (!ids.length && source) {
+                ids = (source.match(/href="\/v\/([^"?#]+)"/gi) || [])
+                    .map(s => (s.match(/\/v\/([^"?#]+)/i) || [null, null])[1])
+                    .filter(Boolean)
+                    .unique();
+            }
+
+            const resolved = [];
+
+            for (const id of ids) {
+                const embedUrl = `https://turbo.cr/embed/${id}`;
+                let signed = null;
+                try {
+                    signed = await xfpdTurboSignUrlWithTimeout(id, embedUrl, idToName.get(id));
+                } catch (e) {}
+
+// Fallback: if signing fails, try to read media URL from the embed page
+                if (!signed) {
+                    try {
+                        const { dom: edom } = await http.get(embedUrl, {}, { Referer: embedUrl });
+                        const src =
+                              edom?.querySelector('source[src]')?.getAttribute('src') ||
+                              edom?.querySelector('video[src]')?.getAttribute('src');
+                        if (src) {
+                            signed = new URL(src, embedUrl).toString();
+                        }
+                    } catch (e) {}
+                }
+
+                // If we got a Turbo CDN URL and have an original name, attach fn=
+                if (signed && /turbocdn\.st/i.test(signed)) {
+                    const originalName = idToName.get(id);
+                    if (originalName && !/[?&]fn=/.test(signed)) {
+                        const enc = encodeURIComponent(String(originalName)).replace(/%20/g, '+');
+                        signed += (signed.includes('?') ? '&' : '?') + 'fn=' + enc;
+                    }
+                }
+
+                // If sign fails, keep a workable fallback
+                if (signed && id) {
+                    try { turboIdBySignedUrl.set(String(signed), String(id)); } catch (e) {}
+                }
+                resolved.push(signed || `https://turbo.cr/d/${id}`);
+            }
+
+            return {
+                dom,
+                source,
+                folderName,
+                resolved,
+            };
+        },
+    ],
+    [
+        [/([\w-]+\.)?turbo\.cr\/(v|d)\//],
+        async (url, http) => {
+            const mm = url.match(/\/(v|d)\/([^\/?#]+)/i);
+            let id = mm ? mm[2] : null;
+            if (!id) {
+                return url;
+            }
+
+            const embedUrl = `https://turbo.cr/embed/${id}`;
+            try {
+                const signed = await xfpdTurboSignUrlWithTimeout(id, embedUrl, null);
+                if (signed) return signed;
+            } catch (e) {}
+
+// Fallback: try to read <source>/<video> directly from the embed page
+            try {
+                const { dom } = await http.get(embedUrl, {}, { Referer: embedUrl });
+                const src =
+                      dom?.querySelector('source[src]')?.getAttribute('src') ||
+                      dom?.querySelector('video[src]')?.getAttribute('src');
+                if (src) {
+                    return new URL(src, embedUrl).toString();
+                }
+            } catch (e) {}
+
+            // Last fallback: the site's direct download route
+            return `https://turbo.cr/d/${id}`;
+        },
+    ],
+    [[/public.onlyfans.com\/files/], async url => url],
+    [
+        [/([\w-]+\.)?turbo\.cr\/embed/],
+        async (url, http) => {
+            const m = url.match(/\/embed\/([^\/?#]+)/i);
+            const id = m ? m[1] : null;
+            if (!id) {
+                return null;
+            }
+
+            const embedUrl = `https://turbo.cr/embed/${id}`;
+            try {
+                const signed = await xfpdTurboSignUrlWithTimeout(id, embedUrl, null);
+                if (signed) return signed;
+            } catch (e) {}
+
+// Fallback: try to read <source> / <video> directly if present
+            try {
+                const { dom } = await http.get(embedUrl, {}, { Referer: embedUrl });
+                const src =
+                      dom?.querySelector('source[src]')?.getAttribute('src') ||
+                      dom?.querySelector('video[src]')?.getAttribute('src');
+                if (src) {
+                    return new URL(src, embedUrl).toString();
+                }
+            } catch (e) {}
+
+            return null;
+
+        },
+    ],
+
+    [
+        [/redgifs\.com\/users\//i],
+        async (url, http, passwords, postId, postSettings, progressCB) => {
+            const raw = String(url || '');
+            const m = raw.match(/redgifs\.com\/users\/([^\/?#]+)/i);
+            const username = m && m[1] ? decodeURIComponent(m[1]) : '';
+
+            if (!username) {
+                return null;
+            }
+
+            const baseUrl = `https://www.redgifs.com/users/${username}`;
+
+            const fetchTempToken = async () => {
+                try {
+                    const { source, status } = await http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
+                    if (status === 200 && source && h.contains('token', source)) {
+                        const token = JSON.parse(source).token;
+                        if (token) {
+                            GM_setValue('redgifs_token', token);
+                        }
+                        return token || null;
+                    }
+                } catch (e) {}
+                return null;
+            };
+
+            let token = GM_getValue('redgifs_token', null);
+            if (!token) {
+                token = await fetchTempToken();
+            }
+            if (!token) {
+                return null;
+            }
+
+            const preferredKeys = ['hd', 'hd1080', 'hd720', 'sd', 'mp4'];
+            const resolved = [];
+
+            const MAX_PAGES = 5000;
+            const COUNT = 80;
+            const ORDER = 'new';
+
+            const fetchPage = async (page, t) => {
+                const apiUrl = `https://api.redgifs.com/v2/users/${encodeURIComponent(username)}/search?order=${ORDER}&page=${page}&count=${COUNT}`;
+                try {
+                    return await http.get(apiUrl, {}, { Authorization: `Bearer ${t}` }, 'text');
+                } catch (e) {
+                    return { source: null, status: 0 };
+                }
+            };
+
+            const tryFetchPage = async (page) => {
+                let attempt = 0;
+                let last = { source: null, status: 0 };
+
+                while (attempt < 3) {
+                    attempt++;
+
+                    last = await fetchPage(page, token);
+
+                    if (last.status === 429) {
+                        await new Promise(r => setTimeout(r, 800 * attempt));
+                        continue;
+                    }
+
+                    if (last.status === 401 || last.status === 403 || (last.source && /unauthorized|forbidden/i.test(last.source))) {
+                        token = await fetchTempToken();
+                        if (!token) {
+                            return last;
+                        }
+                        last = await fetchPage(page, token);
+                    }
+
+                    return last;
+                }
+
+                return last;
+            };
+
+            let pages = 1;
+
+            for (let page = 1; page <= pages && page <= MAX_PAGES; page++) {
+                if (typeof progressCB === 'function') {
+                    progressCB(`Resolving: ${baseUrl} (page ${page}/${pages})`);
+                }
+
+                const { source, status } = await tryFetchPage(page);
+
+                if (status !== 200 || !source) {
+                    break;
+                }
+
+                let j;
+                try {
+                    j = JSON.parse(source);
+                } catch (e) {
+                    break;
+                }
+
+                const gifs = Array.isArray(j?.gifs) ? j.gifs : (Array.isArray(j?.results) ? j.results : []);
+                pages = Number(j?.pages) || pages;
+
+                for (const g of gifs) {
+                    const urls = g?.urls || g?.gif?.urls;
+                    if (!urls) {
+                        continue;
+                    }
+
+                    let best = null;
+
+                    for (const k of preferredKeys) {
+                        const v = urls[k];
+                        if (typeof v === 'string' && /^https?:\/\//i.test(v)) {
+                            best = v;
+                            break;
+                        }
+                    }
+
+                    if (!best) {
+                        for (const v of Object.values(urls)) {
+                            if (typeof v === 'string' && /^https?:\/\//i.test(v) && /\.mp4(\?|$)/i.test(v)) {
+                                best = v;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (best) {
+                        resolved.push(best);
+                    }
+                }
+
+                if (!gifs.length) {
+                    break;
+                }
+
+                await new Promise(r => setTimeout(r, 75));
+            }
+
+            if (!resolved.length) {
+                return null;
+            }
+
+            return {
+                folderName: username,
+                resolved,
+            };
+        },
+    ],
+[
+        [/redgifs\.com(\/|\\\/)(ifr|watch|gifs\/detail|gifs\/watch)/i],
+        async (url, http) => {
+            const raw = String(url || '');
+            const idMatch =
+                  raw.match(/redgifs\.com(?:\/|\\\/)(?:ifr(?:\/|\\\/)|watch(?:\/|\\\/)|gifs(?:\/|\\\/)detail(?:\/|\\\/))?([a-z0-9_-]+)/i) ||
+                  raw.match(/\/([a-z0-9_-]+)(?:\?.*)?$/i);
+            const id = (idMatch && idMatch[1] ? String(idMatch[1]) : '').match(/[a-z0-9_-]+/i)?.[0];
+
+            if (!id) {
+                return null;
+            }
+
+            const fetchTempToken = async () => {
+                try {
+                    const { source, status } = await http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
+                    if (status === 200 && source && h.contains('token', source)) {
+                        const token = JSON.parse(source).token;
+                        if (token) {
+                            GM_setValue('redgifs_token', token);
+                        }
+                        return token || null;
+                    }
+                } catch (e) {}
+                return null;
+            };
+
+            let token = GM_getValue('redgifs_token', null);
+            if (!token) {
+                token = await fetchTempToken();
+            }
+            if (!token) {
+                return null;
+            }
+
+            const apiUrl = `https://api.redgifs.com/v2/gifs/${id}`;
+
+            const fetchGif = async t => {
+                try {
+                    return await http.get(apiUrl, {}, { Authorization: `Bearer ${t}` }, 'text');
+                } catch (e) {
+                    return { source: null, status: 0 };
+                }
+            };
+
+            let { source, status } = await fetchGif(token);
+
+            if (status === 401 || status === 403 || (source && /unauthorized|forbidden/i.test(source))) {
+                token = await fetchTempToken();
+                if (!token) {
+                    return null;
+                }
+                ({ source, status } = await fetchGif(token));
+            }
+
+            if (status !== 200 || !source) {
+                return null;
+            }
+
+            let j;
+            try {
+                j = JSON.parse(source);
+            } catch (e) {
+                return null;
+            }
+
+            const urls = j?.gif?.urls || j?.urls;
+            if (!urls) {
+                return null;
+            }
+
+            const preferredKeys = ['hd', 'hd1080', 'hd720', 'sd', 'mp4'];
+            for (const k of preferredKeys) {
+                const v = urls[k];
+                if (typeof v === 'string' && /^https?:\/\//i.test(v)) {
+                    return v;
+                }
+            }
+
+            for (const v of Object.values(urls)) {
+                if (typeof v === 'string' && /\.mp4(\?|$)/i.test(v)) {
+                    return v;
+                }
+            }
+
+            return null;
+        },
+    ],
+
+    [
+        [/fs-\d+\.cyberdrop\.[a-z]{2,}\/|cyberdrop\.[a-z]{2,}\/a\//],
+        async (url, http, passwords, postId, postSettings, progressCB) => {
+            // Cyberdrop albums (/a/<id>) are HTML pages listing many /f/<id> file links.
+            // Resolve the album to a list of signed CDN URLs via the file auth API (no per-file warm-up tabs).
+            try {
+                url = String(url || '').trim();
+                if (url.startsWith('//')) url = 'https:' + url;
+                if (!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/, '');
+
+                const albumIdMatch = url.match(/\/a\/([^\/?#]+)/i);
+                const albumId = albumIdMatch ? albumIdMatch[1] : '';
+
+                const pageUrl = url;
+                let pageOrigin = 'https://cyberdrop.cr';
+                try { pageOrigin = new URL(pageUrl).origin; } catch (e) {}
+
+                const decodeHtml = (s) => {
+                    try {
+                        const t = document.createElement('textarea');
+                        t.innerHTML = String(s || '');
+                        return t.value;
+                    } catch (e) {
+                        return String(s || '');
+                    }
+                };
+
+                const getAlbumHtml = async () => {
+                    progressCB?.('Cyberdrop: loading album page');
+                    const r = await http.get(pageUrl, {}, {
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Referer': pageOrigin + '/',
+                        'Origin': pageOrigin,
+                    }, 'text');
+                    return r && r.source ? r.source : '';
+                };
+
+                let html = await getAlbumHtml();
+
+                const extractSlugs = (src) => {
+                    const slugs = [];
+                    const seen = new Set();
+                    const re = /href\s*=\s*["'](?:https?:\/\/(?:[\w-]+\.)*cyberdrop\.[a-z.]+)?\/f\/([A-Za-z0-9_-]+)(?:[\/?#"'])/ig;
+                    let m;
+                    while ((m = re.exec(src || '')) !== null) {
+                        const s = m[1];
+                        if (s && !seen.has(s)) {
+                            seen.add(s);
+                            slugs.push(s);
+                        }
+                    }
+                    return slugs;
+                };
+
+                let slugs = extractSlugs(html);
+
+                // If the HTML is gated/empty, do a single warm-up of the album page and retry once.
+                if (!slugs.length && typeof cyberdropWarmupOnce === 'function') {
+                    await cyberdropWarmupOnce(pageUrl);
+                    html = await getAlbumHtml();
+                    slugs = extractSlugs(html);
+                }
+
+                if (!slugs.length) return url;
+
+                const pickTitle = (src) => {
+                    const m1 = src.match(/property=["']og:title["'][^>]*content=["']([^"']+)["']/i) ||
+                               src.match(/content=["']([^"']+)["'][^>]*property=["']og:title["']/i);
+                    const m2 = src.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+                    const m3 = src.match(/<title[^>]*>([^<]+)<\/title>/i);
+                    let t = (m1 && (m1[1] || m1[2])) || (m2 && m2[1]) || (m3 && m3[1]) || '';
+                    t = decodeHtml(t).trim();
+                    // Strip common site suffixes
+                    t = t.replace(/\s*\|\s*CyberDrop.*$/i, '').replace(/\s*-\s*CyberDrop.*$/i, '').trim();
+                    if (!t) t = albumId ? `cyberdrop_${albumId}` : 'cyberdrop_album';
+                    return t;
+                };
+
+                const folderName = pickTitle(html);
+
+                // Capture per-file names from the album page so downloads keep extensions.
+                try {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const nodes = doc.querySelectorAll('a#file[href^="/f/"], a[id="file"][href^="/f/"], a[href^="/f/"][title][href^="/f/"]');
+                    nodes.forEach((a) => {
+                        const href = a.getAttribute('href') || '';
+                        const m = href.match(/\/f\/([A-Za-z0-9]+)/);
+                        if (!m) return;
+                        const slug = m[1];
+                        const nm = (a.getAttribute('title') || a.textContent || '').trim();
+                        if (nm) cyberdropNameBySlug.set(slug, nm);
+                    });
+                } catch (e) { /* ignore */ }
+
+                // Regex fallback (in case DOMParser is blocked).
+                try {
+                    const rxName = /href=["']\/f\/([A-Za-z0-9]+)["'][^>]*\btitle=["']([^"']+)["']/gi;
+                    let m;
+                    while ((m = rxName.exec(html)) !== null) {
+                        const slug = m[1];
+                        const nm = decodeHtml(m[2]).trim();
+                        if (nm) cyberdropNameBySlug.set(slug, nm);
+                    }
+                } catch (e) { /* ignore */ }
+
+                const host = (() => { try { return new URL(pageUrl).hostname; } catch (e) { return ''; } })();
+                const root = (String(host || '').match(/cyberdrop\.[a-z]+$/i) || [null])[0];
+                const apiBases = [];
+                if (root) apiBases.push(`https://api.${root}`);
+                apiBases.push('https://api.cyberdrop.cr');
+                const apiBaseList = [...new Set(apiBases)];
+
+                const resolved = [];
+                for (let i = 0; i < slugs.length; i++) {
+                    const slug = slugs[i];
+                    progressCB?.(`Cyberdrop: resolving ${i + 1}/${slugs.length}`);
+
+                    let j = null;
+
+                    for (const base of apiBaseList) {
+                        const apiUrl = `${base}/api/file/auth/${slug}`;
+
+                        const r = await http.get(apiUrl, {}, {
+                            'Accept': 'application/json, text/plain, */*',
+                            'Origin': pageOrigin,
+                            'Referer': pageOrigin + '/',
+                        }, 'text');
+
+                        if (!r || !r.source) continue;
+
+                        try { j = JSON.parse(r.source); } catch (e) { j = null; }
+                        if (j) break;
+                    }
+
+                    if (!j) continue;
+
+                    let direct = null;
+                    if (typeof j.url === 'string') direct = j.url;
+                    else if (j.data && typeof j.data.url === 'string') direct = j.data.url;
+                    else if (typeof j.file === 'string') direct = j.file;
+                    else if (j.data && typeof j.data.file === 'string') direct = j.data.file;
+
+                    if (typeof direct !== 'string' || !direct.trim()) continue;
+                    direct = direct.trim();
+                    if (direct.startsWith('//')) direct = 'https:' + direct;
+
+                    if (!/^https?:\/\//i.test(direct)) continue;
+                    resolved.push(direct);
+                }
+
+                if (!resolved.length) return url;
+
+                return { folderName, resolved };
+            } catch (e) {
+                return url;
+            }
+        },
+    ],
+    [
+        [/fs-\d+\.cyberdrop\.[a-z]{2,}\/|cyberdrop\.[a-z]{2,}\/(f|e)\//, /:!cyberdrop\.[a-z]{2,}\/a\//],
+        async (url, http) => {
+            // Cyberdrop embeds (/e/) expose the real file URL only after loading the /f/ page.
+            // Preferred approach:
+            //  1) Call the info API to get the signed CDN URL
+            //  2) If blocked, briefly warm up /f/ in an inactive tab and retry once
+            try {
+                // Ensure absolute URL (some posts omit the scheme, e.g. "cyberdrop.cr/e/<slug>")
+                url = String(url || '').trim();
+                if (url.startsWith('//')) url = 'https:' + url;
+                if (!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/, '');
+
+                // Normalize legacy fs-*/img-* hosts (old Cyberdrop mirrors)
+                if (url.includes('fs-') || url.includes('img-')) {
+                    url = url.replace(/(fs|img)-\d+/i, '').replace(/(to|cc|nl)-\d+/i, 'me');
+                }
+
+                const u = new URL(url);
+                const origin = `${u.protocol}//${u.hostname}`;
+                const slugMatch = String(url).match(/\/([ef])\/([^\/?#]+)/i);
+                if (!slugMatch || !slugMatch[2]) {
+                    // Not a /f/ or /e/ URL; return as-is.
+                    return url;
+                }
+
+                const slug = slugMatch[2];
+                const pageUrl = `${origin}/f/${slug}`;
+
+                const apiCandidates = [];
+
+                // New API style (observed on cyberdrop.cr): https://api.cyberdrop.cr/api/file/info/<slug>
+                const root = (u.hostname.match(/cyberdrop\.[a-z]+$/i) || [null])[0];
+                const apiBaseDefault = root ? `https://api.${root}` : 'https://api.cyberdrop.cr';
+                if (root) {
+                    apiCandidates.push(`https://api.${root}/api/file/info/${slug}`);
+                    apiCandidates.push(`https://api.${root}/api/file/auth/${slug}`);
+                }
+                // Known working for cyberdrop.cr even if the embed is on /e/
+                apiCandidates.push(`https://api.cyberdrop.cr/api/file/info/${slug}`);
+                apiCandidates.push(`https://api.cyberdrop.cr/api/file/auth/${slug}`);
+                // Additional API variants seen in the wild
+                if (root) {
+                    apiCandidates.push(`https://api.${root}/api/file/url/${slug}`);
+                    apiCandidates.push(`https://api.${root}/api/file/${slug}`);
+                    apiCandidates.push(`https://api.${root}/api/file/auth/${slug}`);
+                }
+                apiCandidates.push(`https://api.cyberdrop.cr/api/file/url/${slug}`);
+                apiCandidates.push(`https://api.cyberdrop.cr/api/file/auth/${slug}`);
+                apiCandidates.push(`https://api.cyberdrop.cr/api/file/${slug}`);
+
+                // Legacy API style (older Cyberdrop): https://cyberdrop.me/api/f/<slug>
+                apiCandidates.push(`${origin}/api/f/${slug}`);
+
+                const headers = {
+                    Accept: 'application/json, text/plain, */*',
+                    Referer: `${origin}/`,
+                    Origin: origin,
+                };
+
+                const cyberdropGmGetText = (reqUrl, hdrs) => new Promise(resolve => {
+                    try {
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: String(reqUrl),
+                            headers: hdrs || {},
+                            responseType: 'text',
+                            anonymous: false,
+                            timeout: 6000,
+                            onload: r => resolve({ status: r.status || 0, source: String(r.responseText || r.response || '') }),
+                            onerror: () => resolve({ status: 0, source: '' }),
+                            ontimeout: () => resolve({ status: 0, source: '' }),
+                        });
+                    } catch (e) {
+                        resolve({ status: 0, source: '' });
+                    }
+                });
+
+                const cyberdropFetchText = async reqUrl => {
+                    let r = await cyberdropGmGetText(reqUrl, headers);
+                    if ((r.status === 0) && (headers.Origin || headers.Referer)) {
+                        r = await cyberdropGmGetText(reqUrl, { Accept: headers.Accept });
+                    }
+                    return r;
+                };
+
+                const fetchInfo = async () => {
+                    const parseInfoText = (txt, baseHint) => {
+                        const out = { direct: null, name: null, token: null, base: null, auth: null };
+                        const s = String(txt || '');
+                        const apiBase = (typeof baseHint === 'string' && /^https?:\/\//i.test(baseHint))
+                            ? baseHint.replace(/\/$/, '')
+                            : apiBaseDefault;
+                        if (!s) return out;
+
+                        // 1) Quick regex for absolute token URL (unescaped or JSON-escaped)
+                        const rePlain = new RegExp(`https?:\/\/[^"'\\s]+\/api\/file\/d\/${slug}\?[^"'\\s]*token=[^"'\\s]+`, 'i');
+                        let m = s.match(rePlain);
+                        if (m && m[0]) out.direct = m[0];
+
+                        if (!out.direct) {
+                            const reEsc = new RegExp(`https?:\\/\\/[^"\\s]+\\/api\\/file\\/d\\/${slug}\\?[^"\\s]*token=[^"\\s]+`, 'i');
+                            m = s.match(reEsc);
+                            if (m && m[0]) out.direct = m[0].replace(/\\\//g, '/');
+                        }
+
+                        // 2) Relative token URL (e.g. "/api/file/d/<slug>?token=...")
+                        if (!out.direct) {
+                            const reRel1 = new RegExp(`\/api\/file\/d\/${slug}\?[^"'\\s]*token=[^"'\\s]+`, 'i');
+                            m = s.match(reRel1);
+                            if (m && m[0]) out.direct = `${apiBase}${m[0]}`;
+                        }
+
+                        if (!out.direct) {
+                            const reRel2 = new RegExp(`api\/file\/d\/${slug}\?[^"'\\s]*token=[^"'\\s]+`, 'i');
+                            m = s.match(reRel2);
+                            if (m && m[0]) out.direct = `${apiBase}/${m[0].replace(/^\//, '')}`;
+                        }
+
+                        // 3) JSON parse + deep scan for filename and/or token/host components
+                        try {
+                            const j = JSON.parse(s);
+                            const seen = new Set();
+
+                            const looksLikeName = v => {
+                                if (!v || typeof v !== 'string') return false;
+                                if (v.length > 260) return false;
+                                if (/^https?:\/\//i.test(v)) return false;
+                                const base = v.split(/[\\/]/).pop();
+                                return /^[^<>:"|?*\x00-\x1F]+\.[a-z0-9]{2,8}$/i.test(base);
+                            };
+
+                            const looksLikeJwt = v => {
+                                if (!v || typeof v !== 'string') return false;
+                                // Typical JWT: header.payload.sig (base64url)
+                                if (/^eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(v)) return true;
+                                return false;
+                            };
+
+                            const isTokenUrl = v => {
+                                if (!v || typeof v !== 'string') return false;
+                                return v.includes(`/api/file/d/${slug}`) && /token=/i.test(v);
+                            };
+
+                            const looksLikeBase = v => {
+                                if (!v || typeof v !== 'string') return false;
+                                // Accept origins or hostnames that look like Cyberdrop CDN
+                                if (/gigachad-cdn\.ru/i.test(v) || /cyberdrop\./i.test(v)) return true;
+                                if (/^k\d+-cd\./i.test(v)) return true;
+                                return false;
+                            };
+
+                            const normalizeBase = v => {
+                                try {
+                                    const t = String(v || '').trim();
+                                    if (!t) return null;
+                                    if (/^https?:\/\//i.test(t)) {
+                                        const uu = new URL(t);
+                                        return `${uu.protocol}//${uu.hostname}`;
+                                    }
+                                    // plain hostname
+                                    if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(t)) return `https://${t}`;
+                                } catch (e) {}
+                                return null;
+                            };
+
+                            const walk = (val, key = '') => {
+                                if (val === null || val === undefined) return;
+
+                                if (typeof val === 'string') {
+                                    const v = val;
+
+                                    if (isTokenUrl(v) && (!out.direct || v.length > out.direct.length)) out.direct = v;
+
+                                    if (!out.name) {
+                                        if (looksLikeName(v) || /(file)?name/i.test(String(key))) {
+                                            const base = v.split(/[\\/]/).pop();
+                                            if (looksLikeName(base)) out.name = base;
+                                        }
+                                    }
+
+                                    // token can be stored separately (e.g. "token": "eyJ...")
+                                    if (!out.token) {
+                                        if (/(^|[^a-z])token([^a-z]|$)/i.test(String(key)) && looksLikeJwt(v)) {
+                                            out.token = v;
+                                        } else if (looksLikeJwt(v)) {
+                                            // last resort: any JWT-looking string
+                                            out.token = v;
+                                        }
+                                    }
+
+                                    // auth URL can be provided separately (new API flow: info -> auth -> direct)
+                                    if (!out.auth) {
+                                        if (/(^|[^a-z])auth([^a-z]|$)/i.test(String(key)) && /\/api\/file\/auth\//i.test(v)) {
+                                            out.auth = v;
+                                        } else if (/\/api\/file\/auth\//i.test(v) && /cyberdrop/i.test(v)) {
+                                            out.auth = v;
+                                        }
+                                    }
+
+                                    if (!out.base && (/(cdn|host|domain|server|origin)/i.test(String(key)) || looksLikeBase(v))) {
+                                        const b = normalizeBase(v);
+                                        if (b) out.base = b;
+                                    }
+
+                                    return;
+                                }
+
+                                if (typeof val !== 'object') return;
+                                if (seen.has(val)) return;
+                                seen.add(val);
+
+                                if (Array.isArray(val)) {
+                                    for (const v of val) walk(v, key);
+                                } else {
+                                    for (const [k, v] of Object.entries(val)) walk(v, k);
+                                }
+                            };
+
+                            walk(j, '');
+
+                            // Common direct URL fields
+                            if (!out.direct) {
+                                const direct =
+                                    (j &&
+                                        (j.url ||
+                                            j.downloadUrl ||
+                                            j.download_url ||
+                                            (j.data && (j.data.url || j.data.downloadUrl || j.data.download_url)) ||
+                                            (j.file && (j.file.url || j.file.downloadUrl || j.file.download_url)) ||
+                                            (j.data && j.data.file && (j.data.file.url || j.data.file.downloadUrl || j.data.file.download_url)))) ||
+                                    null;
+                                if (direct && typeof direct === 'string') out.direct = direct;
+                            }
+
+                            // Common auth URL fields (new Cyberdrop API flow: info -> auth -> direct)
+                            if (!out.auth) {
+                                const a =
+                                    (j &&
+                                        (j.auth_url ||
+                                            j.authUrl ||
+                                            (j.data && (j.data.auth_url || j.data.authUrl)) ||
+                                            (j.file && (j.file.auth_url || j.file.authUrl)) ||
+                                            (j.data && j.data.file && (j.data.file.auth_url || j.data.file.authUrl)))) ||
+                                    null;
+                                if (a && typeof a === 'string') out.auth = a;
+                            }
+
+                            // Common filename fields
+                            if (!out.name) {
+                                const n =
+                                    (j &&
+                                        (j.name ||
+                                            j.filename ||
+                                            j.fileName ||
+                                            j.originalName ||
+                                            (j.file && (j.file.name || j.file.filename || j.file.fileName || j.file.originalName)) ||
+                                            (j.data && (j.data.name || j.data.filename || j.data.fileName || j.data.originalName)) ||
+                                            (j.data && j.data.file && (j.data.file.name || j.data.file.filename || j.data.file.fileName || j.data.file.originalName)))) ||
+                                    null;
+                                if (n && typeof n === 'string' && looksLikeName(n)) out.name = n.split(/[\\/]/).pop();
+                            }
+
+                            // If we got token but not direct, try to build a direct URL
+                            if (!out.direct && out.token) {
+                                const tok = out.token.includes('%') ? out.token : encodeURIComponent(out.token);
+                                const base = out.base || apiBase;
+                                out.direct = `${base.replace(/\/$/, '')}/api/file/d/${slug}?token=${tok}`;
+                            }
+                        } catch (e) {}
+
+                        // Normalize escaped slashes if needed
+                        if (out.direct && typeof out.direct === 'string' && out.direct.includes('\\/')) {
+                            out.direct = out.direct.replace(/\\\//g, '/');
+                        }
+
+                        // If out.direct is relative, make it absolute
+                        if (out.direct && typeof out.direct === 'string' && out.direct.startsWith('/')) {
+                            out.direct = `${apiBase}${out.direct}`;
+                        }
+
+                        // Normalize escaped slashes and relative auth URLs
+                        if (out.auth && typeof out.auth === 'string' && out.auth.includes('\\/')) {
+                            out.auth = out.auth.replace(/\\\//g, '/');
+                        }
+                        if (out.auth && typeof out.auth === 'string') {
+                            if (out.auth.startsWith('/')) {
+                                out.auth = `${apiBase}${out.auth}`;
+                            } else if (!/^https?:\/\//i.test(out.auth) && /api\/file\/auth\//i.test(out.auth)) {
+                                out.auth = `${apiBase}/${out.auth.replace(/^\/+/, '')}`;
+                            }
+                        }
+
+                        return out;
+                    };
+
+                    for (const apiUrl of apiCandidates) {
+                        try {
+                            const { source, status } = await cyberdropFetchText(apiUrl);
+                            if (status !== 200 || !source) continue;
+
+                            let baseHint = apiBaseDefault;
+                            try { baseHint = new URL(apiUrl).origin; } catch (e) {}
+                            const { direct, name, auth } = parseInfoText(source, baseHint);
+
+                            let resolvedName = name || null;
+                            let resolvedDirect = direct || null;
+
+                            // New flow: info returns auth_url; auth returns tokenized direct URL
+                            if (!resolvedDirect && auth && typeof auth === 'string') {
+                                const authUrl = auth;
+                                try {
+                                    const { source: authSource, status: authStatus } = await cyberdropFetchText(authUrl);
+                                    if (authStatus === 200 && authSource) {
+                                        let authBase = baseHint;
+                                        try { authBase = new URL(authUrl).origin; } catch (e) {}
+                                        const parsedAuth = parseInfoText(authSource, authBase);
+                                        if (!resolvedName && parsedAuth && parsedAuth.name) resolvedName = parsedAuth.name;
+                                        if (!resolvedDirect && parsedAuth && parsedAuth.direct) resolvedDirect = parsedAuth.direct;
+                                    }
+                                } catch (e) {}
+                            }
+
+                            if (resolvedName) cyberdropNameBySlug.set(String(slug), String(resolvedName));
+
+                            if (resolvedDirect && typeof resolvedDirect === 'string') {
+                                if (resolvedName) cyberdropNameByUrl.set(String(resolvedDirect), String(resolvedName));
+                                return resolvedDirect;
+                            }
+                        } catch (e) {}
+                    }
+                    return null;
+                };
+
+                // 1st attempt: API directly (some setups need two requests for ddos-guard cookies)
+                let directUrl = await fetchInfo();
+                if (!directUrl) directUrl = await fetchInfo();
+                if (directUrl) return directUrl;
+
+                // Warm-up (only one tab at a time) then retry
+                let warmKey = 'cyberdrop';
+                try { warmKey = `cyberdrop:${new URL(pageUrl).origin}`; } catch (e) { }
+                await cyberdropWarmupOnce(warmKey, pageUrl, CYBERDROP_WARMUP_DEFAULT_MS);
+
+                directUrl = await fetchInfo();
+                if (!directUrl) directUrl = await fetchInfo();
+                return directUrl || url;
+            } catch (e) {
+                return url;
+            }
+        },
+    ],
+[
+        [/noodlemagazine.com\/watch\//],
+        async (url, http) => {
+            const { dom } = await http.get(url);
+            let playerIFrameUrl = dom.querySelector('#iplayer')?.getAttribute('src');
+
+            if (!playerIFrameUrl) {
+                return null;
+            }
+
+            playerIFrameUrl = playerIFrameUrl.replace('/player/', 'https://noodlemagazine.com/playlist/');
+
+            const { source } = await http.get(playerIFrameUrl);
+
+            // noinspection JSCheckFunctionSignatures
+            const props = JSON.parse(source || JSON.stringify([]));
+
+            if (props.sources && props.sources.length) {
+                return props.sources[0].file;
+            }
+
+            return null;
+        },
+    ],
+    [
+        [/spankbang.com\/.*?\/video/],
+        async (url, http) => {
+            const { source } = await http.get(url);
+
+            let streamData = h.re.matchAll(/(?<=stream_data\s=\s){.*?}.*?(?=;)/gis, source)[0].replace(/'/g, '"');
+
+            streamData = JSON.parse(streamData);
+
+            const qualities = ['240p', '320p', '480p', '720p', '1080p', '4k'].reverse();
+
+            for (const quality of qualities) {
+                if (streamData[quality].length) {
+                    return streamData[quality][0];
+                }
+            }
+
+            return null;
+        },
+    ],
+
+    [
+        [/imagebam.com\/(view|gallery)/],
+        async (url, http) => {
+            const date = new Date();
+            date.setTime(date.getTime() + 6 * 60 * 60 * 1000);
+            const expires = '; expires=' + date.toUTCString();
+            const { source, dom } = await http.get(
+                url,
+                {},
+                {
+                    cookie: 'nsfw_inter=1' + expires + '; path=/',
+                },
+            );
+
+            if (h.contains('gallery-name', source)) {
+                const resolved = [];
+
+                const imageLinksInput = dom.querySelector('.links.gallery > div:nth-child(2) > div > input');
+
+                const rawImageLinks = h.re.matchAll(/(?<=\[URL=).*?(?=])/gis, imageLinksInput.getAttribute('value'));
+
+                for (const link of rawImageLinks) {
+                    const { dom } = await http.get(link);
+                    resolved.push(dom?.querySelector('.main-image')?.getAttribute('src'));
+                }
+
+                return {
+                    dom,
+                    source,
+                    folderName: dom?.querySelector('#gallery-name').innerText.trim(),
+                    resolved,
+                };
+            } else {
+                return dom?.querySelector('.main-image')?.getAttribute('src');
+            }
+        },
+    ],
+
+[[/images\d.imagebam.com/], url => url],
+    [[/imgvb.com\/images\//, /:!imgvb.com\/album\//], url => url.replace('.th.', '.').replace('.md.', '.')],
+    [
+        [/imgvb.com\/album\//],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+            const resolved = [...dom.querySelectorAll('.image-container > img')]
+            .map(i => i.getAttribute('src'))
+            .map(url => url.replace('.th.', '.').replace('.md.', '.'));
+
+            return {
+                dom,
+                source,
+                folderName: dom?.querySelector('meta[property="og:title"]').content.trim(),
+                resolved,
+            };
+        },
+    ],
+    [
+        [/(\/attachments\/|\/data\/video\/|smgmedia\.socialmediagirls\.com\/)/i],
+        async (url) => {
+            // Normalize broken "https:///..." and accidental double-scheme cases.
+            url = String(url || '').trim();
+            url = url.replace(/^https?:\/\/https?:\/\//i, 'https://');
+            url = url.replace(/^https?:\/\/\//i, '/');
+
+            // If it's already absolute, keep it (don't rewrite hosts).
+            if (/^https?:\/\//i.test(url)) return url;
+
+            // Otherwise it's a path; prefix with the active forum's origin (SimpCity or SocialMediaGirls).
+            if (!url.startsWith('/')) url = '/' + url;
+
+            const currentOrigin =
+                typeof location !== 'undefined' && location && /^https?:\/\//i.test(location.origin)
+                    ? location.origin
+                    : 'https://simpcity.cr';
+
+            return `${currentOrigin}${url}`;
+        },
+    ],
+    [[/(thumbs|images)(\d+)?.imgbox.com\//, /:!imgbox.com\/g\//], url => url.replace(/_t\./gi, '_o.').replace(/thumbs/i, 'images')],
+    [
+        [/imgbox.com\/g\//],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+
+            const resolved = [...dom?.querySelectorAll('#gallery-view-content > a > img')]
+            .map(img => img.getAttribute('src'))
+            .map(url => url.replace(/(thumbs|t)(\d+)\./gis, 'images$2.').replace('_b.', '_o.'));
+
+            return {
+                dom,
+                source,
+                folderName: dom?.querySelector('#gallery-view > h1').innerText.trim(),
+                resolved,
+            };
+        },
+    ],
+
+[
+    [/filester\.(me|sh|si|gg)\/f\//],
+    async (url, http, spoilers, postId, postSettings, progressCB) => {
+        try {
+            url = String(url || '').trim();
+            if (!url) return null;
+
+            if (url.startsWith('//')) url = 'https:' + url;
+            if (!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/, '');
+
+            const u0 = new URL(url);
+            const origin = `${u0.protocol}//${u0.hostname}`;
+
+            const mId = (u0.pathname || '').match(/\/f\/([^\/?#]+)/i);
+            if (!mId || !mId[1]) return url;
+
+            const albumId = mId[1];
+            const baseUrl = `${origin}/f/${albumId}`;
+
+            const resolved = [];
+            const seen = new Set();
+
+            let firstDom = null;
+            let firstSource = '';
+            let folderName = '';
+
+            const MAX_PAGES = 500;
+
+            const getFolderName = (dom, html) => {
+                try {
+                    const pickClean = (s) => {
+                        s = String(s || '').trim();
+                        if (!s) return '';
+
+                        // Strip common suffixes.
+                        s = s.replace(/\s*\|\s*filester\.(me|sh|si|gg)\s*$/i, '').trim();
+                        s = s.replace(/\s*-\s*filester\.(me|sh|si|gg)\s*$/i, '').trim();
+
+                        // Replace remaining pipes with a Windows-safe separator.
+                        if (s.includes('|')) s = s.replace(/\s*\|\s*/g, ' - ').trim();
+
+                        // Final cleanup
+                        s = s.replace(/\s+/g, ' ').trim();
+
+                        return s;
+                    };
+
+                    const isBad = (t) => {
+                        const x = String(t || '').trim();
+                        if (!x) return true;
+                        if (/^filester\.(me|sh|si|gg)\b/i.test(x)) return true;
+                        if (/BETA\s*\d/i.test(x)) return true;
+                        return false;
+                    };
+
+                    let t = '';
+
+                    // DOM: og:title first
+                    try {
+                        t = pickClean(dom?.querySelector('meta[property="og:title"]')?.getAttribute('content') || '');
+                    } catch (e) {}
+                    try {
+                        if (!t) t = pickClean(dom?.querySelector('meta[name="og:title"]')?.getAttribute('content') || '');
+                    } catch (e) {}
+                    try {
+                        if (!t) t = pickClean(dom?.querySelector('title')?.textContent || '');
+                    } catch (e) {}
+
+                    // HTML fallback (order-independent meta parsing)
+                    if (isBad(t)) {
+                        const s = String(html || '');
+                        if (s) {
+                            try {
+                                const mTag =
+                                    /<meta\b[^>]*\b(?:property|name)=["']og:title["'][^>]*>/i.exec(s) ||
+                                    /<meta\b[^>]*\bcontent=["'][^"']+["'][^>]*\b(?:property|name)=["']og:title["'][^>]*>/i.exec(s);
+                                if (mTag && mTag[0]) {
+                                    const mC = /\bcontent=["']([^"']+)["']/i.exec(mTag[0]);
+                                    if (mC && mC[1]) t = pickClean(mC[1]);
+                                }
+                            } catch (e) {}
+
+                            try {
+                                if (isBad(t)) {
+                                    const mT = /<title[^>]*>\s*([^<]+?)\s*<\/title>/i.exec(s);
+                                    if (mT && mT[1]) t = pickClean(mT[1]);
+                                }
+                            } catch (e) {}
+                        }
+                    }
+
+                    if (isBad(t)) return albumId;
+                    return t;
+                } catch (e) {}
+                return albumId;
+            };
+
+            const addHint = (slug, name, sizeBytes) => {
+                try {
+                    const dUrl = `${origin}/d/${slug}`;
+                    if (name) {
+                        try { filesterNameBySlug.set(String(slug), String(name)); } catch (e) {}
+                        try { filesterNameByUrl.set(String(dUrl), String(name)); } catch (e) {}
+                    }
+                    if (sizeBytes) {
+                        try { filesterSizeBySlug.set(String(slug), Number(sizeBytes)); } catch (e) {}
+                        try { filesterSizeByUrl.set(String(dUrl), Number(sizeBytes)); } catch (e) {}
+                    }
+                    try { filesterSlugByUrl.set(String(dUrl), String(slug)); } catch (e) {}
+                } catch (e) {}
+            };
+
+            const parsePage = (dom, html) => {
+                const out = [];
+                try {
+                    const items = dom ? [...dom.querySelectorAll('div.file-item')] : [];
+                    for (const el of items) {
+                        let slug = '';
+                        try {
+                            const oc = String(el.getAttribute('onclick') || '');
+                            const m = /\/d\/([^'"?\s]+)/i.exec(oc);
+                            if (m && m[1]) slug = m[1];
+                        } catch (e) {}
+
+                        if (!slug) {
+                            try {
+                                const btn = el.querySelector('button.download-btn');
+                                const oc2 = String(btn?.getAttribute?.('onclick') || '');
+                                const m2 = /downloadFile\(\s*'([^']+)'/i.exec(oc2);
+                                if (m2 && m2[1]) slug = m2[1];
+                            } catch (e) {}
+                        }
+
+                        if (!slug) {
+                            try {
+                                const a = el.querySelector('a[href*="/d/"]');
+                                const href = String(a?.getAttribute?.('href') || '');
+                                const m3 = /\/d\/([^\/?#]+)/i.exec(href);
+                                if (m3 && m3[1]) slug = m3[1];
+                            } catch (e) {}
+                        }
+
+                        if (!slug) continue;
+
+                        let name = '';
+                        let size = 0;
+
+                        try { name = String(el.getAttribute('data-name') || '').trim(); } catch (e) {}
+                        if (!name) {
+                            try { name = String(el.querySelector('.file-name')?.textContent || '').trim(); } catch (e) {}
+                        }
+
+                        try { size = Number(el.getAttribute('data-size') || 0) || 0; } catch (e) {}
+
+                        out.push({ slug, name, size });
+                    }
+                } catch (e) {}
+
+                // Regex fallback if DOM parsing is incomplete
+                try {
+                    const s = String(html || '');
+                    if (s) {
+                        const rx = /data-name="([^"]+)"[^>]*\bonclick="window\.location\.href='\/d\/([^']+)'/gi;
+                        let m;
+                        while ((m = rx.exec(s)) !== null) {
+                            const name = String(m[1] || '').trim();
+                            const slug = String(m[2] || '').trim();
+                            if (!slug) continue;
+                            out.push({ slug, name, size: 0 });
+                        }
+                    }
+                } catch (e) {}
+
+                return out;
+            };
+
+            for (let page = 1; page <= MAX_PAGES; page++) {
+                const u = new URL(baseUrl);
+                u.searchParams.set('page', String(page));
+                const pageUrl = u.toString();
+
+                if (typeof progressCB === 'function') {
+                    progressCB(`[Filester] Resolving album page ${page}`);
+                }
+
+                let dom = null;
+                let source = '';
+                try {
+                    const r = await http.get(pageUrl, {}, {
+                    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    Referer: baseUrl,
+                    __xfpd_withCredentials: true,
+                });
+                    dom = r?.dom;
+                    source = r?.source || '';
+                } catch (e) {
+                    break;
+                }
+
+                if (page === 1) {
+                    firstDom = dom;
+                    firstSource = source;
+                    folderName = getFolderName(dom, source);
+                }
+
+                const before = seen.size;
+
+                const entries = parsePage(dom, source);
+                for (const it of entries) {
+                    const slug = String(it.slug || '').trim();
+                    if (!slug || seen.has(slug)) continue;
+                    seen.add(slug);
+
+                    const name = String(it.name || '').trim();
+                    const size = Number(it.size || 0) || 0;
+                    addHint(slug, name, size);
+
+                    resolved.push(`${origin}/d/${slug}`);
+                }
+
+                const added = seen.size - before;
+                if (added <= 0) break;
+            }
+
+            if (!folderName) folderName = albumId;
+
+            if (!resolved.length) return url;
+
+            return { dom: firstDom, source: firstSource, folderName, resolved };
+        } catch (e) {
+            return url;
+        }
     },
-  ],
-  [[/(\w+)?.redd.it/], url => url.replace(/&amp;/g, '&')],
+],
+[
+    [/filester\.(me|sh|si|gg)\/d\//],
+    async (url, http, spoilers, postId, postSettings, progressCB) => {
+        const slug = (() => {
+            try {
+                const u = new URL(url);
+                const parts = String(u.pathname || '').split('/').filter(Boolean);
+                return parts.length ? parts[parts.length - 1] : '';
+            } catch (e) {
+                // Group 1 is the TLD, group 2 is the slug. This returned m[1] and so yielded
+                // "si"/"gg" as the slug for scheme-less links, which then collapsed every filename
+                // to Filester_si.bin and made them all collide.
+                const m = /filester\.(me|sh|si|gg)\/d\/([^\/?#]+)/i.exec(String(url || ''));
+                return m && m[2] ? m[2] : '';
+            }
+        })();
+
+        if (!slug) return null;
+
+        // The URL patterns accept .me/.sh/.si/.gg, so follow whichever domain the post actually links
+        // to rather than forcing every API call at .me.
+        const apiBase = (() => {
+            try {
+                const u = new URL(url);
+                if (/^(?:[a-z0-9-]+\.)*filester\.(me|sh|si|gg)$/i.test(u.hostname)) return `https://${u.hostname}`;
+            } catch (e) {}
+            return 'https://filester.me';
+        })();
+
+        const mkHeaders = () => ({
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json;charset=UTF-8',
+            Origin: apiBase,
+            Referer: url,
+            __xfpd_withCredentials: true,
+            __xfpd_timeout: FILESTER_API_TIMEOUT_MS,
+        });
+
+        const safeJson = (txt) => {
+            try { return JSON.parse(String(txt || '')); } catch (e) { return null; }
+        };
+
+        const walk = (obj, cb, maxNodes = 5000) => {
+            const seen = new Set();
+            const q = [obj];
+            let nodes = 0;
+            while (q.length && nodes++ < maxNodes) {
+                const cur = q.shift();
+                if (!cur || typeof cur !== 'object') continue;
+                if (seen.has(cur)) continue;
+                seen.add(cur);
+                try {
+                    if (cb(cur) === true) return true;
+                } catch (e) {}
+                if (Array.isArray(cur)) {
+                    for (const it of cur) q.push(it);
+                } else {
+                    for (const k of Object.keys(cur)) q.push(cur[k]);
+                }
+            }
+            return false;
+        };
+
+        const deepFindValueByKeys = (obj, keys) => {
+            const keySet = new Set((keys || []).map(k => String(k).toLowerCase()));
+            let out = null;
+            walk(obj, (o) => {
+                if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+                for (const k of Object.keys(o)) {
+                    if (keySet.has(String(k).toLowerCase())) {
+                        const v = o[k];
+                        if (v !== null && v !== undefined) {
+                            out = v;
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            });
+            return out;
+        };
+
+        const normalizeUrl = (s) => {
+            if (!s || typeof s !== 'string') return null;
+            const t = s.trim();
+            if (/^https?:\/\//i.test(t)) return t;
+            if (t.startsWith('/')) {
+                try { return new URL(t, apiBase).href; } catch (e) { return null; }
+            }
+            if (/^[dv]\//i.test(t)) {
+                try { return new URL('/' + t.replace(/^\/+/, ''), apiBase).href; } catch (e) { return null; }
+            }
+            return null;
+        };
+
+        const pickBestUrl = (obj) => {
+            const candidates = [];
+            const push = (v) => {
+                const u = normalizeUrl(v);
+                if (u) candidates.push(u);
+            };
+
+            const prefer = deepFindValueByKeys(obj, ['download_url', 'downloadUrl', 'url', 'link', 'href', 'direct', 'download', 'view_url', 'viewUrl']);
+            if (prefer) push(prefer);
+
+            walk(obj, (o) => {
+                for (const k of Object.keys(o || {})) {
+                    const v = o[k];
+                    if (typeof v === 'string') push(v);
+                }
+                if (Array.isArray(o)) {
+                    for (const it of o) if (typeof it === 'string') push(it);
+                }
+                return false;
+            });
+
+            const clean = candidates
+                .map(s => String(s))
+                .filter(s => !/filester\.(me|sh|si|gg)\/api\//i.test(s))
+                .filter(s => !/filester\.(me|sh|si|gg)\/(css|js)\//i.test(s));
+
+            if (!clean.length) return null;
+
+            const score = (s) => {
+                let sc = 0;
+                // Strongly prefer CDN /v/ stream URLs.
+                if (/https?:\/\/cache\d+\.filester\.(me|sh|si|gg)\/v\//i.test(s)) sc += 200;
+                else if (/cache\d+\.filester\.(me|sh|si|gg)/i.test(s)) sc += 160;
+                if (/\/v\//i.test(s)) sc += 80;
+                if (/\.filester\.(me|sh|si|gg)\//i.test(s)) sc += 10;
+                // De-prioritize HTML view tokens (/d/).
+                if (/\/d\//i.test(s)) sc -= 25;
+                if (/\.mp4(\?|$)/i.test(s)) sc += 2;
+                return sc;
+            };
+
+            clean.sort((a, b) => score(b) - score(a));
+            return clean[0];
+        };
+
+        const pickName = (obj) => {
+            const v = deepFindValueByKeys(obj, ['filename', 'file_name', 'name', 'original_name', 'originalName', 'title']);
+            if (typeof v === 'string' && v.trim()) return v.trim();
+            return null;
+        };
+
+        const pickSize = (obj) => {
+            const v = deepFindValueByKeys(obj, ['size', 'bytes', 'file_size', 'fileSize', 'length']);
+            const n = Number(v);
+            return Number.isFinite(n) ? n : 0;
+        };
+
+        let nameHint = null;
+        let sizeHint = 0;
+        let relViewPath = null;
+        let streamUrlImmediate = null;
+
+        const filesterExtFromCt = (ct) => {
+            const t = String(ct || '').toLowerCase();
+            if (t.includes('video/mp4')) return 'mp4';
+            if (t.includes('video/webm')) return 'webm';
+            if (t.includes('image/jpeg') || t.includes('image/jpg')) return 'jpg';
+            if (t.includes('image/png')) return 'png';
+            if (t.includes('image/gif')) return 'gif';
+            if (t.includes('application/zip')) return 'zip';
+            if (t.includes('application/x-7z-compressed')) return '7z';
+            if (t.includes('application/x-rar') || t.includes('application/vnd.rar')) return 'rar';
+            return 'bin';
+        };
+
+        const filesterParseViewMeta = (html) => {
+            const out = { fileName: '', fileType: '' };
+            const s = String(html || '');
+            try {
+                // Prefer JSON-style double-quoted assignment: window.fileName = "..."
+                const m1 = /window\.fileName\s*=\s*("([^"\\]|\\.)*")\s*;?/m.exec(s);
+                if (m1 && m1[1]) out.fileName = JSON.parse(m1[1]);
+            } catch (e) {}
+            try {
+                // Fallback: single-quoted assignment: window.fileName = '...'
+                if (!out.fileName) {
+                    const m1b = /window\.fileName\s*=\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*;?/m.exec(s);
+                    if (m1b && m1b[1]) out.fileName = String(m1b[1]).replace(/\\'/g, "'").replace(/\\n/g, "\n");
+                }
+            } catch (e) {}
+            try {
+                const m2 = /window\.fileType\s*=\s*("([^"\\]|\\.)*")\s*;?/m.exec(s);
+                if (m2 && m2[1]) out.fileType = JSON.parse(m2[1]);
+            } catch (e) {}
+            try {
+                if (!out.fileType) {
+                    const m2b = /window\.fileType\s*=\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*;?/m.exec(s);
+                    if (m2b && m2b[1]) out.fileType = String(m2b[1]).replace(/\\'/g, "'").replace(/\\n/g, "\n");
+                }
+            } catch (e) {}
+            return out;
+        };
+
+
+
+        const filesterNormalizeFilename = (s) => {
+            let name = String(s || '').trim();
+            if (!name) return '';
+
+            // If UTF-8 bytes were interpreted as Latin-1 (common in Chrome/Tampermonkey),
+            // decode it back to proper UTF-8.
+            try {
+                let hasHigh = false;
+                let allByte = true;
+                for (let i = 0; i < name.length; i++) {
+                    const c = name.charCodeAt(i);
+                    if (c > 255) { allByte = false; break; }
+                    if (c >= 128) hasHigh = true;
+                }
+                if (allByte && hasHigh && typeof TextDecoder !== 'undefined') {
+                    const bytes = new Uint8Array(name.length);
+                    for (let i = 0; i < name.length; i++) bytes[i] = name.charCodeAt(i) & 0xFF;
+                    const decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+                    if (decoded && decoded !== name) name = decoded;
+                }
+            } catch (e) {}
+
+            // Strip control chars (Windows will refuse these in filenames; mojibake often introduces them)
+            name = name.replace(/[\u0000-\u001F\u007F\u0080-\u009F]/g, '').trim();
+            return name;
+        };
+
+const filesterParseDispositionFilename = (headersRaw) => {
+            try {
+                const h = String(headersRaw || '');
+                const mLine = /content-disposition:\s*([^\r\n]+)/i.exec(h);
+                if (!mLine || !mLine[1]) return '';
+                const v = String(mLine[1] || '');
+
+                // RFC5987: filename*=UTF-8''...
+                let m = /filename\*\s*=\s*([^;]+)/i.exec(v);
+                if (m && m[1]) {
+                    let val = String(m[1]).trim();
+                    val = val.replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
+
+                    const mEnc = /^([^']*)''(.*)$/.exec(val);
+                    if (mEnc) {
+                        let data = String(mEnc[2] || '').trim();
+                        try {
+                            data = decodeURIComponent(data.replace(/\+/g, '%20'));
+                        } catch (e) {
+                            // best-effort
+                        }
+                        if (data) return filesterNormalizeFilename(data);
+                    } else {
+                        try {
+                            const decoded = decodeURIComponent(val.replace(/\+/g, '%20'));
+                            if (decoded) return filesterNormalizeFilename(decoded);
+                        } catch (e) {}
+                        if (val) return filesterNormalizeFilename(val);
+                    }
+                }
+
+                // Basic: filename="..."
+                m = /filename\s*=\s*([^;]+)/i.exec(v);
+                if (m && m[1]) {
+                    let val = String(m[1]).trim();
+                    val = val.replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1');
+                    val = val.replace(/\\(.)/g, '$1');
+                    return filesterNormalizeFilename(val);
+                }
+            } catch (e) {}
+            return '';
+        };
+
+
+
+        const filesterProbe = async (probeUrl) => {
+            try {
+                const r = await http.base(
+                    'GET',
+                    probeUrl,
+                    { onResponseHeadersReceieved: () => {} },
+                    { Range: 'bytes=0-0', Referer: `${apiBase}/`, __xfpd_withCredentials: true, __xfpd_timeout: FILESTER_PROBE_TIMEOUT_MS },
+                    null,
+                    'text',
+                );
+                const status = Number(r && r.status) || 0;
+                const headers = String((r && r.responseHeaders) || '');
+                const dispName = filesterParseDispositionFilename(headers);
+                const mCt = /content-type:\s*([^\r\n]+)/i.exec(headers);
+                const ct = (mCt && mCt[1]) ? mCt[1].trim() : '';
+                const mCr = /content-range:\s*bytes\s+\d+-\d+\/(\d+)/i.exec(headers);
+                const mCl = /content-length:\s*(\d+)/i.exec(headers);
+                const size = mCr && mCr[1] ? Number(mCr[1]) : (mCl && mCl[1] ? Number(mCl[1]) : 0);
+                const isHtmlOrJson = /text\/html|application\/xhtml\+xml|application\/json/i.test(ct);
+                const ok = status >= 200 && status < 400 && !isHtmlOrJson;
+                return { ok, status, headers, contentType: ct, size: Number.isFinite(size) ? size : 0, fileName: dispName || '' };
+            } catch (e) {
+                return { ok: false, status: 0, headers: '', contentType: '', size: 0 };
+            }
+        };
+
+        const filesterResolveDownloadToken = async (tokenUrl) => {
+            try {
+                const ref = `${apiBase}/d/${slug}`;
+
+                const normalizeMaybeUrl = (v) => {
+                    try {
+                        if (!v) return '';
+                        const s = String(v).trim();
+                        if (!s) return '';
+                        if (s.startsWith('/')) return new URL(s, apiBase).href;
+                        if (/^https?:\/\//i.test(s)) return s;
+                        return '';
+                    } catch (e) {
+                        return '';
+                    }
+                };
+
+                // Phase 1: range request (follows redirects) to capture finalUrl without downloading the whole file.
+                const r1 = await http.base(
+                    'GET',
+                    tokenUrl,
+                    {},
+                    { Range: 'bytes=0-0', Referer: ref, __xfpd_withCredentials: true, __xfpd_timeout: FILESTER_API_TIMEOUT_MS },
+                    null,
+                    'text',
+                );
+
+                const headers1 = String((r1 && r1.responseHeaders) || '');
+                const fu1 = String((r1 && r1.finalUrl) || '');
+
+                const mLoc1 = /(?:^|\r?\n)location:\s*([^\r\n]+)/i.exec(headers1);
+                const loc1Abs = normalizeMaybeUrl(mLoc1 && mLoc1[1] ? mLoc1[1] : '');
+                if (loc1Abs && /\/v\//i.test(loc1Abs)) return loc1Abs;
+                if (fu1 && /\/v\//i.test(fu1)) return fu1;
+
+                // If this looks like HTML, fetch the full HTML page (small) and extract the /v/ link.
+                const mCt1 = /content-type:\s*([^\r\n]+)/i.exec(headers1);
+                const ct1 = (mCt1 && mCt1[1]) ? String(mCt1[1]).trim() : '';
+                const isHtml = /text\/html|application\/xhtml\+xml/i.test(ct1);
+
+                if (isHtml) {
+                    const r2 = await http.base(
+                        'GET',
+                        tokenUrl,
+                        {},
+                        { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', Referer: ref, __xfpd_withCredentials: true, __xfpd_timeout: FILESTER_API_TIMEOUT_MS },
+                        null,
+                        'text',
+                    );
+
+                    const headers2 = String((r2 && r2.responseHeaders) || '');
+                    const fu2 = String((r2 && r2.finalUrl) || '');
+
+                    const mLoc2 = /(?:^|\r?\n)location:\s*([^\r\n]+)/i.exec(headers2);
+                    const loc2Abs = normalizeMaybeUrl(mLoc2 && mLoc2[1] ? mLoc2[1] : '');
+                    if (loc2Abs && /\/v\//i.test(loc2Abs)) return loc2Abs;
+                    if (fu2 && /\/v\//i.test(fu2)) return fu2;
+
+                    const body = String((r2 && r2.source) || '');
+
+                    const mFull = /(https?:\/\/cache\d+\.filester\.(me|sh|si|gg)\/v\/[^\"'<>\s]+)/i.exec(body);
+                    if (mFull && mFull[1]) return String(mFull[1]).trim();
+
+                    const mRel = /[\"'](\/v\/[^\"'<>\s]+)[\"']/i.exec(body);
+                    if (mRel && mRel[1]) return new URL(String(mRel[1]), apiBase).href;
+                }
+
+                return null;
+            } catch (e) {
+                return null;
+            }
+        };
+
+        // --- v2 API (current) ---------------------------------------------------------------
+        // Filester came back from its outage on a v2 public API and a new CDN. Everything below this
+        // block talks to the old /api/public/* endpoints, which still answer 200 but hand back a
+        // legacy-shaped payload whose server/download_url combination now 404s -- which is why
+        // downloads were failing with "blocked/tiny response" while resolution looked like it worked.
+        // See filesterResolveV2 for the endpoint shape; it is shared with the album (/f/) path,
+        // which resolves its slugs at download time rather than here.
+        try {
+            const v2 = await filesterResolveV2(http, apiBase, slug, progressCB);
+            if (v2 && v2.url) {
+                // filesterResolveV2 keys its hints off the resolved URL; the original /d/ URL needs
+                // the same name and referer so later lookups on it agree.
+                try { filesterNameByUrl.set(String(url), String(v2.name)); } catch (e) {}
+                try { filesterRefByUrl.set(String(url), String(v2.ref)); } catch (e) {}
+                return v2.url;
+            }
+        } catch (e) {}
+
+        // --- legacy v1 fallback -------------------------------------------------------------
+        // Kept in case v2 is unavailable for a given file or domain. Everything from here down is
+        // the pre-outage flow.
+        try {
+            if (progressCB) progressCB('[Filester] Fetching metadata...');
+            const viewRes = await http.base(
+                'POST',
+                `${apiBase}/api/public/view`,
+                {},
+                mkHeaders(),
+                JSON.stringify({ file_slug: slug }),
+                'text',
+            );
+            const viewJson = safeJson(viewRes && viewRes.source);
+            if (viewJson) {
+                nameHint = pickName(viewJson) || nameHint;
+                sizeHint = pickSize(viewJson) || sizeHint;
+                try {
+                    const relView = deepFindValueByKeys(viewJson, ['view_url', 'viewUrl', 'view']);
+                    if (typeof relView === 'string' && relView.trim()) {
+                        const s = String(relView).trim();
+                        if (s.startsWith('/v/')) {
+                            relViewPath = s;
+                        } else if (s.startsWith('v/')) {
+                            relViewPath = '/' + s;
+                        } else if (/^https?:\/\//i.test(s)) {
+                            try {
+                                const u0 = new URL(s);
+                                if (/^\/v\//i.test(String(u0.pathname || ''))) {
+                                    relViewPath = String(u0.pathname || '') + String(u0.search || '');
+                                }
+                                // If the API already gave us a cache /v/ URL, keep it as an immediate candidate.
+                                if (!streamUrlImmediate && /https?:\/\/cache6\.filester\.(me|sh|si|gg)\/v\//i.test(s)) {
+                                    streamUrlImmediate = s;
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {}
+
+        // Try to extract the real filename (window.fileName = "...") from the HTML view.
+// Some Filester API responses don't include the filename, but the HTML view does.
+try {
+    // First try the slug page (it may redirect to /v/... or even directly to a cacheX /v/ stream).
+    // We use it for both filename hints and to discover the real /v/ path when the public API is blocked.
+    if (!nameHint || (!relViewPath && !streamUrlImmediate)) {
+        const slugPageUrl = `${apiBase}/d/${slug}`;
+        const htmlRes0 = await http.base(
+            'GET',
+            slugPageUrl,
+            {},
+            { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', __xfpd_withCredentials: true, __xfpd_timeout: FILESTER_API_TIMEOUT_MS },
+            {},
+            'text',
+        );
+        const html0 = String((htmlRes0 && htmlRes0.source) || '');
+        const meta0 = filesterParseViewMeta(html0);
+        if (meta0 && meta0.fileName) nameHint = String(meta0.fileName);
+
+        // If this request ended up at a /v/ URL, capture it.
+        try {
+            const fu0 = String((htmlRes0 && htmlRes0.finalUrl) || '');
+            if (fu0 && /\/v\//i.test(fu0)) {
+                if (!streamUrlImmediate && /https?:\/\/cache6\.filester\.(me|sh|si|gg)\/v\//i.test(fu0)) {
+                    streamUrlImmediate = fu0;
+                }
+                if (!relViewPath) {
+                    try {
+                        const u1 = new URL(fu0);
+                        if (/^\/v\//i.test(String(u1.pathname || ''))) {
+                            relViewPath = String(u1.pathname || '') + String(u1.search || '');
+                        }
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+
+        // Fallback: extract a /v/... token from the HTML itself.
+        if (!streamUrlImmediate) {
+            try {
+                const mFull = /(https?:\/\/cache\d+\.filester\.(me|sh|si|gg)\/v\/[^\s"'<>]+)/i.exec(html0);
+                if (mFull && mFull[1] && /https?:\/\/cache6\.filester\.(me|sh|si|gg)\/v\//i.test(mFull[1])) streamUrlImmediate = mFull[1];
+            } catch (e) {}
+        }
+        if (!relViewPath) {
+            try {
+                const mRel = /["'](\/v\/[^"'<>\s]+)["']/i.exec(html0) || /(\/v\/[0-9a-f]{16,}[^"'<>\s]*)/i.exec(html0);
+                if (mRel && mRel[1] && String(mRel[1]).startsWith('/v/')) relViewPath = mRel[1];
+            } catch (e) {}
+        }
+    }
+
+    // If still missing, try the explicit view_url returned by the API.
+    if (!nameHint && relViewPath && /^\/v\//i.test(String(relViewPath))) {
+        const viewPageUrl = `${apiBase}${relViewPath}`;
+        const htmlRes = await http.base(
+            'GET',
+            viewPageUrl,
+            {},
+            { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', __xfpd_withCredentials: true, __xfpd_timeout: FILESTER_API_TIMEOUT_MS },
+            {},
+            'text',
+        );
+        const html = String((htmlRes && htmlRes.source) || '');
+        const meta = filesterParseViewMeta(html);
+        if (meta && meta.fileName) nameHint = filesterNormalizeFilename(String(meta.fileName));
+    }
+} catch (e) {}
+
+                // Download API can return a /d/<token> which then redirects to the real /v/... stream URL.
+        // Use it as a fallback to discover the stream path when /api/public/view doesn't provide it.
+        try {
+            if (!streamUrlImmediate && !relViewPath) {
+                if (progressCB) progressCB('[Filester] Resolving download token...');
+                const dlRes0 = await http.base(
+                    'POST',
+                    `${apiBase}/api/public/download`,
+                    {},
+                    mkHeaders(),
+                    JSON.stringify({ file_slug: slug }),
+                    'text',
+                );
+
+                const src0 = String((dlRes0 && dlRes0.source) || '');
+                const dlJson0 = safeJson(src0);
+
+                let tokenUrl = null;
+                try {
+                    const rel = dlJson0 ? deepFindValueByKeys(dlJson0, ['download_url', 'downloadUrl', 'url']) : null;
+                    if (typeof rel === 'string' && rel.trim()) tokenUrl = normalizeUrl(rel);
+                } catch (e) {}
+
+                if (!tokenUrl) {
+                    const m0 = /"download_url"\s*:\s*"([^"]+)"/i.exec(src0);
+                    if (m0 && m0[1]) tokenUrl = normalizeUrl(m0[1]);
+                }
+
+                if (tokenUrl) {
+                    // If the API returned a token (or /d/<token>), the actual stream is usually /v/<token> on cacheX.
+                    // Build relViewPath early so the probe loop can find a working cache host (cache6 preferred).
+                    try {
+                        let tokenStr = '';
+                        try {
+                            const tk = dlJson0 ? deepFindValueByKeys(dlJson0, ['token']) : null;
+                            if (typeof tk === 'string') tokenStr = String(tk).trim();
+                        } catch (e) {}
+                        if (!tokenStr) {
+                            const mTok = /\/d\/([^\/\?#]+)/i.exec(String(tokenUrl || ''));
+                            if (mTok && mTok[1]) tokenStr = String(mTok[1]).trim();
+                        }
+                        if (tokenStr && !relViewPath) {
+                            if (tokenStr.startsWith('/v/')) relViewPath = tokenStr;
+                            else if (tokenStr.startsWith('v/')) relViewPath = '/' + tokenStr;
+                            else if (tokenStr.startsWith('/d/')) relViewPath = tokenStr.replace(/^\/d\//i, '/v/');
+                            else if (tokenStr.startsWith('d/')) relViewPath = '/' + tokenStr.replace(/^d\//i, 'v/');
+                            else relViewPath = `/v/${tokenStr}`;
+                        }
+                    } catch (e) {}
+
+                    const sUrl = await filesterResolveDownloadToken(tokenUrl);
+                    if (sUrl) {
+                        try {
+                            const u2 = new URL(sUrl);
+                            if (/^\/v\//i.test(String(u2.pathname || ''))) {
+                                relViewPath = String(u2.pathname || '') + String(u2.search || '');
+                                if (/https?:\/\/cache6\.filester\.(me|sh|si|gg)\/v\//i.test(sUrl)) streamUrlImmediate = String(sUrl);
+                            }
+                        } catch (e) {
+                            if (String(sUrl).startsWith('/v/')) relViewPath = String(sUrl);
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+
+// If we already discovered a cache /v/ stream URL from redirects or HTML, prefer it.
+        try {
+            if (streamUrlImmediate) {
+                if (progressCB) progressCB('[Filester] Probing discovered stream URL...');
+                const p0 = await filesterProbe(streamUrlImmediate);
+                if (p0 && p0.ok) {
+                    const streamUrl = String(streamUrlImmediate);
+                    const streamCt = String(p0.contentType || '');
+                    const streamSize = Number(p0.size || 0) || 0;
+                    const streamHdrName = String((p0 && p0.fileName) || '');
+
+                    try { filesterSlugByUrl.set(String(streamUrl), String(slug)); } catch (e) {}
+                    try {
+                        const ref0 = (relViewPath ? `${apiBase}${relViewPath}` : `${apiBase}/d/${slug}`);
+                        if (ref0 && String(ref0).startsWith('http')) {
+                            filesterRefByUrl.set(String(streamUrl), String(ref0));
+                            filesterRefByUrl.set(String(url), String(ref0));
+                            filesterRefByUrl.set(`${apiBase}/d/${slug}`, String(ref0));
+                        }
+                    } catch (e) {}
+                    try { if (!nameHint && streamHdrName) nameHint = String(streamHdrName); } catch (e) {}
+
+                    const ext = filesterExtFromCt(streamCt);
+                    let finalName = '';
+                    try { if (nameHint) finalName = String(nameHint); } catch (e) {}
+                    if (!finalName) finalName = `Filester_${slug}.${ext || 'bin'}`;
+                    try {
+                        const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(String(finalName || ''));
+                        if (!hasExt && ext) finalName = `${finalName}.${ext}`;
+                    } catch (e) {}
+
+                    try {
+                        filesterNameBySlug.set(String(slug), String(finalName));
+                        filesterNameByUrl.set(String(streamUrl), String(finalName));
+                        try { filesterNameByUrl.set(String(url), String(finalName)); } catch (e) {}
+                        try { filesterNameByUrl.set(`${apiBase}/d/${slug}`, String(finalName)); } catch (e) {}
+                        try { if (relViewPath) filesterNameByUrl.set(`${apiBase}${relViewPath}`, String(finalName)); } catch (e) {}
+                    } catch (e) {}
+                    if (streamSize) {
+                        try {
+                            filesterSizeBySlug.set(String(slug), Number(streamSize));
+                            filesterSizeByUrl.set(String(streamUrl), Number(streamSize));
+                        } catch (e) {}
+                    }
+
+                    return streamUrl;
+                }
+            }
+        } catch (e) {}
+
+        // Authoritative and fast: /api/public/download returns the current CDN URL directly (today
+        // an fscN.cdn.cr one). This runs *before* the speculative host sweep below, because that
+        // sweep guesses at which host serves /v/<token> and the new CDN does not use that path at
+        // all -- so it always failed, after burning its whole budget on hosts that never answer.
+        try {
+            if (progressCB) progressCB('[Filester] Resolving download URL...');
+            const dlRes = await http.base(
+                'POST',
+                `${apiBase}/api/public/download`,
+                {},
+                mkHeaders(),
+                JSON.stringify({ file_slug: slug }),
+                'text',
+            );
+
+            const src = String((dlRes && dlRes.source) || '');
+            const dlJson = safeJson(src);
+            let dlUrl = null;
+
+            if (dlJson) {
+                dlUrl = pickBestUrl(dlJson);
+            }
+            if (dlJson && !dlUrl) {
+                try {
+                    const rel = deepFindValueByKeys(dlJson, ['download_url', 'downloadUrl', 'url']);
+                    if (typeof rel === 'string' && rel.startsWith('/')) dlUrl = `${apiBase}${rel}`;
+                } catch (e) {}
+            }
+
+            if (dlJson && !dlUrl) {
+                const waitRaw = deepFindValueByKeys(dlJson, ['wait', 'wait_time', 'waitSeconds', 'wait_seconds', 'seconds']);
+                const waitSec = Number(waitRaw);
+                if (Number.isFinite(waitSec) && waitSec > 0 && waitSec <= 300) {
+                    try {
+                        if (progressCB) progressCB(`[Filester] Waiting ${Math.ceil(waitSec)}s...`);
+                    } catch (e) {}
+                    await new Promise(r => setTimeout(r, Math.ceil(waitSec) * 1000));
+                    const dlRes2 = await http.base(
+                        'POST',
+                        `${apiBase}/api/public/download`,
+                        {},
+                        mkHeaders(),
+                        JSON.stringify({ file_slug: slug }),
+                        'text',
+                    );
+                    const src2 = String((dlRes2 && dlRes2.source) || '');
+                    const dlJson2 = safeJson(src2);
+                    if (dlJson2) dlUrl = pickBestUrl(dlJson2);
+                    if (!dlUrl) {
+                        const m2 = /(https?:\/\/[^\s"'<>]+)/i.exec(src2);
+                        if (m2 && m2[1]) dlUrl = m2[1];
+                    }
+                }
+            }
+
+            if (!dlUrl) {
+                const m = /(https?:\/\/[^\s"'<>]+)/i.exec(src);
+                if (m && m[1]) dlUrl = m[1];
+            }
+
+            if (dlUrl) {
+                try { filesterSlugByUrl.set(String(dlUrl), String(slug)); } catch (e) {}
+
+                if (nameHint) {
+                    filesterNameBySlug.set(String(slug), String(nameHint));
+                    filesterNameByUrl.set(String(dlUrl), String(nameHint));
+                }
+                if (sizeHint) {
+                    filesterSizeBySlug.set(String(slug), Number(sizeHint));
+                    filesterSizeByUrl.set(String(dlUrl), Number(sizeHint));
+                }
+                return dlUrl;
+            }
+        } catch (e) {}
+
+        // Fallback only: probe for a /v/ stream URL by guessing the host. Still worth keeping for
+        // the case where the download API is blocked or rate-limited, and because the /d/ token can
+        // require a Filester referer (otherwise it returns not_whitelisted). Bounded by
+        // FILESTER_PROBE_BUDGET_MS since most candidates are currently dead or black holes.
+        try {
+            if (relViewPath && /^\/v\//i.test(String(relViewPath))) {
+                if (progressCB) progressCB('[Filester] Probing cache stream URL...');
+                const bases = filesterStreamBases(apiBase);
+
+                let streamUrl = null;
+                let streamCt = '';
+                let streamSize = 0;
+                let streamHdrName = '';
+
+                // Hard budget for the whole sweep. The authoritative /api/public/download call above
+                // has already failed if we are here, so this is pure guesswork -- worth a few seconds,
+                // never worth minutes.
+                const probeDeadline = Date.now() + FILESTER_PROBE_BUDGET_MS;
+
+                for (const base of bases) {
+                    if (Date.now() > probeDeadline) break;
+                    const cand = String(base).replace(/\/$/, '') + String(relViewPath);
+                    const p = await filesterProbe(cand);
+                    if (p && p.ok) {
+                        streamUrl = cand;
+                        streamCt = String(p.contentType || '');
+                        streamSize = Number(p.size || 0) || 0;
+                        streamHdrName = String((p && p.fileName) || '');
+                        break;
+                    }
+                }
+
+                if (streamUrl) {
+                    try { filesterSlugByUrl.set(String(streamUrl), String(slug)); } catch (e) {}
+                    try {
+                        const ref0 = (relViewPath ? `${apiBase}${relViewPath}` : `${apiBase}/d/${slug}`);
+                        if (ref0 && String(ref0).startsWith('http')) {
+                            filesterRefByUrl.set(String(streamUrl), String(ref0));
+                            filesterRefByUrl.set(String(url), String(ref0));
+                            filesterRefByUrl.set(`${apiBase}/d/${slug}`, String(ref0));
+                        }
+                    } catch (e) {}
+                    try { if (!nameHint && streamHdrName) nameHint = String(streamHdrName); } catch (e) {}
+                    const ext = filesterExtFromCt(streamCt);
+                    let finalName = '';
+                    try { if (nameHint) finalName = String(nameHint); } catch (e) {}
+                    if (!finalName) finalName = `Filester_${slug}.${ext || 'bin'}`;
+                    try {
+                        const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(String(finalName || ''));
+                        if (!hasExt && ext) finalName = `${finalName}.${ext}`;
+                    } catch (e) {}
+
+                    try {
+                        filesterNameBySlug.set(String(slug), String(finalName));
+                        filesterNameByUrl.set(String(streamUrl), String(finalName));
+                    try { filesterNameByUrl.set(String(url), String(finalName)); } catch (e) {}
+                    try { filesterNameByUrl.set(`${apiBase}/d/${slug}`, String(finalName)); } catch (e) {}
+                    try { if (relViewPath) filesterNameByUrl.set(`${apiBase}${relViewPath}`, String(finalName)); } catch (e) {}
+
+                    } catch (e) {}
+                    if (streamSize) {
+                        try {
+                            filesterSizeBySlug.set(String(slug), Number(streamSize));
+                            filesterSizeByUrl.set(String(streamUrl), Number(streamSize));
+                        } catch (e) {}
+                    }
+
+                    return streamUrl;
+                }
+            }
+        } catch (e) {}
+
+        return null;
+    },
+],
+    [
+        [/m\.box\.com\//],
+        async (url, http) => {
+            const { source, dom } = await http.get(url);
+            const files = [...dom.querySelectorAll('.files-item-anchor')].map(el => `https://m.box.com${el.getAttribute('href')}`);
+
+            const resolved = [];
+
+            for (const fileUrl of files) {
+                const { source, dom } = await http.get(fileUrl);
+                if (h.contains('image-preview', source)) {
+                    resolved.push(dom.querySelector('.image-preview').getAttribute('src'));
+                } else {
+                    resolved.push(dom.querySelector('.mtl > a').getAttribute('href'));
+                }
+            }
+
+            return {
+                source,
+                dom,
+                folderName: dom.querySelector('.folder-nav-title')?.innerText.trim(),
+                resolved: resolved.map(u => `https://m.box.com${u}`),
+            };
+        },
+    ],
+    [
+        [/twimg.com\//],
+        url => url.replace(/https?:\/\/pbs.twimg\.com\/media\/(.{1,15})(\?format=)?(.*)&amp;name=(.*)/, 'https://pbs.twimg.com/media/$1.$3'),
+    ],
+    [
+        [/(disk\.)?yandex\.[a-z]+/],
+        async (url, http) => {
+            const { dom } = await http.get(url);
+
+            const script = dom.querySelector('script[id="store-prefetch"]');
+
+            if (!script) {
+                return null;
+            }
+
+            const json = JSON.parse(script.innerText);
+
+            let sk,
+                hash = null;
+
+            if (json && json.environment && json.resources) {
+                sk = json.environment.sk;
+                const resourcesKeys = Object.keys(json.resources);
+                hash = json.resources[resourcesKeys[0]]?.hash;
+            }
+
+            const data = JSON.stringify({ hash, sk });
+
+            const { source } = await http.post(
+                'https://disk.yandex.ru/public/api/download-url',
+                data,
+                {},
+                {
+                    'Content-Type': 'text/plain',
+                },
+            );
+
+            const response = JSON.parse(source);
+
+            if (response && response.error !== 'true' && response.data) {
+                return response.data.url;
+            }
+
+            return null;
+        },
+    ],
+    [[/(\w+)?.redd.it/], url => url.replace(/&amp;/g, '&')],
 ];
 
 const setProcessing = (isProcessing, postId) => {
-  const p = processing.find(p => p.postId === postId);
-  if (p) {
-    p.processing = isProcessing;
-  } else {
-    processing.push({ postId, processing: isProcessing });
-  }
+    const p = processing.find(p => p.postId === postId);
+    if (p) {
+        p.processing = isProcessing;
+    } else {
+        processing.push({ postId, processing: isProcessing });
+    }
 };
 
 const downloadPost = async (parsedPost, parsedHosts, enabledHostsCB, resolvers, getSettingsCB, statusUI, callbacks = {}) => {
-  const { postId, postNumber } = parsedPost;
+    const { postId, postNumber } = parsedPost;
 
-  const postSettings = getSettingsCB();
+    const postSettings = getSettingsCB();
 
-  const enabledHosts = enabledHostsCB(parsedHosts);
+    const enabledHosts = enabledHostsCB(parsedHosts);
 
-  // TODO: Fix this filth.
-  window.logs = window.logs.filter(l => l.postId !== postId);
+    // TODO: Fix this filth.
+    window.logs = window.logs.filter(l => l.postId !== postId);
 
-  log.separator(postId);
-  log.post.info(postId, `::Using ${enabledHosts.length} host(s)::: ${enabledHosts.map(h => h.name).join(', ')}`, postNumber);
+    log.separator(postId);
+    log.post.info(postId, `::Using ${enabledHosts.length} host(s)::: ${enabledHosts.map(h => h.name).join(', ')}`, postNumber);
 
-  log.separator(postId);
-  log.post.info(postId, `::Preparing download::`, postNumber);
+    log.separator(postId);
+    log.post.info(postId, `::Script version::: ${xfpdVersion}`, postNumber);
+    log.post.info(postId, `::Preparing download::`, postNumber);
 
-  let completed = 0;
-  const zip = new JSZip();
+    let completed = 0;
+    const zip = new JSZip();
+    let zipFileCount = 0;
+    let resolved = [];
 
-  let resolved = [];
+    const statusLabel = statusUI.status;
+    const filePB = statusUI.filePB;
+    const totalPB = statusUI.totalPB;
 
-  const statusLabel = statusUI.status;
-  const filePB = statusUI.filePB;
-  const totalPB = statusUI.totalPB;
+    h.ui.setElProps(statusLabel, {
+        color: '#469cf3',
+        marginBottom: '3px',
+        fontSize: '12px',
+    });
 
-  h.ui.setElProps(statusLabel, {
-    color: '#469cf3',
-    marginBottom: '3px',
-    fontSize: '12px',
-  });
+    h.ui.setElProps(filePB, {
+        width: '0%',
+        marginBottom: '1px',
+    });
 
-  h.ui.setElProps(filePB, {
-    width: '0%',
-    marginBottom: '1px',
-  });
+    h.ui.setElProps(totalPB, {
+        width: '0%',
+        marginBottom: '10px',
+    });
 
-  h.ui.setElProps(totalPB, {
-    width: '0%',
-    marginBottom: '10px',
-  });
+    h.show(statusLabel);
+    h.show(filePB);
+    h.show(totalPB);
 
-  h.show(statusLabel);
-  h.show(filePB);
-  h.show(totalPB);
+    h.ui.setText(statusLabel, 'Resolving...');
 
-  h.ui.setText(statusLabel, 'Resolving...');
 
-  log.post.info(postId, '::Url resolution started::', postNumber);
 
-  for (const host of enabledHosts.filter(host => host.resources.length)) {
-    const resources = host.resources;
-
-    for (const resource of resources) {
-      h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
-      h.ui.setText(statusLabel, `Resolving: ${h.limit(resource, 80)}`);
-
-      for (const resolver of resolvers) {
-        const patterns = resolver[0];
-        const resolverCB = resolver[1];
-
-        let matched = true;
-
-        for (const pattern of patterns) {
-          let strPattern = pattern.toString();
-
-          let shouldMatch = !h.contains(':!', strPattern);
-
-          strPattern = strPattern.replace(':!', '');
-          strPattern = h.re.toRegExp(h.re.toString(strPattern), 'is');
-
-          if (shouldMatch && !strPattern.test(resource)) {
-            matched = false;
-            break;
-          } else if (!shouldMatch && strPattern.test(resource)) {
-            matched = false;
-            break;
-          }
-        }
-
-        if (!matched) {
-          continue;
-        }
-
-        const passwords = parsedPost.spoilers.concat(parsedPost.spoilers.map(s => s.toLowerCase()));
-
-        let r = null;
-
-        try {
-          r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, postId)));
-        } catch (e) {
-          log.post.error(postId, `::Error resolving::: ${resource}`, postNumber);
-          continue;
-        }
-
-        if (h.isNullOrUndef(r)) {
-          log.post.error(postId, `::Could not resolve::: ${resource}`, postNumber);
-          continue;
-        }
-
-        h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
-        h.ui.setText(statusLabel, `Resolved: ${resolved.length}`);
-
-        const addResolved = (url, folderName) => {
-          if (!resolved.length) {
-            log.separator(postId);
-          }
-
-          if (h.isObject(url)) {
-            resolved.push({
-              url: url.url,
-              host,
-              original: resource,
-              folderName: url.folderName,
-            });
-            log.post.info(postId, `::Resolved::: ${url.url}`, postNumber);
-          } else {
-            resolved.push({
-              url,
-              host,
-              original: resource,
-              folderName,
-            });
-            log.post.info(postId, `::Resolved::: ${url}`, postNumber);
-          }
+// Bunkr: capture filename hints from visible link text (works even when CF blocks /v/ pages).
+try {
+    const cc = parsedPost && parsedPost.contentContainer;
+    if (cc && cc.querySelectorAll) {
+        const strip = (s) => String(s || '').split('#')[0].split('?')[0];
+        const normUrl = (u) => {
+            u = String(u || '').replace(/&amp;/g, '&').trim();
+            u = u.split(/[\s"'<>]/)[0].trim();
+            if (u && !/^https?:\/\//i.test(u)) u = `https://${u}`;
+            if (u.endsWith('/')) u = u.slice(0, -1);
+            return u;
+        };
+        const extractName = (t) => {
+            let s = String(t || '').replace(/\s+/g, ' ').trim();
+            if (!s) return '';
+            // If link text is itself a URL, it isn't a filename hint.
+            if (/^https?:\/\//i.test(s)) return '';
+            // Whole string looks like a filename (keep spaces).
+            if (/\.[A-Za-z0-9]{1,8}$/.test(s) && s.length <= 200) return s;
+            // Otherwise pick the last token-like filename.
+            const m = s.match(/[^\\/:*?"<>|\s]+\.[A-Za-z0-9]{1,8}/g);
+            if (m && m.length) {
+                const cand = m[m.length - 1];
+                if (cand && cand.length <= 200) return cand;
+            }
+            return '';
         };
 
-        if (h.isArray(r.resolved)) {
-          r.resolved.forEach(url => addResolved(url, r.folderName));
-        } else {
-          addResolved(r, null);
+        cc.querySelectorAll('a[href]').forEach(a => {
+            const href0 = normUrl(a.getAttribute('href'));
+            if (!href0) return;
+
+            // only for bunkr-ish links (skip direct scdn links)
+            if (!/bunkrr?r?\./i.test(href0)) return;
+            if (/scdn\.st\//i.test(href0)) return;
+
+            const nm = extractName(a.textContent || '');
+            if (!nm) return;
+            if (xfpdLooksLikeCfFilenameHint(nm)) return;
+
+            bunkrNameByUrl.set(href0, nm);
+            bunkrNameByUrl.set(strip(href0), nm);
+        });
+
+        cc.querySelectorAll('a[href*="goonbox.cr/img/"]').forEach(a => {
+            const href0 = strip(normUrl(a.getAttribute('href')));
+            if (!href0) return;
+
+            const img = a.querySelector('img');
+            const thumbUrl = img && (img.getAttribute('data-url') || img.getAttribute('src'));
+            if (!thumbUrl) return;
+
+            goonboxThumbByUrl.set(href0, thumbUrl);
+        });
+    }
+} catch (e) {}
+
+log.post.info(postId, '::Url resolution started::', postNumber);
+
+    const totalResourcesToResolve = enabledHosts.reduce((acc, host) => acc + host.resources.length, 0);
+    let resolvingIndex = 0;
+
+    for (const host of enabledHosts.filter(host => host.resources.length)) {
+        const resources = host.resources;
+
+        for (const resource of resources) {
+            resolvingIndex++;
+            h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+            h.ui.setText(statusLabel, `Resolving: ${resolvingIndex} / ${totalResourcesToResolve} 🢒 ${h.limit(resource, 80)}`);
+
+            for (const resolver of resolvers) {
+                const patterns = resolver[0];
+                const resolverCB = resolver[1];
+
+                let matched = true;
+
+                for (const pattern of patterns) {
+                    let strPattern = pattern.toString();
+
+                    let shouldMatch = !h.contains(':!', strPattern);
+
+                    strPattern = strPattern.replace(':!', '');
+                    strPattern = h.re.toRegExp(h.re.toString(strPattern), 'is');
+
+                    if (shouldMatch && !strPattern.test(resource)) {
+                        matched = false;
+                        break;
+                    } else if (!shouldMatch && strPattern.test(resource)) {
+                        matched = false;
+                        break;
+                    }
+                }
+
+                if (!matched) {
+                    continue;
+                }
+
+                const passwords = parsedPost.spoilers.concat(parsedPost.spoilers.map(s => s.toLowerCase()));
+
+                let r = null;
+
+                try {
+                    const progressCB = (t) => {
+    try {
+        h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, t);
+    } catch (e) {}
+};
+
+r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, postId, postSettings, progressCB)));
+                } catch (e) {
+                    if (host.name === 'Cyberdrop' && /cyberdrop\.[a-z]{2,}\/a\//i.test(String(resource))) {
+                        continue;
+                    }
+                    log.post.error(postId, `::Error resolving::: ${resource}`, postNumber);
+                    continue;
+                }
+
+                if (h.isNullOrUndef(r)) {
+                    log.post.error(postId, `::Could not resolve::: ${resource}`, postNumber);
+                    continue;
+                }
+
+                h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+                h.ui.setText(statusLabel, `Resolved: ${resolved.length}`);
+
+                const addResolved = (url, folderName) => {
+                    if (!resolved.length) {
+                        log.separator(postId);
+                    }
+
+                    if (h.isObject(url)) {
+                        resolved.push({
+                            url: url.url,
+                            host,
+                            original: resource,
+                            folderName: url.folderName,
+                            forceUnzipped: false, // Filester can be zipped when using blob; DIRECT always saves outside ZIP
+                            forceDirect: false,
+                        });
+                        log.post.info(postId, `::Resolved::: ${url.url}`, postNumber);
+                    } else {
+                        resolved.push({
+                            url,
+                            host,
+                            original: resource,
+                            folderName,
+                            forceUnzipped: false, // Filester can be zipped when using blob; DIRECT always saves outside ZIP
+                            forceDirect: false,
+                        });
+                        log.post.info(postId, `::Resolved::: ${url}`, postNumber);
+                    }
+                };
+
+                if (h.isArray(r.resolved)) {
+                    r.resolved.forEach(url => {
+                    try {
+                        addResolved(url, r.folderName);
+                    } catch (e) {
+                    }
+                });
+                } else {
+                    addResolved(r, null);
+                }
+            }
         }
-      }
-    }
-  }
-
-  if (resolved.length) {
-    log.separator(postId);
-  }
-
-  log.post.info(postId, '::Url resolution completed::', postNumber);
-
-  let totalDownloadable = resolved.filter(r => r.url).length;
-
-  const totalResources = enabledHosts.reduce((acc, h) => h.resources.length + acc, 0);
-
-  h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
-  h.ui.setText(statusLabel, `Resolved: ${resolved.length} / ${totalDownloadable} 🢒 ${totalResources} Total Links`);
-
-  const filenames = [];
-  const mimeTypes = [];
-
-  setProcessing(true, postId);
-
-  log.separator(postId);
-  log.post.info(postId, `::Found ${totalDownloadable} resource(s)::`, postNumber);
-  log.separator(postId);
-
-  const threadTitle = parsers.thread.parseTitle();
-
-  let customFilename = postSettings.output.find(o => o.postId === postId)?.value;
-
-  if (customFilename) {
-    customFilename = customFilename.replace(/:title:/g, threadTitle);
-    customFilename = customFilename.replace(/:#:/g, postNumber);
-    customFilename = customFilename.replace(/:id:/g, postId);
-  }
-
-  if (postSettings.skipDuplicates) {
-    const unique = [];
-    for (const r of resolved.filter(r => r.url).sort((a, b) => (a.host.type !== 'folder' || b.host.type !== 'folder' ? -1 : 1))) {
-      const filename = h.basename(r.url);
-      if (unique.find(u => u.filename.toLowerCase() === filename.toLowerCase())) {
-        log.post.info(postId, `::Skipped duplicate::: ${filename} ::from:: ${r.url}`, postNumber);
-        continue;
-      }
-      unique.push({ ...r, filename });
     }
 
-    if (unique.length !== resolved.length) {
-      h.ui.setText(statusLabel, `Removed ${resolved.length - unique.length} duplicates...`);
-      unique.forEach(u => delete u.filename);
-      resolved = unique;
-      totalDownloadable = resolved.length;
-    }
-  }
-
-  const isFF = window.isFF;
-
-  if (!postSettings.skipDownload) {
-    const resources = resolved.filter(r => r.url);
-    totalDownloadable = resources.length;
-
-    const batchLength = 2;
-
-    let currentBatch = 0;
-
-    const batches = [];
-
-    for (let i = 0; i < totalDownloadable; i += batchLength) {
-      batches.push(resources.slice(i, i + batchLength));
+    if (resolved.length) {
+        log.separator(postId);
     }
 
-    const getNextBatch = () => {
-      const batch = currentBatch < batches.length ? batches[currentBatch] : [];
-      currentBatch++;
-      return batch;
+    log.post.info(postId, '::Url resolution completed::', postNumber);
+
+    let totalDownloadable = resolved.filter(r => r.url).length;
+
+    const totalResources = enabledHosts.reduce((acc, h) => h.resources.length + acc, 0);
+
+    h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+    h.ui.setText(statusLabel, `Resolved: ${resolved.length} / ${totalDownloadable} 🢒 ${totalResources} Total Links`);
+
+    const filenames = [];
+    const mimeTypes = [];
+
+    // Windows-safe sanitizers (used for folder/zip names). Kept local to downloadPost so it has access to settings.
+    const sanitizeWinSegment = (seg, fallback = 'file') => {
+        let s = String(seg ?? '').trim();
+
+
+        // If emojis are disabled, strip emoji/pictographs for consistent behavior across hosts.
+        if (settings?.naming?.allowEmojis === false) {
+            try {
+                s = s.replace(/\p{Extended_Pictographic}/gu, '');
+            } catch (e) {
+                // Fallback: strip surrogate pairs (covers most emoji)
+                s = s.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '');
+            }
+            // Remove variation selectors + ZWJ
+            s = s.replace(/[\uFE0E\uFE0F\u200D]/g, '');
+        }
+
+        // Replace Windows-invalid chars and control chars.
+        const sub = (settings?.naming?.invalidCharSubstitute ?? '-');
+        s = s
+            .replace(/[\u0000-\u001f\u007f]/g, '')
+            .replace(/[<>:"/\\|?*]/g, sub)
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/[. ]+$/g, ''); // no trailing dots/spaces on Windows
+
+        if (!s) s = String(fallback || 'file');
+
+        // Avoid reserved device names on Windows.
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(s)) s = `_${s}`;
+
+        // Very long segments can cause path issues; keep it reasonable.
+        if (s.length > 180) s = s.slice(0, 180).trim();
+
+        return s;
     };
 
-    const requestProgress = [];
+    const sanitizeWinPath = (p) => {
+        const parts = String(p ?? '')
+            .split('/')
+            .map(x => sanitizeWinSegment(x, ''))
+            .filter(Boolean);
+        return parts.join('/');
+    };
 
-    const requests = [];
+    const usedPaths = new Set();
 
-    let completedBatchedDownloads = 0;
+    const ensureUniquePath = path => {
+        let p = String(path || '').trim();
+        if (!p) {
+            p = 'file';
+        }
 
-    let batch = getNextBatch();
+        if (!usedPaths.has(p)) {
+            usedPaths.add(p);
+            return p;
+        }
 
-    while (batch.length) {
-      for (const { url, host, original, folderName } of batch) {
-        h.ui.setElProps(statusLabel, { fontWeight: 'normal' });
-        const ellipsedUrl = h.limit(url, 80);
+        const parts = p.split('/');
+        const base = parts.pop();
+        const dir = parts.length ? parts.join('/') : '';
+        const ext = h.ext(base);
+        const stem = ext ? h.fnNoExt(base) : base;
 
-        log.post.info(postId, `::Downloading::: ${url}`, postNumber);
-        const request = GM_xmlhttpRequest({
-          url,
-          headers: {
-            Referer: original,
-          },
-          responseType: 'blob',
-          onreadystatechange: response => {
-            if (response.readyState === 2) {
-              let matches = h.re.matchAll(/(?<=attachment;filename=").*?(?=")/gis, response.responseHeaders);
-              if (matches.length && !filenames.find(f => f.url === url)) {
-                filenames.push({ url, name: matches[0] });
-              }
-              matches = h.re.matchAll(/(?<=content-type:\s).*$/gi, response.responseHeaders);
-              if (matches.length && !mimeTypes.find(m => m.url === url)) {
-                mimeTypes.push({ url, type: matches[0] });
-              }
+        let i = 2;
+        while (true) {
+            const candidateBase = ext ? `${stem} (${i}).${ext}` : `${stem} (${i})`;
+            const candidate = dir ? `${dir}/${candidateBase}` : candidateBase;
+            if (!usedPaths.has(candidate)) {
+                usedPaths.add(candidate);
+                return candidate;
             }
-          },
-          onprogress: response => {
-            h.ui.setElProps(statusLabel, {
-              color: '#469cf3',
-            });
-            const downloadedSizeInMB = Number(response.loaded / 1024 / 1024).toFixed(2);
-            const totalSizeInMB = Number(response.total / 1024 / 1024).toFixed(2);
-            if (response.total === -1 || response.totalSize === -1) {
-              h.ui.setElProps(filePB, { width: '0%' });
-              h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 ${downloadedSizeInMB} MB 🢒 ${ellipsedUrl}`);
-            } else {
-              h.show(filePB);
-              h.ui.setText(
-                statusLabel,
-                `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 ${downloadedSizeInMB} MB / ${totalSizeInMB} MB  🢒 ${ellipsedUrl}`,
-              );
-              h.ui.setElProps(filePB, {
-                width: `${(response.loaded / response.total) * 100}%`,
-              });
+            i++;
+        }
+    };
+
+    const usedFlatNames = new Set();
+
+    const ensureUniqueFlatName = name => {
+        let n = String(name || '').trim();
+        if (!n) {
+            n = 'file';
+        }
+
+        if (!usedFlatNames.has(n)) {
+            usedFlatNames.add(n);
+            return n;
+        }
+
+        const ext = h.ext(n);
+        const stem = ext ? h.fnNoExt(n) : n;
+
+        let i = 2;
+        while (true) {
+            const candidate = ext ? `${stem} (${i}).${ext}` : `${stem} (${i})`;
+            if (!usedFlatNames.has(candidate)) {
+                usedFlatNames.add(candidate);
+                return candidate;
             }
-            const p = requestProgress.find(r => r.url === url);
-            p.new = response.loaded;
-          },
-          onload: response => {
-            completed++;
-            completedBatchedDownloads++;
+            i++;
+        }
+    };
 
-            const p = requestProgress.find(r => r.url === url);
-            clearInterval(p.intervalId);
-
-            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
-            h.ui.setElProps(statusLabel, { color: '#2d9053' });
-            h.ui.setElProps(totalPB, {
-              width: `${(completed / totalDownloadable) * 100}%`,
-            });
-
-            // TODO: Extract to method.
-            const filename = filenames.find(f => f.url === url);
-
-            let basename;
-
-            if (url.includes('https://pixeldrain.com/')) {
-              basename = response.responseHeaders.match(/^content-disposition.+filename=(.+)$/im)[1].replace(/"/g, '');
-            } else if (url.includes('https://simpcity.su/attachments/')) {
-              basename = filename ? filename.name : h.basename(url).replace(/(.*)-(.{3,4})\.\d*$/i, '$1.$2');
-            } else if (url.includes('kemono.party')) {
-              basename = filename
-                ? filename.name
-                : h
-                    .basename(url)
-                    .replace(/(.*)\?f=(.*)/, '$2')
-                    .replace('%20', ' ');
-            } else {
-              basename = filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, '');
-            }
-
-            let ext = h.ext(basename);
-
-            const mimeType = mimeTypes.find(m => m.url === url);
-
-            if (!ext && mimeType) {
-              switch (mimeType.type) {
-                case 'image/jpeg':
-                case 'image/jpg':
-                  ext = 'jpg';
-                  break;
-                case 'image/png':
-                  ext = 'png';
-                  break;
-                default:
-                  ext = 'unknown';
-              }
-            }
-
-            const original = basename;
-
-            if (filenames.find(f => f.original === basename)) {
-              const count = filenames.filter(f => f.original === basename).length;
-              basename = `${h.fnNoExt(basename)} (${count + 1}).${ext}`;
-            }
-
-            if (!filename) {
-              filenames.push({ url, name: basename, original });
-            }
-
-            const folder = folderName || '';
-
-            let fn = basename;
-
-            if (!postSettings.flatten && folder && folder.trim() !== '') {
-              fn = `${folder}/${basename}`;
-            }
-
-            log.separator(postId);
-            log.post.info(postId, `::Completed::: ${url}`, postNumber);
-
-            if (folder && folder.trim() !== '') {
-              log.post.info(postId, `::Saving as::: ${basename} ::to:: ${folder}`, postNumber);
-            } else {
-              log.post.info(postId, `::Saving as::: ${basename}`, postNumber);
-            }
-
-            let blob = URL.createObjectURL(response.response);
-
-            let title = threadTitle.replace(/[\\\/]/g, settings.naming.invalidCharSubstitute);
-
-            // https://stackoverflow.com/a/53681022
-            fn = fn.replace(/[\x00-\x08\x0E-\x1F\x7F-\uFFFF]/g, '');
-
-            if (!isFF) {
-              fn = `#${postNumber}/${fn}`;
-            }
-
-            const saveAs = `${title}/${fn}`;
-
-            if (!isFF && !postSettings.zipped) {
-              GM_download({
-                url: blob,
-                name: saveAs,
-                onload: () => {
-                  URL.revokeObjectURL(blob);
-                  blob = null;
-                },
-                onerror: response => {
-                  console.log(`Error writing file ${fn} to disk. There may be more details below.`);
-                  console.log(response);
-                },
-              });
-            }
-
-            if (isFF || postSettings.zipped) {
-              zip.file(fn, response.response);
-            }
-          },
-          onerror: () => {
-            completed++;
-            completedBatchedDownloads++;
-          },
-        });
-
-        requests.push({ url, request });
-
-        const intervalId = setInterval(() => {
-          const p = requestProgress.find(r => r.url === url);
-          if (p.old === p.new) {
-            const r = requests.find(r => r.url === url);
-            r.request.abort();
-            clearInterval(p.intervalId);
-            if (completed < totalDownloadable) {
-              completed++;
-            }
-
-            completedBatchedDownloads++;
-            if (completedBatchedDownloads >= batch.length) {
-              completedBatchedDownloads = 0;
-            }
-          } else {
-            p.old = p.new;
-          }
-        }, 30000);
-
-        requestProgress.push({ url, intervalId, old: 0, new: 0 });
-      }
-
-      while (completedBatchedDownloads < batch.length) {
-        await h.delayedResolve(1000);
-      }
-
-      if (completedBatchedDownloads >= batch.length) {
-        completedBatchedDownloads = 0;
-      }
-
-      batch = getNextBatch();
-    }
-  } else {
-    log.post.info(postId, '::Skipping download::', postNumber);
-  }
-
-  h.hide(statusLabel);
-  h.hide(filePB);
-  h.hide(totalPB);
-
-  if (!isFF) {
-    setProcessing(false, postId);
-  }
-
-  if (totalDownloadable > 0) {
-    let title = threadTitle.replace(/[\\\/]/g, settings.naming.invalidCharSubstitute);
-    const filename = customFilename || `${title} #${postNumber}.zip`;
+    setProcessing(true, postId);
 
     log.separator(postId);
-    log.post.info(postId, `::Preparing zip::`, postNumber);
+    log.post.info(postId, `::Found ${totalDownloadable} resource(s)::`, postNumber);
+    log.separator(postId);
 
-    if (postSettings.generateLog) {
-      log.post.info(postId, `::Generating log file::`, postNumber);
-      zip.file(
-        isFF ? 'generated/log.txt' : 'log.txt',
-        logs
-          .filter(l => l.postId === postId)
-          .map(l => l.message)
-          .join('\n'),
-      );
+    const threadTitle = parsers.thread.parseTitle();
+
+    let customFilename = postSettings.output.find(o => o.postId === postId)?.value;
+
+    if (customFilename) {
+        customFilename = customFilename.replace(/:title:/g, threadTitle);
+        customFilename = customFilename.replace(/:#:/g, postNumber);
+        customFilename = customFilename.replace(/:id:/g, postId);
     }
 
-    if (postSettings.generateLinks) {
-      log.post.info(postId, `::Generating links::`, postNumber);
-      zip.file(
-        isFF ? 'generated/links.txt' : 'links.txt',
-        resolved
-          .filter(r => r.url)
-          .map(r => r.url)
-          .join('\n'),
-      );
+    if (postSettings.skipDuplicates) {
+        const unique = [];
+        for (const r of resolved.filter(r => r.url).sort((a, b) => (a.host.type !== 'folder' || b.host.type !== 'folder' ? -1 : 1))) {
+            const filename = h.basename(r.url);
+            if (unique.find(u => u.filename.toLowerCase() === filename.toLowerCase())) {
+                log.post.info(postId, `::Skipped duplicate::: ${filename} ::from:: ${r.url}`, postNumber);
+                continue;
+            }
+            unique.push({ ...r, filename });
+        }
+
+        if (unique.length !== resolved.length) {
+            h.ui.setText(statusLabel, `Removed ${resolved.length - unique.length} duplicates...`);
+            unique.forEach(u => delete u.filename);
+            resolved = unique;
+            totalDownloadable = resolved.length;
+        }
     }
 
-    let blob = await zip.generateAsync({ type: 'blob' });
+    const isFF = window.isFF;
 
-    if (isFF) {
-      saveAs(blob, filename);
-      setProcessing(false, postId);
-    }
-
-    if (!isFF && postSettings.zipped) {
-      GM_download({
-        url: URL.createObjectURL(blob),
-        name: `${title}/#${postNumber}.zip`,
-        onload: () => {
-          blob = null;
-        },
-        onerror: response => {
-          console.log(`Error writing file to disk. There may be more details below.`);
-          console.log(response);
-        },
-      });
-    }
-
-    if (!isFF && !postSettings.zipped) {
-      if (postSettings.generateLog || postSettings.generateLinks) {
-        let url = URL.createObjectURL(blob);
-        GM_download({
-          url,
-          name: `${title}/#${postNumber}/generated.zip`,
-          onload: () => {
-            blob = null;
-          },
-          onerror: response => {
-            console.log(`Error writing file ${fn} to disk. There may be more details below.`);
-            console.log(response);
-          },
-        });
-      }
-    }
-  } else {
-    setProcessing(false, postId);
-  }
-
-  if (totalDownloadable > 0) {
-    // For logging in console since post logs are already written.
     if (!postSettings.skipDownload) {
-      log.post.info(postId, `::Download completed::`, postNumber);
-    } else {
-      log.post.info(postId, `::Links generation completed::`, postNumber);
+        const resources = resolved.filter(r => r.url);
+        totalDownloadable = resources.length;
+
+        // Limit bunkr links to a single concurrent download.
+        let batchLength = resolved.some(file => /(turbocdn\.st|turbo\.cr|turbovid\.cr)/i.test(file.url)) ? 1 : (resolved.some(file => /(bunkrr?\.\w+)|(bunkr-cache)/.test(file.url)) ? 1 : 2);
+
+        let currentBatch = 0;
+
+        const batches = [];
+
+        // Build batches:
+// - keep existing concurrency (batchLength) for speed
+// - but never put more than ONE GoFile item in the same batch (prevents GoFile "gate" spam / soft-block cascades)
+const isGoFileUrlBatch = u => /gofile\.io/i.test(String(u || ''));
+
+let tmp = [];
+let tmpHasGoFile = false;
+
+for (const item of resources) {
+    const isGF = isGoFileUrlBatch(item.url);
+    // if current batch is full OR would contain 2x GoFile -> flush
+    if (tmp.length >= batchLength || (tmpHasGoFile && isGF)) {
+        batches.push(tmp);
+        tmp = [];
+        tmpHasGoFile = false;
     }
 
-    callbacks && callbacks.onComplete && callbacks.onComplete(totalDownloadable, completed);
-  }
+    tmp.push(item);
+    if (isGF) tmpHasGoFile = true;
+}
 
-  window.logs = window.logs.filter(l => l.postId !== postId);
+if (tmp.length) {
+    batches.push(tmp);
+        }
+
+        const getNextBatch = () => {
+            const batch = currentBatch < batches.length ? batches[currentBatch] : [];
+            currentBatch++;
+            return batch;
+        };
+
+        const requestProgress = [];
+
+        const requests = [];
+
+        let completedBatchedDownloads = 0;
+
+        let cyberdropDirectWarmupDone = false;
+
+        let batch = getNextBatch();
+
+        while (batch.length) {
+
+            const GOFILE_WARMUP_MS = 3000;
+
+            // Turbo: if a signed turbocdn URL stalls (no progress), re-sign and retry quickly before falling back.
+            const TURBO_STALL_MS = 5000;
+            const TURBO_RESIGN_RETRIES = 3;    // number of re-sign + retry attempts
+            const TURBO_DIRECT_FALLBACKS = 1;  // number of direct-download fallbacks after re-sign retries
+            const TURBO_RETRY_DELAY_MS = 600;   // small pause before re-sign retry
+            const TURBO_DIRECT_DELAY_MS = 800;  // small pause before DIRECT fallback
+            const turboRetryState = new Map(); // key -> { resign: n, direct: n }
+
+            const isTurboUrl = u => /turbocdn\.st|turbo\.cr|turbovid\.cr/i.test(String(u || ''));
+
+            const turboExtractId = u => {
+                const s = String(u || '');
+                const m = s.match(/\/\/(?:[\w-]+\.)?turbo\.cr\/(?:v|d|embed)\/([^\/?#]+)/i) ||
+                          s.match(/\/\/(?:[\w-]+\.)?turbovid\.cr\/(?:v|d|embed)\/([^\/?#]+)/i);
+                return (m && m[1]) ? m[1] : '';
+            };
+
+            const turboExtractFn = u => {
+                const s = String(u || '');
+                const m = s.match(/[?&]fn=([^&]+)/i);
+                if (m && m[1]) {
+                    try { return decodeURIComponent(m[1].replace(/\+/g, '%20')); } catch (e) { return m[1]; }
+                }
+                return '';
+            };
+
+            const gmGetTextWithHeaders = (getUrl, headers) => new Promise(resolve => {
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: getUrl,
+                        headers: headers || {},
+                        onload: r => resolve({ ok: true, status: r.status, text: r.responseText || '' }),
+                        onerror: () => resolve({ ok: false, status: 0, text: '' }),
+                        ontimeout: () => resolve({ ok: false, status: 0, text: '' }),
+                    });
+                } catch (e) {
+                    resolve({ ok: false, status: 0, text: '' });
+                }
+            });
+
+            const turboResignSignedUrl = async (turboId, currentUrl) => {
+                if (!turboId) return null;
+
+                const embedUrl = `https://turbo.cr/embed/${turboId}`;
+                const keepFn = turboExtractFn(currentUrl) || '';
+
+                try {
+                    const j = await xfpdTurboFetchSignJsonWithTimeout(turboId, embedUrl);
+                    if (j && j.url) {
+                        let signed = j.url;
+                        const name = (j.original_filename || keepFn || '').toString();
+                        if (signed && name && !/[?&]fn=/i.test(String(signed))) {
+                            const enc = encodeURIComponent(String(name)).replace(/%20/g, '+');
+                            signed += (signed.includes('?') ? '&' : '?') + 'fn=' + enc;
+                        }
+                        try { turboIdBySignedUrl.set(String(signed), String(turboId)); } catch (e) {}
+                        return signed;
+                    }
+                } catch (e) {}
+
+                return null;
+            };
+            const isGoFileUrl = u => /gofile\.io/i.test(String(u || ''));
+            const isPixeldrainUrl = u => /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)/i.test(String(u || ''));
+            const isImagebamCdnUrl = u => /https?:\/\/(?:images|thumbs)\d+\.imagebam\.com\//i.test(String(u || ''));
+            const imagebamRefererForCdn = u => {
+                try {
+                    const uu = new URL(String(u || ''), location.origin);
+                    const base = (uu.pathname || '').split('/').pop() || '';
+                    const id = base.replace(/\.[a-z0-9]+$/i, '');
+                    return id ? `https://www.imagebam.com/view/${id}` : 'https://www.imagebam.com/';
+                } catch (e) {
+                    return 'https://www.imagebam.com/';
+                }
+            };
+            const gofileWarmupAttempted = new Set();
+            // url -> highest pass number currently authoritative. GM_xmlhttpRequest's abort()
+            // isn't always reliable once a blob response is substantially buffered, so a
+            // "stalled" pass-1 request can still fire onload after we've already moved on to a
+            // warm-up retry -- checked in the blob onload handler to stop that stale pass from
+            // also saving the file (duplicate download alongside the retry's result).
+            const gofileActivePass = new Map();
+            const CYBERDROP_WARMUP_MS = 1500;
+
+            const BLOB_MAX_BYTES = Math.floor(1.6 * 1024 * 1024 * 1024);
+            const BUNKR_DIRECT_MIN_BYTES = 500 * 1024 * 1024;
+            const preflightMetaCache = new Map();
+            // Windows-safe filenames for GM_download (Chrome is stricter than Firefox).
+            const WIN_ILLEGAL_RE = /[<>:"\/\\|?*\x00-\x1F]/g;
+
+            const sanitizeWinSegment = (s) => {
+                const sub = (settings && settings.naming && settings.naming.invalidCharSubstitute) ? settings.naming.invalidCharSubstitute : '_';
+                let out = String(s || '');
+
+                // If emojis are disabled, strip emoji/pictographs for consistent behavior across hosts.
+                if (settings?.naming?.allowEmojis === false) {
+                    try {
+                        out = out.replace(/\p{Extended_Pictographic}/gu, '');
+                    } catch (e) {
+                        // Fallback: strip surrogate pairs (covers most emoji)
+                        out = out.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '');
+                    }
+                    // Remove variation selectors + ZWJ
+                    out = out.replace(/[\uFE0E\uFE0F\u200D]/g, '');
+                }
+                out = out.replace(WIN_ILLEGAL_RE, sub);
+                // Remove remaining control chars / oddities
+                out = out.replace(/[\x00-\x08\x0E-\x1F\x7F]/g, '');
+                // Windows also hates trailing dots/spaces in path segments
+                out = out.replace(/[\. ]+$/g, '').replace(/^[\. ]+/g, '');
+                if (!out) out = '_';
+                // Avoid reserved device names
+                if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(out)) out = '_' + out;
+                return out;
+            };
+
+            const sanitizeWinPath = (p) => {
+                return String(p || '').split('/').map(sanitizeWinSegment).join('/');
+            };
+
+
+            const headerValue = (headers, name) => {
+                try {
+                    const re = new RegExp(`^${name}:\\s*([^\\r\\n]+)`, 'im');
+                    const m = re.exec(headers || '');
+                    return m && m[1] ? String(m[1]).trim() : '';
+                } catch (e) { return ''; }
+            };
+
+            const parseDispositionFilename = headers => {
+                const hRaw = headers || '';
+                // RFC 5987 filename*=UTF-8''...
+                let m = /filename\*\s*=\s*UTF-8''([^;\r\n]+)/i.exec(hRaw);
+                if (m && m[1]) {
+                    const raw = String(m[1]).trim().replace(/^"|"$/g, '');
+                    try { return decodeURIComponent(raw); } catch (e) { return raw; }
+                }
+                m = /filename\s*=\s*"([^"\r\n]+)"/i.exec(hRaw) || /filename\s*=\s*([^;\r\n]+)/i.exec(hRaw);
+                if (m && m[1]) return String(m[1]).trim().replace(/^"|"$/g, '');
+                return '';
+            };
+
+            const gmHead = (headUrl, reflink) => new Promise(resolve => {
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'HEAD',
+                        url: headUrl,
+                                                onload: r => resolve({ ok: true, status: r.status, headers: r.responseHeaders || '' }),
+                        onerror: () => resolve({ ok: false, status: 0, headers: '' }),
+                        ontimeout: () => resolve({ ok: false, status: 0, headers: '' }),
+                    });
+                } catch (e) {
+                    resolve({ ok: false, status: 0, headers: '' });
+                }
+            });
+
+            const gmGetText = (getUrl, reflink) => new Promise(resolve => {
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: getUrl,
+                                                onload: r => resolve({ ok: true, status: r.status, text: r.responseText || '' }),
+                        onerror: () => resolve({ ok: false, status: 0, text: '' }),
+                        ontimeout: () => resolve({ ok: false, status: 0, text: '' }),
+                    });
+                } catch (e) {
+                    resolve({ ok: false, status: 0, text: '' });
+                }
+            });
+
+            const extractNum = v => {
+                const n = Number(v);
+                return Number.isFinite(n) ? n : 0;
+            };
+
+            const preflightMeta = async (dlUrl, reflink, isGoFile, isPixeldrain) => {
+                const key = `${dlUrl}`;
+                if (preflightMetaCache.has(key)) return preflightMetaCache.get(key);
+
+                const meta = { size: 0, filename: '', status: 0, contentType: '', headers: '' };
+
+                try {
+                    if (isPixeldrain) {
+                        const mFile = /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/api\/file\/([^\/?#]+)/i.exec(dlUrl || '');
+                        if (mFile && mFile[1]) {
+                            const pdOrigin = (() => {
+                                try {
+                                    const uu = new URL(dlUrl || '', location.origin);
+                                    const host = String(uu.hostname || '').toLowerCase();
+                                    if (host.endsWith('pixeldrain.net')) return 'https://pixeldrain.net';
+                                    if (host.endsWith('pixeldra.in')) return 'https://pixeldra.in';
+                                    return 'https://pixeldrain.com';
+                                } catch (e) {
+                                    return 'https://pixeldrain.com';
+                                }
+                            })();
+                            const infoUrl = `${pdOrigin}/api/file/${mFile[1]}/info`;
+                            const r = await gmGetText(infoUrl, reflink);
+                            if (r.ok && r.text) {
+                                try {
+                                    const j = JSON.parse(r.text);
+                                    const v = j && (j.value || j.data || j);
+                                    meta.size = extractNum((v && (v.size ?? v.bytes ?? v.length)) ?? (j && (j.size ?? j.bytes)));
+                                    meta.filename = String((v && (v.name ?? v.filename ?? v.title)) ?? (j && (j.name ?? j.filename)) ?? '');
+                                } catch (e) {}
+                            }
+                        }
+                    }
+
+
+                    // Filester hints (API gives name/size but the CDN URL may not include them)
+                    try {
+                        if (!meta.size) {
+                        let hintedSize = 0;
+                        try {
+                            // Prefer slug-based hints (from /f/ album page) when available.
+                            const s0 = String(filesterSlugByUrl.get(String(dlUrl)) || '');
+                            hintedSize = Number(filesterSizeBySlug.get(s0) || filesterSizeByUrl.get(String(dlUrl)) || 0) || 0;
+                        } catch (e) { hintedSize = 0; }
+                        if (hintedSize) meta.size = extractNum(hintedSize);
+                    }
+                    if (!meta.filename) {
+                        let hintedName = '';
+                        try {
+                            const s0 = String(filesterSlugByUrl.get(String(dlUrl)) || '');
+                            hintedName = String(filesterNameBySlug.get(s0) || filesterNameByUrl.get(String(dlUrl)) || '');
+                        } catch (e) { hintedName = ''; }
+                        if (hintedName) meta.filename = String(hintedName);
+                    }
+                    } catch (e) {}
+
+                    // Fallback HEAD (works for GoFile store links and Pixeldrain list ZIPs)
+                    const nameHasExt = /\.[A-Za-z0-9]{1,8}$/.test(String(meta.filename || ''));
+                    const isFilester = /(?:^https?:\/\/)?(?:cache\d+\.)?filester\.(me|sh|si|gg)\/v\//i.test(String(dlUrl || ''));
+                    const needHead = !!(isGoFile || isPixeldrain || (!isFilester && (!meta.size || !meta.filename || !nameHasExt)));
+                    if (needHead) {
+                        const hRes = await gmHead(dlUrl, reflink);
+                        meta.status = hRes.status || 0;
+                        meta.headers = hRes.headers || '';
+                        meta.contentType = headerValue(meta.headers, 'content-type');
+                        const cl = headerValue(meta.headers, 'content-length');
+                        if (!meta.size && cl) meta.size = extractNum(cl);
+                        if (!meta.filename) {
+                            const cdName = parseDispositionFilename(meta.headers);
+                            if (cdName) meta.filename = cdName;
+                        }
+                    }                } catch (e) {}
+
+                preflightMetaCache.set(key, meta);
+                return meta;
+            };
+
+            // Filester album policy (location stays unchanged; this only decides ZIP vs DIRECT per file).
+            // Rules:
+            // - Zipped ON:
+            //   * If album contains images + other files:
+            //       - If total (all files) <= ~1.6GB AND all sizes are known -> ZIP all.
+            //       - Else -> ZIP images only, save the rest via DIRECT (outside ZIP).
+            //   * If album contains only non-image files:
+            //       - If total <= ~1.6GB AND all sizes are known -> ZIP all.
+            //       - Else -> DIRECT all (skip ZIP).
+            // - Zipped OFF:
+            //   * If album contains any non-image file (mixed OR video-only) -> DIRECT all.
+            //   * Images-only album keeps default behavior.
+
+            const FIL_IMG_EXTS = new Set(['.jpg','.jpeg','.png','.gif','.webp','.bmp','.avif','.tif','.tiff','.jxl','.heic','.heif']);
+            const FIL_VID_EXTS = new Set(['.mp4','.m4v','.webm','.mkv','.mov','.avi','.wmv','.flv','.ts','.m2ts','.mpg','.mpeg','.3gp']);
+
+            const filesterGuessExt = (s) => {
+                const t = String(s || '').trim();
+                const m = t.match(/\.([A-Za-z0-9]{1,8})(?=($|\?))/);
+                return m ? `.${String(m[1]).toLowerCase()}` : '';
+            };
+
+            const filesterSlugFromUrl = (u0) => {
+                try {
+                    const s = String(u0 || '');
+                    const mD = /\/d\/([^\/?#]+)/i.exec(s);
+                    if (mD && mD[1]) return String(mD[1]);
+                    // cacheN /v/ tokens -> map back to slug when known
+                    const s2 = String(filesterSlugByUrl.get(String(u0)) || '');
+                    if (s2) return s2;
+                } catch (e) {}
+                return '';
+            };
+
+            const filesterHintName = (u0) => {
+                try {
+                    const slug = filesterSlugFromUrl(u0);
+                    const v =
+                        (slug ? filesterNameBySlug.get(String(slug)) : '') ||
+                        filesterNameByUrl.get(String(u0)) ||
+                        '';
+                    return String(v || '').trim();
+                } catch (e) {
+                    return '';
+                }
+            };
+
+            const filesterHintSize = (u0) => {
+                try {
+                    const slug = filesterSlugFromUrl(u0);
+                    const v =
+                        (slug ? filesterSizeBySlug.get(String(slug)) : 0) ||
+                        filesterSizeByUrl.get(String(u0)) ||
+                        0;
+                    const n = Number(v);
+                    return Number.isFinite(n) && n > 0 ? n : 0;
+                } catch (e) {
+                    return 0;
+                }
+            };
+
+            const filesterClassify = (u0) => {
+                try {
+                    const hintedName = filesterHintName(u0);
+                    const ext = filesterGuessExt(hintedName || u0);
+                    if (ext && FIL_IMG_EXTS.has(ext)) return 'image';
+                    if (ext && FIL_VID_EXTS.has(ext)) return 'video';
+                    // If no extension, treat as "other" (safer for ZIP decisions).
+                    return 'other';
+                } catch (e) {
+                    return 'other';
+                }
+            };
+
+            const applyFilesterAlbumPolicy = async () => {
+                try {
+                    const isFilesterAlbumOriginal = (s) => /(?:^|\/\/)(?:www\.)?filester\.(me|sh|si|gg)\/f\//i.test(String(s || '')) || /filester\.(me|sh|si|gg)\/f\//i.test(String(s || ''));
+                    const albumItems = resolved.filter(r => r && r.url && isFilesterAlbumOriginal(r.original));
+                    if (!albumItems.length) return;
+
+                    // Group by the original album URL so each album is handled independently.
+                    const groups = new Map();
+                    for (const it of albumItems) {
+                        const k = String(it.original || '');
+                        if (!groups.has(k)) groups.set(k, []);
+                        groups.get(k).push(it);
+                    }
+
+                    for (const [albumUrl, items] of groups.entries()) {
+                        let hasImage = false;
+                        let hasNonImage = false;
+                        let imgCount = 0;
+                        let vidCount = 0;
+                        let otherCount = 0;
+                        let nonImgCount = 0;
+                        let totalSize = 0;
+                        let unknownSize = 0;
+
+                        const unknownItems = [];
+
+                        // Collect classification + sizes.
+                        for (const it of items) {
+                            const kind = filesterClassify(it.url);
+                            if (kind === 'image') { hasImage = true; imgCount++; }
+                            else if (kind === 'video') { hasNonImage = true; vidCount++; nonImgCount++; }
+                            else { hasNonImage = true; otherCount++; nonImgCount++; }
+
+                            const sz0 = filesterHintSize(it.url);
+                            if (sz0 > 0) totalSize += sz0;
+                            else { unknownSize++; unknownItems.push(it); }
+                        }
+
+                        // Best-effort: only attempt HEAD for missing sizes on small albums.
+                        // (Avoids 100x HEAD calls on huge albums; in that case we default to the safer policy.)
+                        if (unknownItems.length && unknownItems.length <= 10 && items.length <= 25) {
+                            for (const it of unknownItems) {
+                                const meta = await preflightMeta(it.url, String(albumUrl || 'https://filester.me/'), false, false);
+                                const sz = Number(meta && meta.size) || 0;
+                                if (sz > 0) { totalSize += sz; unknownSize--; }
+                            }
+                        }
+
+                        const allSizesKnown = unknownSize === 0 && totalSize > 0;
+                        const canZipAll = allSizesKnown && totalSize <= BLOB_MAX_BYTES;
+
+                        const totalStr = allSizesKnown ? `${Math.round(totalSize / 1024 / 1024)}MB` : 'unknown';
+                        const info = `files=${items.length}, images=${imgCount}, videos=${vidCount}, other=${otherCount}, total=${totalStr}, unknown=${unknownSize}`;
+
+                        if (!postSettings.zipped) {
+                            // Unzipped: if there is ANY non-image (mixed or video-only) -> DIRECT all.
+                            if (hasNonImage) {
+                                for (const it of items) it.forceDirect = true;
+                                log.post.info(postId, `::Filester album (unzipped) has non-image -> DIRECT all (${info})::: ${albumUrl}`, postNumber);
+                            }
+                            continue;
+                        }
+
+                        // Zipped ON
+                        if (hasImage && hasNonImage) {
+                            if (!canZipAll) {
+                                // ZIP images only; everything else DIRECT.
+                                for (const it of items) {
+                                    const kind = filesterClassify(it.url);
+                                    if (kind !== 'image') it.forceDirect = true;
+                                }
+                                log.post.info(postId, `::Filester mixed album -> ZIP images, DIRECT others (${info})::: ${albumUrl}`, postNumber);
+                            } else {
+                                log.post.info(postId, `::Filester mixed album total<=~1.6GB -> ZIP all (${info})::: ${albumUrl}`, postNumber);
+                            }
+                        } else if (!hasImage && hasNonImage) {
+                            // Non-image only (videos and/or other file types)
+                            const isVideoOnly = vidCount > 0 && otherCount === 0;
+
+                            if (!canZipAll) {
+                                for (const it of items) it.forceDirect = true;
+                                log.post.info(
+                                    postId,
+                                    `::Filester ${isVideoOnly ? 'video-only' : 'non-image'} album >~1.6GB or unknown -> DIRECT all (${info})::: ${albumUrl}`,
+                                    postNumber
+                                );
+                            } else {
+                                log.post.info(
+                                    postId,
+                                    `::Filester ${isVideoOnly ? 'video-only' : 'non-image'} album total<=~1.6GB -> ZIP all (${info})::: ${albumUrl}`,
+                                    postNumber
+                                );
+                            }
+                        }
+                        // Images-only album: keep default behavior.
+                    }
+                } catch (e) {}
+            };
+
+            await applyFilesterAlbumPolicy();
+
+            const gofileWarmupOpenTab = warmUrl => {
+                try {
+                    const tab = GM_openInTab(warmUrl, { active: false, insert: true, setParent: true });
+                    setTimeout(() => {
+                        try { xfpdCloseTabHandle(tab); } catch (e) {}
+                    }, GOFILE_WARMUP_MS);
+                } catch (e) {}
+            };
+
+            let filesterNoTabTokenLogged = false;
+
+            const startDownload = async (resource, pass = 1) => {
+                let { url, host, original, folderName } = resource;
+                const zippedForThis = !!(postSettings.zipped && !(resource && (resource.forceDirect || resource.forceUnzipped)) );
+                const isGoFile = isGoFileUrl(url);
+                const isPixeldrain = isPixeldrainUrl(url);
+                const isTurbo = isTurboUrl(url);
+                const isCyberdrop = String(host || '').toLowerCase() === 'cyberdrop';
+                const isBunkr = String((host && host.name) || '').toLowerCase() === 'bunkr' || /bunkr/i.test(String(url || '')) || /bunkr/i.test(String(original || ''));
+                const isFilester = String((host && host.name) || '').toLowerCase() === 'filester' || /(?:^|\.)filester\.(me|sh|si|gg)/i.test(String(url || ''));
+
+                // GoFile: make sure the browser's accountToken cookie matches the token that
+                // resolved this album BEFORE the first request (store links gate on this too,
+                // not just DIRECT) -- see gofileSyncCookie definition for why.
+                if (isGoFile) {
+                    try {
+                        const gfToken = settings?.hosts?.goFile?.token;
+                        if (gfToken) await gofileSyncCookie(gfToken);
+                    } catch (e) {}
+                }
+
+                // Filester: turn short /d/<slug> view URLs into v2 CDN stream URLs (no tabs).
+                // Album pages (/f/...) only ever yield short slugs, so this is the step that makes
+                // album downloads work at all -- the /d/ link resolver never sees them.
+                //
+                // This used to call the v1 /api/public/download endpoint and build
+                // `${host}/v/${token}` candidates from it. v1 still answers 200, so resolution
+                // looked fine, but every one of those URLs 404s on the current CDN -- which is why
+                // single /d/ links worked from b06 while albums kept retrying fsc1/fsc2/fsc3 and
+                // failing. Resolution now goes through the same v2 resolver as single links.
+                if (isFilester) {
+                    try {
+                        const uF = new URL(String(url || ''));
+                        const isFilesterD = /(^|\.)filester\.(me|sh|si|gg)$/i.test(String(uF.host || '')) && /^\/d\//i.test(String(uF.pathname || ''));
+                        if (isFilesterD) {
+                            const slug = String(uF.pathname || '').split('/').filter(Boolean).pop() || '';
+                            // Slugs look like "d8ZdCxc" / "QnUVP6A". The bound is deliberately loose
+                            // -- anything path-shaped under /d/ on a Filester host is a slug, and a
+                            // tight length check would silently skip resolution and save the HTML
+                            // view page instead.
+                            const looksLikeSlug = /^[A-Za-z0-9_-]{4,64}$/.test(slug);
+                            if (looksLikeSlug) {
+                                // Follow whichever Filester domain the post linked to.
+                                const apiBase = `https://${String(uF.host || 'filester.me')}`;
+                                const v2 = await filesterResolveV2(h.http, apiBase, slug);
+
+                                if (v2 && v2.url) {
+                                    const streamUrl = String(v2.url);
+                                    if (!filesterNoTabTokenLogged) {
+                                        filesterNoTabTokenLogged = true;
+                                        log.post.info(postId, `::Filester slug->v2 token (no tab)::: ${slug} -> ${streamUrl}`, postNumber);
+                                    }
+
+                                    // filesterResolveV2 already recorded the slug/name/referer for
+                                    // the new URL; the /d/ URL still needs its referer mapped so a
+                                    // later fallback to it uses a Filester referer too.
+                                    try { filesterRefByUrl.set(String(url), String(v2.ref)); } catch (e) {}
+                                    url = streamUrl;
+                                    try { resource.url = streamUrl; } catch (e) {}
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                }
+
+
+                const turboId = isTurbo ? (turboIdBySignedUrl.get(String(url)) || turboExtractId(original) || turboExtractId(url) || '') : '';
+                const turboKey = isTurbo ? (turboId ? `turbo:${turboId}` : `turbo-url:${url}`) : '';
+
+                let cyberOrigin = '';
+                let cyberSlug = '';
+                let cyberFilePage = '';
+                const progressKey = isGoFile ? `${url}@@gofilepass${pass}` : url;
+
+                h.ui.setElProps(statusLabel, { fontWeight: 'normal' });
+
+                var reflink = original;
+                if (url.includes('bunkr')){
+                    reflink = "https://bunkr.si"
+                }
+                if (url.includes('pomf2')){
+                    reflink = "https://pomf2.lain.la"
+                }
+                if (url.includes('turbocdn.st')){
+                    reflink = "https://turbo.cr/"
+                }
+                if (/erome\.com/i.test(String(url || ''))){
+                    reflink = "https://www.erome.com/"
+                }
+                if (/(?:imagepond\.net|images\.socialmediagirls\.com)/i.test(String(url || ''))){
+                    reflink = "https://www.imagepond.net/"
+                }
+                if (isFilesterUrl(url)){
+                    // Prefer the exact /d/ page the token was issued against; the CDN accepts any
+                    // Filester referer, but a v2 stream URL is not on a filester.* host at all, so
+                    // the old hostname test never fired for it.
+                    reflink = String(filesterRefByUrl.get(String(url)) || "https://filester.me/")
+                }
+
+
+                // Cyberdrop: normalize referer/origin and build a /f/ page for optional warm-up.
+                if (isCyberdrop) {
+                    try {
+                        const o = new URL(/^https?:\/\//i.test(String(original || '')) ? String(original) : `https://${String(original)}`);
+                        cyberOrigin = o.origin;
+                        // Prefer slug from the original /e/ or /f/ URL, fallback to the resolved download URL.
+                        const m1 = /\/[ef]\/([^\/?#]+)/i.exec(String(original || ''));
+                        const m2 = /\/api\/file\/(?:d|info|auth)\/([^\/?#]+)/i.exec(String(original || ''));
+                        const m3 = /\/api\/file\/d\/([^\/?#]+)/i.exec(String(url || ''));
+                        cyberSlug = (m1 && m1[1]) || (m2 && m2[1]) || (m3 && m3[1]) || '';
+                        if (cyberSlug) cyberFilePage = `${cyberOrigin}/f/${cyberSlug}`;
+                        // Match browser requests: Referer/Origin are usually just https://cyberdrop.cr/
+                        reflink = `${cyberOrigin}/`;
+                    } catch (e) {}
+                }
+
+                const ellipsedUrl = h.limit(url, 80);
+                log.post.info(postId, `::Downloading${isGoFile && pass > 1 ? ' (retry)' : ''}::: ${url}`, postNumber);
+
+                if (isCyberdrop && pass === 1 && cyberOrigin && cyberFilePage && /gigachad-cdn\.ru|cuckcapital\.cr/i.test(String(url || '')) && !cyberdropDirectWarmupDone) {
+
+                    cyberdropDirectWarmupDone = true;
+                                        log.post.info(postId, `::Cyberdrop warm-up -> open tab (${CYBERDROP_WARMUP_MS}ms) then continue::: ${cyberFilePage}`, postNumber);
+                    await cyberdropWarmupOnce(cyberOrigin, cyberFilePage, CYBERDROP_WARMUP_MS);
+                }
+
+
+                let switchedToDirect = false;
+
+                const startDirectDownload = async (metaHint = null) => {
+                    switchedToDirect = true;
+
+                    try {
+                        const baseMeta = isTurbo ? {} : ((await preflightMeta(url, reflink, isGoFile, isPixeldrain)) || {});
+                        const meta = { ...baseMeta, ...(metaHint || {}) };
+                        const sizeBytes = Number(meta.size || 0) || 0;
+
+                        // GoFile: if HEAD already shows an HTML gate / bad status, do the same warm-up + one retry.
+                        if (isGoFile) {
+                            const ct = String(meta.contentType || '');
+                            const badStatus = meta.status && meta.status >= 400;
+                            const isHtml = /text\/html|application\/xhtml\+xml/i.test(ct);
+                            if ((badStatus || isHtml) && pass === 1 && !gofileWarmupAttempted.has(url)) {
+                                gofileWarmupAttempted.add(url);
+                                log.post.info(postId, `::GoFile warm-up -> open tab (${GOFILE_WARMUP_MS}ms) then retry [1/2]::: ${url}`, postNumber);
+                                gofileWarmupOpenTab(url);
+                                setTimeout(() => startDownload(resource, 2), GOFILE_WARMUP_MS);
+                                return;
+                            }
+                        }
+
+                        if (postSettings.zipped) {
+                            log.post.info(postId, `::Zipped ON -> saving standalone (not in ZIP)::: ${url}`, postNumber);
+                        }
+
+                        // Try to reuse the existing GoFile filename hints, if available.
+                        let filename = filenames.find(f => f.url === url);
+                        if (!filename && isGoFile) {
+                            const mGf = String(url).match(/\/download\/(?:web|direct)\/([^\/?#]+)\//i);
+                            const gid = mGf && mGf[1] ? mGf[1] : null;
+                            if (gid) {
+                                filename = filenames.find(f => f && f.gofileId === gid);
+                                if (!filename) {
+                                    const hinted =
+                                        gofileNameById.get(String(gid)) ||
+                                        gofileNameByUrl.get(String(url));
+                                    if (hinted) {
+                                        filename = { url, name: String(hinted), gofileId: String(gid) };
+                                    }
+                                }
+                            }
+                        }
+
+                        let basename = '';
+
+                        if (isPixeldrain) {
+                            basename = String(meta.filename || '') || parseDispositionFilename(meta.headers || '') || '';
+                        } else if (isGoFile) {
+                            basename =
+                                (filename && filename.name ? String(filename.name) : '') ||
+                                String(meta.filename || '') ||
+                                parseDispositionFilename(meta.headers || '') ||
+                                '';
+                        }
+
+                        if (!basename && isTurbo) {
+                            basename = turboExtractFn(url) || '';
+                        }
+
+                        if (!basename) {
+                            const stripIp = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+                            const hintedIp =
+                                imagepondNameByUrl.get(String(url)) ||
+                                imagepondNameByUrl.get(stripIp(url)) ||
+                                imagepondNameByUrl.get(String((resource && resource.original) || '')) ||
+                                imagepondNameByUrl.get(stripIp((resource && resource.original) || '')) ||
+                                '';
+                            if (hintedIp) basename = String(hintedIp).trim();
+                        }
+                        if (!basename) {
+                            basename = (filename && filename.name) ? String(filename.name) : '';
+                        }
+                        if (!basename) {
+                            basename = h.basename(url);
+                        }
+
+                        // Bunkr: prefer the human filename (og:title / h1) captured during resolution.
+                        if (isBunkr) {
+                            try {
+                                const strip = (u) => String(u || '').split('#')[0].split('?')[0];
+                                const hinted =
+                                    bunkrNameByUrl.get(String(url)) ||
+                                    bunkrNameByUrl.get(strip(url)) ||
+                                    bunkrNameByUrl.get(String((resource && resource.original) || '')) ||
+                                    bunkrNameByUrl.get(strip((resource && resource.original) || '')) ||
+                                    '';
+                                if (hinted && String(hinted).trim() && !xfpdLooksLikeCfFilenameHint(hinted)) {
+                                    basename = String(hinted).trim();
+
+                                    // If hinted has no extension, derive it from URL first, then content-type.
+                                    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(basename);
+                                    if (!hasExt) {
+                                        const urlExt = h.ext(h.basename(strip(url))) || '';
+                                        const ct0 = String((meta && (meta.contentType || meta.content_type)) || '');
+                                        let ext0 = '';
+                                        if (urlExt) ext0 = String(urlExt);
+                                        else if (/video\/mp4/i.test(ct0)) ext0 = 'mp4';
+                                        else if (/video\/webm/i.test(ct0)) ext0 = 'webm';
+                                        else if (/image\/jpe?g/i.test(ct0)) ext0 = 'jpg';
+                                        else if (/image\/png/i.test(ct0)) ext0 = 'png';
+                                        else if (/image\/gif/i.test(ct0)) ext0 = 'gif';
+                                        else if (/application\/zip/i.test(ct0)) ext0 = 'zip';
+                                        else if (/application\/(x-7z-compressed)/i.test(ct0)) ext0 = '7z';
+                                        else if (/application\/(x-rar|vnd\.rar)|application\/octet-stream/i.test(ct0)) ext0 = 'rar';
+                                        else if (/application\/pdf/i.test(ct0)) ext0 = 'pdf';
+                                        if (ext0) basename = `${basename}.${ext0}`;
+                                    }
+
+                                    basename = sanitizeWinSegment(String(basename || ''));
+                                    if (!basename) basename = sanitizeWinSegment(String(h.basename(strip(url)) || ''));
+                                }
+                            } catch (e) {}
+                        }
+
+                        // Filester: prefer the real filename (from view page / API hints); fallback to a safe slug-based name.
+                        if (isFilester) {
+                            try {
+                                let slug0 = '';
+                                const m = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\/([^\/?#]+)/i.exec(String((resource && resource.original) || ''));
+                                if (m && m[1]) slug0 = m[1];
+                                if (!slug0) slug0 = String(filesterSlugByUrl.get(String(url)) || '');
+                                const ct0 = String((meta && (meta.contentType || meta.content_type)) || '');
+                                let ext0 = 'bin';
+                                if (/video\/mp4/i.test(ct0)) ext0 = 'mp4';
+                                else if (/video\/webm/i.test(ct0)) ext0 = 'webm';
+                                else if (/image\/jpe?g/i.test(ct0)) ext0 = 'jpg';
+                                else if (/image\/png/i.test(ct0)) ext0 = 'png';
+                                else if (/image\/gif/i.test(ct0)) ext0 = 'gif';
+                                else if (/application\/zip/i.test(ct0)) ext0 = 'zip';
+                                else if (/application\/x-7z-compressed/i.test(ct0)) ext0 = '7z';
+                                else if (/application\/(x-rar|vnd\.rar)/i.test(ct0)) ext0 = 'rar';
+
+                                const hinted =
+                                    String((meta && (meta.filename || meta.fileName)) || '') ||
+                                    String(filesterNameByUrl.get(String(url)) || '') ||
+                                    (slug0 ? String(filesterNameBySlug.get(String(slug0)) || '') : '');
+
+                                if (hinted && hinted.trim()) {
+                                    basename = hinted.trim();
+                                    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(String(basename || ''));
+                                    if (!hasExt && ext0) basename = `${basename}.${ext0}`;
+                                } else if (slug0) {
+                                    basename = `Filester_${slug0}.${ext0}`;
+                                }
+                            } catch (e) {}
+                        }
+
+                        const originalName = basename;
+
+                        // Handle duplicates within this run.
+                        const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
+                        if (same.length) {
+                            const ext2 = h.extension(basename);
+                            if (ext2) {
+                                basename = `${h.fnNoExt(basename)} (${same.length + 1}).${ext2}`;
+                            } else {
+                                basename = `${basename} (${same.length + 1})`;
+                            }
+                        }
+
+                        if (!filename) {
+                            const extra = {};
+                            if (isGoFile) {
+                                const mGf2 = String(url).match(/\/download\/(?:web|direct)\/([^\/?#]+)\//i);
+                                const gid2 = mGf2 && mGf2[1] ? mGf2[1] : null;
+                                if (gid2) extra.gofileId = String(gid2);
+                            }
+                            filenames.push({ url, name: basename, original: originalName, ...extra });
+                        }
+
+                        const folder = folderName || '';
+                        let fn = basename;
+
+                        if (!postSettings.flatten && folder && folder.trim() !== '') {
+                            fn = `${folder}/${basename}`;
+                        }
+
+                        log.separator(postId);
+                        log.post.info(postId, `::Handed off (direct)::: ${url}`, postNumber);
+
+                        if (folder && folder.trim() !== '') {
+                            log.post.info(postId, `::Saving as (direct)::: ${basename} ::to:: ${folder}`, postNumber);
+                        } else {
+                            log.post.info(postId, `::Saving as (direct)::: ${basename}`, postNumber);
+                        }
+
+                        let title = sanitizeWinSegment(threadTitle);
+
+                        fn = sanitizeWinPath(fn);
+                        fn = ensureUniquePath(fn);
+                        basename = h.basename(fn);
+                        const saveAsFF = `${title} #${postNumber} - ${ensureUniqueFlatName(fn.replace(/\//g, ' - '))}`;
+                        const saveAsPath = `${title}/${fn}`;
+                        const saveAsName = isFF ? saveAsFF : saveAsPath;
+
+                        h.ui.setElProps(statusLabel, { color: '#469cf3' });
+                        h.show(filePB);
+
+
+                        const origUrl = String(url);
+                        let directUrl = String(url);
+                        let filesterDirectPreflightDone = false;
+
+                        // Filester DIRECT: retry a few times on transient HTTP errors (429/400/etc) and rotate cache hosts (cache6 <-> cache1 ...)
+                        // before starting GM_download. Keeps pauses short (<=~2s).
+                        if (isFilester) {
+                            try {
+                                const ref = String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/');
+                                const token0 = filesterTokenFromVUrl(String(url || ''));
+
+                                if (token0) {
+                                    let candidates0 = filesterCandidatesByToken.get(token0) || filesterBuildCandidates(token0);
+                                    candidates0 = Array.isArray(candidates0) ? candidates0.slice() : [];
+
+                                    const u0 = String(url);
+                                    const ix = candidates0.indexOf(u0);
+                                    if (ix >= 0) candidates0.splice(ix, 1);
+                                    candidates0.unshift(u0);
+
+                                    const cacheLabel = (u) => {
+                                        const m = String(u || '').match(/https?:\/\/cache(\d+)\.filester\.(me|sh|si|gg)/i);
+                                        return m && m[1] ? `cache${m[1]}` : (String(u || '').includes('filester.me') ? 'filester' : 'url');
+                                    };
+
+                                    const isRetryableStatus = (st) => {
+                                        const n = Number(st || 0) || 0;
+                                        return n === 0 || n === 400 || n === 403 || n === 404 || n === 429 || (n >= 500 && n <= 599);
+                                    };
+
+                                    const delays = [650, 1300, 2000];
+
+                                    for (let i = 0; i < 3; i++) {
+                                        const cand = candidates0[i] || u0;
+
+                                        const pre = await new Promise(resolve => {
+                                            try {
+                                                GM_xmlhttpRequest({
+                                                    method: 'GET',
+                                                    url: String(cand),
+                                                    responseType: 'text',
+                                                    anonymous: false,
+                                                    withCredentials: true,
+                                                    timeout: 5000,
+                                                    headers: { Range: 'bytes=0-0', Accept: '*/*', Referer: ref },
+                                                    onload: r => resolve(r),
+                                                    onerror: _ => resolve(null),
+                                                    ontimeout: _ => resolve(null),
+                                                });
+                                            } catch (e) {
+                                                resolve(null);
+                                            }
+                                        });
+
+                                        filesterDirectPreflightDone = true;
+
+                                        const st0 = Number(pre && pre.status || 0) || 0;
+                                        const finalUrl = pre && (pre.finalUrl || pre.responseURL) ? String(pre.finalUrl || pre.responseURL) : '';
+                                        const ok = st0 && st0 < 400;
+
+                                        if (ok) {
+                                            directUrl = (finalUrl && /^https?:\/\//i.test(finalUrl)) ? finalUrl : String(cand);
+
+                                            if (i > 0 || String(cand) !== u0 || (finalUrl && finalUrl !== cand)) {
+                                                log.post.info(postId, `::Filester DIRECT picked ${cacheLabel(cand)} (HTTP ${st0})::: ${directUrl}`, postNumber);
+                                            }
+                                            break;
+                                        }
+
+                                        if (i < 2 && isRetryableStatus(st0) && candidates0[i + 1]) {
+                                            const next = candidates0[i + 1];
+                                            const delay = delays[i] || 1000;
+                                            log.post.info(postId, `::Filester DIRECT HTTP ${st0 || 0} -> retry [${i + 1}/3] after ${delay}ms; switching ${cacheLabel(cand)}->${cacheLabel(next)}::: ${next}`, postNumber);
+                                            await h.delayedResolve(delay);
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+
+const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
+const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : (isEromeCdnUrl(url) ? { Referer: 'https://www.erome.com/' } : null);
+                        const dlOpts = {
+                            url: directUrl,
+                            name: saveAsName,
+                                                        onprogress: e => {
+                                const loadedMB = Number((e.loaded || 0) / 1024 / 1024).toFixed(2);
+                                const totalBytes = (e.total && e.total > 0) ? e.total : (sizeBytes || 0);
+                                const totalMB = totalBytes ? Number(totalBytes / 1024 / 1024).toFixed(2) : '??';
+                                if (!totalBytes) {
+                                    h.ui.setElProps(filePB, { width: '0%' });
+                                    h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 DIRECT 🢒 ${loadedMB} MB 🢒 ${ellipsedUrl}`);
+                                } else {
+                                    h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 DIRECT 🢒 ${loadedMB} MB / ${totalMB} MB  🢒 ${ellipsedUrl}`);
+                                    h.ui.setElProps(filePB, {
+                                        width: `${(e.loaded / totalBytes) * 100}%`,
+                                    });
+                                }
+                            },
+                            onload: () => {
+                                completed++;
+                                completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                            },
+                            onerror: err => {
+                                completed++;
+                                completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+
+                                log.post.error(postId, `::DIRECT download failed::: ${url}`, postNumber);
+                                console.log(err);
+                            },
+                            ontimeout: err => {
+                                completed++;
+                                completedBatchedDownloads++;
+                                log.post.error(postId, `::DIRECT download timed out::: ${url}`, postNumber);
+                                console.log(err);
+                            },
+                        };
+if (imagebamHeaders && isFF) {
+                            // Imagebam CDN often blocks hotlinking without a Referer. In Firefox, GM_download headers
+                            // are unreliable, so fetch as a blob with GM_xmlhttpRequest (with Referer) then save.
+                            try {
+                                GM_xmlhttpRequest({
+                                    method: 'GET',
+                                    url,
+                                    headers: imagebamHeaders,
+                                    responseType: 'blob',
+                                    anonymous: false,
+                                    timeout: 60000,
+                                    onprogress: dlOpts.onprogress,
+                                    onload: r => {
+                                        const ct = headerValue(r.responseHeaders || '', 'content-type');
+                                        const isHtml = /text\/html|application\/xhtml\+xml/i.test(String(ct || ''));
+                                        if (!(r.status >= 200 && r.status < 300) || !r.response || isHtml) {
+                                            dlOpts.onerror({ status: r.status, contentType: ct });
+                                            return;
+                                        }
+                                        const blob = r.response;
+                                        // Guard against tiny non-image responses (common for blocked hotlinks)
+                                        if (blob && blob.size && blob.size < 2048 && isHtml) {
+                                            dlOpts.onerror({ status: r.status, contentType: ct });
+                                            return;
+                                        }
+                                        const blobUrl = URL.createObjectURL(blob);
+                                        GM_download({
+                                            url: blobUrl,
+                                            name: saveAsName,
+                                            onload: () => { try { URL.revokeObjectURL(blobUrl); } catch (e) {} dlOpts.onload(); },
+                                            onerror: err => { try { URL.revokeObjectURL(blobUrl); } catch (e) {} dlOpts.onerror(err); },
+                                            ontimeout: err => { try { URL.revokeObjectURL(blobUrl); } catch (e) {} dlOpts.ontimeout(err); },
+                                        });
+                                    },
+                                    onerror: dlOpts.onerror,
+                                    ontimeout: dlOpts.ontimeout,
+                                });
+                            } catch (e) {
+                                dlOpts.onerror(e);
+                            }
+                        } else {
+                            if (imagebamHeaders) dlOpts.headers = { ...(dlOpts.headers || {}), ...imagebamHeaders };
+
+                            // Filester (Chrome): preflight a 1-byte range request to capture the final URL.
+                            // This helps when the downloads API drops cookies or when Filester redirects to a signed URL.
+                            if (isFilester && !isFF && !filesterDirectPreflightDone) {
+                                try {
+                                    const ref = String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/');
+                                    const pre = await new Promise(resolve => {
+                                        try {
+                                            GM_xmlhttpRequest({
+                                                method: 'GET',
+                                                url: String(dlOpts.url),
+                                                responseType: 'text',
+                                                anonymous: false,
+                                                withCredentials: true,
+                                                timeout: 15000,
+                                                headers: { Range: 'bytes=0-0', Accept: '*/*', Referer: ref },
+                                                onload: r => resolve(r),
+                                                onerror: _ => resolve(null),
+                                                ontimeout: _ => resolve(null),
+                                            });
+                                        } catch (e) {
+                                            resolve(null);
+                                        }
+                                    });
+                                    const finalUrl = pre && (pre.finalUrl || pre.responseURL);
+                                    if (finalUrl && typeof finalUrl === 'string' && /^https?:\/\//i.test(finalUrl)) {
+                                        dlOpts.url = finalUrl;
+                                    }
+                                } catch (e) {}
+                            }
+
+GM_download(dlOpts);
+                        }
+
+                    } catch (e) {
+                        // Safety: never hang the batch loop.
+                        completed++;
+                        completedBatchedDownloads++;
+                        log.post.error(postId, `::DIRECT download error::: ${url}`, postNumber);
+                        console.log(e);
+                    }
+                };
+
+
+
+                // Forced DIRECT (used by Filester album policy: mixed albums, unzipped mixed/video-only, etc.)
+                if (resource && resource.forceDirect) {
+                    log.post.info(postId, `::Forced DIRECT (skip blob/ZIP)::: ${url}`, postNumber);
+                    setTimeout(() => startDirectDownload(), TURBO_DIRECT_DELAY_MS);
+                    return;
+                }
+
+                const isPixeldrainList = isPixeldrain && /pixeldrain\.com\/l\//i.test(String(original || ''));
+                if (isPixeldrainList) {
+                    log.post.info(postId, `::Pixeldrain list (/l/) -> DIRECT (skip blob)::: ${url}`, postNumber);
+                    setTimeout(() => startDirectDownload(), TURBO_DIRECT_DELAY_MS);
+                    return;
+                }
+
+if (isGoFile || isPixeldrain || isFilester) {
+                    const meta0 = await preflightMeta(url, reflink, isGoFile, isPixeldrain);
+                    if (meta0 && meta0.size && meta0.size > BLOB_MAX_BYTES) {
+                        log.post.info(postId, `::Large file (${meta0.size} bytes > ~1.6GB) -> DIRECT (skip blob)::: ${url}`, postNumber);
+                        startDirectDownload(meta0);
+                        return;
+                    }
+                }
+                let abortReason = '';
+                let bunkrMaintenanceHandled = false;
+
+                const isForumAttachment =
+                    /(?:simpcity\.[a-z]+|socialmediagirls\.com)\/(?:attachments|data\/video)\//i.test(String(url || '')) ||
+                    /smgmedia\.socialmediagirls\.com\//i.test(String(url || ''));
+                const isTurboCdn = /turbocdn\.st/i.test(String(url || ''));
+                const filesterRef = isFilester ? String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/') : '';
+                const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
+
+                const request = GM_xmlhttpRequest({
+                    url,
+                    headers: reqHeaders,
+                    responseType: 'blob',
+                    anonymous: false,
+                    ...((isFilester || isForumAttachment) ? { withCredentials: true } : {}),
+                    onreadystatechange: response => {
+                        if (response.readyState === 2) {
+                            let matches = h.re.matchAll(/(?<=attachment;filename=").*?(?=")/gis, response.responseHeaders);
+                            if (matches.length && !filenames.find(f => f.url === url)) {
+                                filenames.push({ url, name: matches[0] });
+                            } else if (!filenames.find(f => f.url === url)) {
+                                const dispName = parseDispositionFilename(response.responseHeaders || '');
+                                if (dispName) {
+                                    filenames.push({ url, name: dispName });
+                                }
+                            }
+                            matches = h.re.matchAll(/(?<=content-type:\s).*$/gi, response.responseHeaders);
+                            if (matches.length && !mimeTypes.find(m => m.url === url)) {
+                                mimeTypes.push({ url, type: matches[0] });
+                            }
+
+
+                            // Bunkr: detect maintenance placeholder redirect (maint.mp4) early and abort (skip).
+                            if (isBunkr && !abortReason) {
+                                const loc = headerValue(response.responseHeaders || '', 'location');
+                                const fu = String(response.finalUrl || '');
+                                if (/\/maint\.mp4(\?|$)/i.test(loc) || /\/maint\.mp4(\?|$)/i.test(fu)) {
+                                    abortReason = 'bunkr_maint';
+                                    try { request.abort(); } catch (e) {}
+                                }
+                            }
+                        }
+                    },
+                    onprogress: response => {
+                        h.ui.setElProps(statusLabel, {
+                            color: '#469cf3',
+                        });
+
+                        // Pixeldrain/GoFile: if size only becomes known mid-download and it's > ~1.6GB, switch to direct download.
+                        if (!switchedToDirect && (isGoFile || isPixeldrain || isFilester) && response && response.total && response.total > BLOB_MAX_BYTES) {
+                            log.post.info(postId, `::Large file (${response.total} bytes > ~1.6GB) detected -> switch to DIRECT::: ${url}`, postNumber);
+                            switchedToDirect = true;
+                            try { request.abort(); } catch (e) {}
+                            startDirectDownload({ size: response.total });
+                            return;
+                        }
+                        // Bunkr: large videos cause MV3 port disconnection via blob; switch to direct download above 500MB.
+                        if (!switchedToDirect && isBunkr && response && response.total && response.total > BUNKR_DIRECT_MIN_BYTES) {
+                            log.post.info(postId, `::Bunkr large file (${response.total} bytes > 500MB) -> switch to DIRECT::: ${url}`, postNumber);
+                            switchedToDirect = true;
+                            try { request.abort(); } catch (e) {}
+                            startDirectDownload({ size: response.total });
+                            return;
+                        }
+
+                        const downloadedSizeInMB = Number(response.loaded / 1024 / 1024).toFixed(2);
+                        const totalSizeInMB = Number(response.total / 1024 / 1024).toFixed(2);
+                        if (response.total === -1 || response.totalSize === -1) {
+                            h.ui.setElProps(filePB, { width: '0%' });
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 ${downloadedSizeInMB} MB 🢒 ${ellipsedUrl}`);
+                        } else {
+                            h.show(filePB);
+                            h.ui.setText(
+                                statusLabel,
+                                `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 ${downloadedSizeInMB} MB / ${totalSizeInMB} MB  🢒 ${ellipsedUrl}`,
+                            );
+                            h.ui.setElProps(filePB, {
+                                width: `${(response.loaded / response.total) * 100}%`,
+                            });
+                        }
+                        const p = requestProgress.find(r => r.url === progressKey);
+                        if (p) p.new = response.loaded;
+                    },
+                    onload: async response => {
+                        const p = requestProgress.find(r => r.url === progressKey);
+                        if (p) clearInterval(p.intervalId);
+
+
+
+                        if (abortReason === 'bunkr_maint' && bunkrMaintenanceHandled) return;
+                        // GoFile: this pass was superseded by a stall-triggered warm-up retry
+                        // (request.abort() above isn't always reliable once a blob response is
+                        // substantially buffered) -- a newer pass now owns saving this file.
+                        if (isGoFile && (gofileActivePass.get(url) || pass) > pass) return;
+                        // GoFile: detect soft-block / HTML gate
+                        if (isGoFile) {
+                            const mCt = /content-type:\s*([^\r\n]+)/i.exec(response.responseHeaders || '');
+                            const ct = mCt && mCt[1] ? mCt[1] : '';
+                            const isHtml = /text\/html|application\/xhtml\+xml/i.test(ct);
+                            const badStatus = !response.status || response.status >= 400;
+
+                            if (badStatus || isHtml) {
+                                if (pass === 1 && !gofileWarmupAttempted.has(url)) {
+                                    gofileWarmupAttempted.add(url);
+                                    log.post.info(postId, `::GoFile warm-up -> open tab (${GOFILE_WARMUP_MS}ms) then retry [1/2]::: ${url}`, postNumber);
+                                    gofileWarmupOpenTab(url);
+                                    setTimeout(() => startDownload(resource, 2), GOFILE_WARMUP_MS);
+                                    return;
+                                }
+
+                                // Retry failed -> mark as unsuccessful and continue.
+                        completed++;
+                        completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+
+                                log.post.error(postId, `::GoFile failed (after retry)::: ${url}`, postNumber);
+                                return;
+                            }
+                        }
+
+
+                        // Cyberdrop: detect anti-bot / API responses (often tiny JSON/HTML) and retry once after warm-up.
+                        if (isCyberdrop) {
+                            const mCt = /content-type:\s*([^\r\n]+)/i.exec(response.responseHeaders || '');
+                            const ct = mCt && mCt[1] ? mCt[1] : '';
+                            const isGate = /text\/html|application\/xhtml\+xml|application\/json/i.test(ct);
+                            const badStatus = !response.status || response.status >= 400;
+                            const size = response.response && typeof response.response.size === 'number' ? response.response.size : 0;
+                            const isTiny = size > 0 && size <= 16384;
+
+                            if (badStatus || isGate || isTiny) {
+                                if (pass === 1 && cyberOrigin && cyberFilePage) {
+                                                                        log.post.info(postId, `::Cyberdrop warm-up -> open tab (${CYBERDROP_WARMUP_MS}ms) then retry [1/2]::: ${cyberFilePage}`, postNumber);
+                                    cyberdropWarmupOnce(cyberOrigin, cyberFilePage, CYBERDROP_WARMUP_MS)
+                                        .then(() => startDownload(resource, 2))
+                                        .catch(() => startDownload(resource, 2));
+                                    return;
+                                }
+
+                                // Retry failed -> mark as unsuccessful and continue.
+                                completed++;
+                                completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+
+                                log.post.error(postId, `::Cyberdrop failed (gate/tiny response)::: ${url}`, postNumber);
+                                return;
+                            }
+                        }
+
+
+                        // Filester: detect blocked/tiny responses (often an error thumbnail or HTML gate) and fall back to DIRECT once.
+                        if (isFilester) {
+                            const mCt = /content-type:\s*([^\r\n]+)/i.exec(response.responseHeaders || '');
+                            const ct = mCt && mCt[1] ? mCt[1] : '';
+                            const isGate = /text\/html|application\/xhtml\+xml|application\/json/i.test(ct);
+                            const badStatus = !response.status || response.status >= 400;
+
+                            const blob = response.response;
+                            const size = blob && typeof blob.size === 'number' ? blob.size : 0;
+
+                            let hintSize = 0;
+                            try {
+                                const s0 = String(filesterSlugByUrl.get(String(url)) || '');
+                                hintSize = Number(filesterSizeBySlug.get(s0) || filesterSizeByUrl.get(String(url)) || 0) || 0;
+                            } catch (e) {
+                                hintSize = 0;
+                            }
+
+                            // Only treat "tiny" as suspicious when we have a meaningful expected size.
+                            const suspiciousTiny = !!hintSize && size > 0 && size <= 16384 && hintSize >= 32768;
+
+                            if (badStatus || isGate || suspiciousTiny) {
+                                if (pass === 1) {
+                                    // Filester: some tokens are not available on cache6 (404). Try other cacheN hosts before falling back.
+                                    if (badStatus && Number(response.status || 0) === 404) {
+                                        const token0 = filesterTokenFromVUrl(String(url || ''));
+                                        if (token0) {
+                                            const candidates0 = filesterCandidatesByToken.get(token0) || filesterBuildCandidates(token0);
+                                            let tried0 = filesterTriedByToken.get(token0);
+                                            if (!tried0) { tried0 = new Set(); filesterTriedByToken.set(token0, tried0); }
+                                            tried0.add(String(url));
+                                            let nextUrl = '';
+                                            for (const c of (candidates0 || [])) {
+                                                if (!tried0.has(c)) { nextUrl = c; tried0.add(c); break; }
+                                            }
+                                            if (nextUrl) {
+                                                log.post.info(postId, `::Filester cache 404 -> try next cache [${tried0.size}/${(candidates0 || []).length}]::: ${nextUrl}`, postNumber);
+                                                try { filesterRefByUrl.set(String(nextUrl), 'https://filester.me/'); } catch (e) {}
+                                                try { resource.url = nextUrl; } catch (e) {}
+                                                try { url = nextUrl; } catch (e) {}
+                                                startDownload(resource, pass);
+                                                return;
+                                            }
+                                        }
+                                    }
+
+
+                                                                        // Filester: retry a few times on transient HTTP errors (429/400/etc) before switching to DIRECT.
+                                    // Keep pauses short (<=~2.5s) and try alternate cacheN hosts (cache6 <-> cache1) when possible.
+                                    if (badStatus) {
+                                        const st0 = Number(response.status || 0) || 0;
+                                        const isRetryable = (
+                                            st0 === 429 ||
+                                            st0 === 400 ||
+                                            st0 === 403 ||
+                                            st0 === 408 ||
+                                            st0 === 409 ||
+                                            st0 === 425 ||
+                                            st0 === 500 ||
+                                            st0 === 502 ||
+                                            st0 === 503 ||
+                                            st0 === 504
+                                        );
+
+                                        if (isRetryable) {
+                                            const token0 = filesterTokenFromVUrl(String(url || ''));
+                                            const key0 = token0 || String(url || '');
+                                            const max0 = 3;
+
+                                            let a0 = Number(filesterRetryAttemptsByKey.get(key0) || 0) || 0;
+                                            a0++;
+                                            filesterRetryAttemptsByKey.set(key0, a0);
+
+                                            let waitMs = 0;
+                                            const ra0 = headerValue(response.responseHeaders || '', 'retry-after');
+                                            if (ra0) {
+                                                const n0 = Number(String(ra0).trim());
+                                                if (Number.isFinite(n0) && n0 > 0) waitMs = Math.floor(n0 * 1000);
+                                            }
+                                            if (!waitMs) {
+                                                waitMs = (650 * a0) + Math.floor(Math.random() * 250);
+                                            }
+                                            waitMs = Math.min(2500, Math.max(0, waitMs));
+
+                                            let nextUrl = '';
+                                            if (token0) {
+                                                const candidates0 = filesterCandidatesByToken.get(token0) || filesterBuildCandidates(token0);
+                                                let tried0 = filesterTriedByToken.get(token0);
+                                                if (!tried0) { tried0 = new Set(); filesterTriedByToken.set(token0, tried0); }
+                                                tried0.add(String(url));
+
+                                                const isOn6 = /https?:\/\/cache6\.filester\.(me|sh|si|gg)\//i.test(String(url || ''));
+                                                const isOn1 = /https?:\/\/cache1\.filester\.(me|sh|si|gg)\//i.test(String(url || ''));
+
+                                                // Prefer swapping cache6 <-> cache1 first.
+                                                if (isOn6) {
+                                                    for (const c of (candidates0 || [])) {
+                                                        if (/https?:\/\/cache1\.filester\.(me|sh|si|gg)\//i.test(c) && !tried0.has(c)) { nextUrl = c; tried0.add(c); break; }
+                                                    }
+                                                } else if (isOn1) {
+                                                    for (const c of (candidates0 || [])) {
+                                                        if (/https?:\/\/cache6\.filester\.(me|sh|si|gg)\//i.test(c) && !tried0.has(c)) { nextUrl = c; tried0.add(c); break; }
+                                                    }
+                                                }
+
+                                                if (!nextUrl) {
+                                                    for (const c of (candidates0 || [])) {
+                                                        if (!tried0.has(c)) { nextUrl = c; tried0.add(c); break; }
+                                                    }
+                                                }
+                                            }
+
+                                            if (a0 <= max0) {
+                                                const tgt = nextUrl || String(url || '');
+                                                // retry logging: include cache switch info (cache6<->cache1 etc.)
+                                                let switchInfo = '';
+                                                try {
+                                                    const fromU = String(url || '');
+                                                    const toU = String(nextUrl || '');
+                                                    if (toU && toU !== fromU) {
+                                                        const mf = /https?:\/\/(cache\d+)\.filester\.(me|sh|si|gg)\//i.exec(fromU);
+                                                        const mt = /https?:\/\/(cache\d+)\.filester\.(me|sh|si|gg)\//i.exec(toU);
+                                                        if (mf && mt) switchInfo = `; switching ${mf[1]}->${mt[1]}`;
+                                                        else if (mf && !mt) switchInfo = `; switching ${mf[1]}->other`;
+                                                        else if (!mf && mt) switchInfo = `; switching other->${mt[1]}`;
+                                                        else switchInfo = '; switching host';
+                                                    }
+                                                } catch (e) {}
+                                                log.post.info(postId, `::Filester HTTP ${st0} -> retry [${a0}/${max0}] after ${waitMs}ms${switchInfo}::: ${tgt}`, postNumber);
+
+                                                setTimeout(() => {
+                                                    try {
+                                                        if (nextUrl) {
+                                                            try { filesterRefByUrl.set(String(nextUrl), 'https://filester.me/'); } catch (e) {}
+                                                            try { resource.url = nextUrl; } catch (e) {}
+                                                            try { url = nextUrl; } catch (e) {}
+                                                        }
+                                                    } catch (e) {}
+                                                    startDownload(resource, pass);
+                                                }, waitMs);
+
+                                                return;
+                                            }
+                                        }
+                                    }
+
+const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(url || ''));
+                                    if (!isView) {
+                                        log.post.info(postId, `::Filester blocked/tiny response -> switch to DIRECT [1/2]::: ${url}`, postNumber);
+                                        startDirectDownload({ size: hintSize || 0 });
+                                        return;
+                                    }
+
+                                    // If we only have a /d/ view URL, DIRECT would just save HTML.
+                                    completed++;
+                                    completedBatchedDownloads++;
+
+                                    h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                    h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                    h.ui.setElProps(totalPB, {
+                                        width: `${(completed / totalDownloadable) * 100}%`,
+                                    });
+
+                                    log.post.error(postId, `::Filester failed (resolved to /d/ HTML view)::: ${url}`, postNumber);
+                                    return;
+                                }
+
+                                completed++;
+                                completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+
+                                const reason = badStatus ? `HTTP ${response.status || 0}` : (isGate ? 'HTML/JSON gate' : 'tiny/blocked response');
+                                log.post.error(postId, `::Filester failed (${reason})::: ${url}`, postNumber);
+                                return;
+                            }
+                        }
+
+                        // Bunkr: skip maintenance/dead placeholder responses (often tiny HTML) instead of saving a tiny file.
+                        if (String((host && host.name) || '').toLowerCase() === 'bunkr' || /bunkr/i.test(String(url || '')) || /bunkr/i.test(String((resource && resource.original) || ''))) {
+                            const mCt = /content-type:\s*([^\r\n]+)/i.exec(response.responseHeaders || '');
+                            const ct = mCt && mCt[1] ? mCt[1] : '';
+                            const isHtml = /text\/html|application\/xhtml\+xml/i.test(ct);
+                            const badStatus = !response.status || response.status >= 400;
+
+                            const bunkrFinalUrl = String(response.finalUrl || '');
+                            const bunkrLoc = headerValue(response.responseHeaders || '', 'location');
+                            const isMaint = (abortReason === 'bunkr_maint') || /\/maint\.mp4(\?|$)/i.test(bunkrFinalUrl) || /\/maint\.mp4(\?|$)/i.test(bunkrLoc);
+
+                            const blob = response.response;
+                            const size = blob && typeof blob.size === 'number' ? blob.size : 0;
+                            const tinyLimit = 32768;
+
+                            let tinyLooksLikeHtml = false;
+                            if (!isHtml && !badStatus && postSettings.verifyBunkrLinks && size > 0 && size <= tinyLimit) {
+                                try {
+                                    const t = await blob.text();
+                                    const head = String(t || '').slice(0, 2048).toLowerCase();
+                                    tinyLooksLikeHtml =
+                                        head.includes('<!doctype') ||
+                                        head.includes('<html') ||
+                                        head.includes('<head') ||
+                                        head.includes('<body') ||
+                                        head.includes('temporarily not available') ||
+                                        head.includes('maintenance') ||
+                                        head.includes('cloudflare');
+                                } catch (e) {
+                                    tinyLooksLikeHtml = false;
+                                }
+                            }
+
+                            if (badStatus || isHtml || tinyLooksLikeHtml || isMaint) {
+                                if (isMaint) bunkrMaintenanceHandled = true;
+                                completed++;
+                                completedBatchedDownloads++;
+
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+
+                                const reason = isMaint ? 'maintenance redirect (maint.mp4)' : (badStatus ? `HTTP ${response.status || 0}` : (isHtml ? 'HTML/maintenance response' : 'tiny HTML placeholder'));
+                                log.post.error(postId, `::Bunkr skipped (${reason})::: ${url}`, postNumber);
+                                return;
+                            }
+                        }
+
+// Success path (unchanged)
+                        completed++;
+                        completedBatchedDownloads++;
+
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                        h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                        h.ui.setElProps(totalPB, {
+                            width: `${(completed / totalDownloadable) * 100}%`,
+                        });
+
+                        // TODO: Extract to method.
+                        let filename = filenames.find(f => f.url === url);
+                        if (!filename && isGoFile) {
+                            // GoFile URLs may be re-resolved to a file-*.gofile.io host, so match by GoFile fileId.
+                            const mGf = String(url).match(/\/download\/(?:web|direct)\/([^\/?#]+)\//i);
+                            const gid = mGf && mGf[1] ? mGf[1] : null;
+                            if (gid) {
+                                filename = filenames.find(f => f && f.gofileId === gid);
+
+                                // If the per-run filenames list doesn't know this URL (e.g. re-resolved host),
+                                // fall back to the global GoFile hint maps populated during /d/ resolution.
+                                if (!filename) {
+                                    const hinted =
+                                        gofileNameById.get(String(gid)) ||
+                                        gofileNameByUrl.get(String(url));
+                                    if (hinted) {
+                                        filename = { url, name: String(hinted), gofileId: String(gid) };
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!filename) {
+                            const hintedFilester = filesterNameByUrl.get(String(url));
+                            if (hintedFilester) {
+                                filename = { url, name: String(hintedFilester) };
+                            }
+                        }
+
+                        if (!filename) {
+                            const hintedByUrl = cyberdropNameByUrl.get(String(url));
+                            if (hintedByUrl) {
+                                filename = { url, name: String(hintedByUrl) };
+                            } else {
+                                const mCd =
+                                    String(url).match(/\/api\/file\/d\/([^\/\?#]+)\b/i) ||
+                                    String(url).match(/cyberdrop\.[^\/]+\/(?:f|e)\/([^\/\?#]+)/i);
+                                const slug = mCd && mCd[1] ? mCd[1] : null;
+                                if (slug) {
+                                    const hintedBySlug = cyberdropNameBySlug.get(String(slug));
+                                    if (hintedBySlug) {
+                                        filename = { url, name: String(hintedBySlug), cyberdropSlug: String(slug) };
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!filename) {
+                            const stripIp = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+                            const hintedImagePond =
+                                imagepondNameByUrl.get(String(url)) ||
+                                imagepondNameByUrl.get(stripIp(url)) ||
+                                imagepondNameByUrl.get(String((resource && resource.original) || '')) ||
+                                imagepondNameByUrl.get(stripIp((resource && resource.original) || ''));
+                            if (hintedImagePond) {
+                                filename = { url, name: String(hintedImagePond) };
+                            }
+                        }
+
+                        let basename;
+
+                        if (/(?:pixeldrain\.(?:com|net)|pixeldra\.in)/i.test(String(url || ''))) {
+                            const rh = response && response.responseHeaders ? String(response.responseHeaders) : '';
+                            basename =
+                                parseDispositionFilename(rh) ||
+                                (filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, ''));
+                        } else if (/\/attachments\//i.test(String(url || ''))) {
+                            basename = filename ? filename.name : h.basename(url).replace(/(.*)-([a-z0-9]{3,4})\.\d+$/i, '$1.$2');
+                        } else if (/kemono\.(cr|su|party)/i.test(String(url || ''))) {
+                            basename = filename
+                                ? filename.name
+                            : h
+                                .basename(url)
+                                .replace(/(.*)\?f=(.*)/, '$2')
+                                .replace('%20', ' ');
+                        } else if (url.includes('cyberdrop')) {
+                            const rh = response && response.responseHeaders ? String(response.responseHeaders) : '';
+                            const cdName = parseDispositionFilename(rh);
+                            basename = cdName
+                                ? cdName
+                                : (filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, ''));
+
+                            try { basename = decodeURI(basename); } catch (e) {}
+
+                            const extMatch = basename.match(/\.\w{3,6}$/);
+                            const basename_ext = extMatch ? extMatch[0] : '';
+                            if (basename_ext) {
+                                basename =
+                                    basename
+                                        .replace(basename_ext, '')
+                                        .replace(/(\.\w{3,6}-\w{8}$)|(-\w{8}$)/, '') +
+                                    basename_ext;
+                            }
+                        } else {
+                            // Turbo CDN signed URLs include the original filename in the fn= query param.
+                            // Without this, we'd end up saving as the short id (e.g. uVOxoqFFlDGrZ.mp4).
+                            if (url.includes('turbocdn.st')) {
+                                const m = url.match(/[?&]fn=([^&]+)/i);
+                                if (m && m[1]) {
+                                    try {
+                                        basename = decodeURIComponent(m[1].replace(/\+/g, '%20'));
+                                    } catch (e) {
+                                        basename = m[1];
+                                    }
+                                }
+                            }
+
+                            if (!basename) {
+                                basename = filename ? filename.name : h.basename(url).replace(/\?.*/, '').replace(/#.*/, '');
+                            }
+                        }
+
+                        // Bunkr: prefer the human filename (og:title / h1) captured during resolution.
+                        if (isBunkr) {
+                            try {
+                                const strip = (u) => String(u || '').split('#')[0].split('?')[0];
+                                const hinted =
+                                    bunkrNameByUrl.get(String(url)) ||
+                                    bunkrNameByUrl.get(strip(url)) ||
+                                    bunkrNameByUrl.get(String((resource && resource.original) || '')) ||
+                                    bunkrNameByUrl.get(strip((resource && resource.original) || '')) ||
+                                    '';
+                                if (hinted && String(hinted).trim() && !xfpdLooksLikeCfFilenameHint(hinted)) {
+                                    basename = String(hinted).trim();
+
+                                    // If hinted has no extension, derive it from URL first, then content-type.
+                                    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(basename);
+                                    if (!hasExt) {
+                                        const urlExt = h.ext(h.basename(strip(url))) || '';
+                                        const ct0 = headerValue(response.responseHeaders || '', 'content-type');
+                                        let ext0 = '';
+                                        if (urlExt) ext0 = String(urlExt);
+                                        else if (/video\/mp4/i.test(ct0)) ext0 = 'mp4';
+                                        else if (/video\/webm/i.test(ct0)) ext0 = 'webm';
+                                        else if (/image\/jpe?g/i.test(ct0)) ext0 = 'jpg';
+                                        else if (/image\/png/i.test(ct0)) ext0 = 'png';
+                                        else if (/image\/gif/i.test(ct0)) ext0 = 'gif';
+                                        else if (/application\/zip/i.test(ct0)) ext0 = 'zip';
+                                        else if (/application\/(x-7z-compressed)/i.test(ct0)) ext0 = '7z';
+                                        else if (/application\/(x-rar|vnd\.rar)|application\/octet-stream/i.test(ct0)) ext0 = 'rar';
+                                        else if (/application\/pdf/i.test(ct0)) ext0 = 'pdf';
+                                        if (ext0) basename = `${basename}.${ext0}`;
+                                    }
+
+                                    basename = sanitizeWinSegment(String(basename || ''));
+                                    if (!basename) basename = sanitizeWinSegment(String(h.basename(strip(url)) || ''));
+                                }
+                            } catch (e) {}
+                        }
+
+                        // Filester: prefer the real filename (from view page / API hints). Only fall back to a safe slug-based name when needed.
+                        if (isFilesterUrl(url)) {
+                            try {
+                                let slug0 = '';
+                                const m = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\/([^\/?#]+)/i.exec(String((resource && resource.original) || ''));
+                                if (m && m[1]) slug0 = m[1];
+                                if (!slug0) slug0 = String(filesterSlugByUrl.get(String(url)) || '');
+                                const ct0 = headerValue(response.responseHeaders || '', 'content-type');
+                                let ext0 = 'bin';
+                                if (/video\/mp4/i.test(ct0)) ext0 = 'mp4';
+                                else if (/video\/webm/i.test(ct0)) ext0 = 'webm';
+                                else if (/image\/jpe?g/i.test(ct0)) ext0 = 'jpg';
+                                else if (/image\/png/i.test(ct0)) ext0 = 'png';
+                                else if (/image\/gif/i.test(ct0)) ext0 = 'gif';
+                                else if (/application\/zip/i.test(ct0)) ext0 = 'zip';
+                                else if (/application\/x-7z-compressed/i.test(ct0)) ext0 = '7z';
+                                else if (/application\/(x-rar|vnd\.rar)/i.test(ct0)) ext0 = 'rar';
+
+                                const hinted =
+                                    String((filename && filename.name) || '') ||
+                                    String(filesterNameByUrl.get(String(url)) || '') ||
+                                    (slug0 ? String(filesterNameBySlug.get(String(slug0)) || '') : '');
+
+                                if (hinted && hinted.trim()) {
+                                    basename = hinted.trim();
+                                    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(String(basename || ''));
+                                    if (!hasExt && ext0) basename = `${basename}.${ext0}`;
+                                } else if (slug0) {
+                                    basename = `Filester_${slug0}.${ext0}`;
+                                }
+
+                                basename = sanitizeWinSegment(String(basename || ''));
+                            } catch (e) {}
+                        }
+
+
+
+
+                        let ext = h.ext(basename);
+
+                        const mimeType = mimeTypes.find(m => m.url === url);
+
+                        if (!ext && mimeType) {
+                            switch (mimeType.type) {
+                                case 'image/jpeg':
+                                case 'image/jpg':
+                                    ext = 'jpg';
+                                    break;
+                                case 'image/png':
+                                    ext = 'png';
+                                    break;
+                                default:
+                                    ext = 'unknown';
+                            }
+                        }
+
+                        const original = basename;
+
+                        if (filenames.find(f => f.original === basename)) {
+                            const count = filenames.filter(f => f.original === basename).length;
+                            const baseNoExt = (ext && h.fnNoExt(basename)) ? h.fnNoExt(basename) : basename;
+                            basename = ext ? `${baseNoExt} (${count + 1}).${ext}` : `${baseNoExt} (${count + 1})`;
+                        }
+
+                        if (!filename) {
+                            filenames.push({ url, name: basename, original });
+                        }
+
+                        const folder = folderName || '';
+
+                        let fn = basename;
+
+                        if (!postSettings.flatten && folder && folder.trim() !== '') {
+                            fn = `${folder}/${basename}`;
+                        }
+
+                        log.separator(postId);
+                        log.post.info(postId, `::Completed::: ${url}`, postNumber);
+
+                        if (folder && folder.trim() !== '') {
+                            log.post.info(postId, `::Saving as::: ${basename} ::to:: ${folder}`, postNumber);
+                        } else {
+                            log.post.info(postId, `::Saving as::: ${basename}`, postNumber);
+                        }
+
+                        const fileBlob = response.response;
+
+                        let title = sanitizeWinSegment(threadTitle);
+
+                        // https://stackoverflow.com/a/53681022
+                        fn = sanitizeWinPath(fn);
+
+                        fn = ensureUniquePath(fn);
+                        basename = h.basename(fn);
+
+                        if (!isFF) {
+                            if (!postSettings.flatten && folder && folder.trim() !== '') {
+                                fn = `${folder}/${basename}`;
+                            }
+                        } else {
+                            fn = `${fn}`;
+                        }
+
+                        const saveAsFF = `${title} #${postNumber} - ${ensureUniqueFlatName(fn.replace(/\//g, ' - '))}`;
+                        const saveAsPath = `${title}/${fn}`;
+
+                        const saveAsName = (isFF && !zippedForThis) ? saveAsFF : saveAsPath;
+
+                        if (!zippedForThis) {
+                            const blobUrl = URL.createObjectURL(fileBlob);
+                            GM_download({
+                                url: blobUrl,
+                                name: saveAsName,
+                                onload: () => {
+                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+                                },
+                                onerror: response => {
+                                    console.log(`Error writing file ${fn} to disk. There may be more details below.`);
+                                    console.log(response);
+                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+                                },
+                            });
+                        }
+
+                                                if (zippedForThis) {
+                            zip.file(fn, fileBlob);
+                            zipFileCount++;
+                        }
+
+                    },
+
+                    onabort: () => {
+                        if (abortReason !== 'bunkr_maint' || bunkrMaintenanceHandled) return;
+                        bunkrMaintenanceHandled = true;
+
+                        const p = requestProgress.find(r => r.url === progressKey);
+                        if (p) clearInterval(p.intervalId);
+
+                        completed++;
+                        completedBatchedDownloads++;
+
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                        h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                        h.ui.setElProps(totalPB, {
+                            width: `${(completed / totalDownloadable) * 100}%`,
+                        });
+
+                        log.post.error(postId, `::Bunkr skipped (maintenance redirect: maint.mp4)::: ${url}`, postNumber);
+                    },
+
+                    onerror: () => {
+                        const p = requestProgress.find(r => r.url === progressKey);
+                        if (p) clearInterval(p.intervalId);
+
+                        if (switchedToDirect) return;
+
+                        if (isGoFile && pass === 1 && !gofileWarmupAttempted.has(url)) {
+                            gofileWarmupAttempted.add(url);
+                            log.post.info(postId, `::GoFile warm-up -> open tab (${GOFILE_WARMUP_MS}ms) then retry [1/2]::: ${url}`, postNumber);
+                            gofileWarmupOpenTab(url);
+                            setTimeout(() => startDownload(resource, 2), GOFILE_WARMUP_MS);
+                            return;
+                        }
+
+                        completed++;
+                        completedBatchedDownloads++;
+                    },
+                });
+
+                requests.push({ url: progressKey, request });
+
+                                const stallMs = isTurbo ? TURBO_STALL_MS : 30000;
+
+                const intervalId = setInterval(async () => {
+                    const p = requestProgress.find(r => r.url === progressKey);
+                    if (!p) return;
+
+                    // Large files switch to DIRECT mid-download: that aborts this request and hands
+                    // off to GM_download. request.abort() does not reliably fire onload/onerror once
+                    // a blob response is buffered (see the GoFile duplicate-save fix), so nothing
+                    // clears this interval. Without the guard the watchdog then reports a false
+                    // ::Stalled/Failed:: for a download that actually succeeded, and increments the
+                    // counter a second time -- the DIRECT onload already counts it, giving 3/2.
+                    if (switchedToDirect) {
+                        clearInterval(p.intervalId);
+                        return;
+                    }
+
+                    if (p.old === p.new) {
+                        const rr = requests.find(r => r.url === progressKey);
+                        if (rr && rr.request) rr.request.abort();
+                        clearInterval(p.intervalId);
+
+                        // Turbo: fast re-sign + retry, then (optional) direct fallback.
+                        if (isTurbo) {
+                            const st = turboRetryState.get(turboKey) || { resign: 0, direct: 0 };
+
+                            if (st.resign < TURBO_RESIGN_RETRIES) {
+                                st.resign++;
+                                turboRetryState.set(turboKey, st);
+
+                                log.post.info(postId, `::Turbo stalled (no progress for ${Math.round(stallMs / 1000)}s) -> re-sign + retry [${st.resign}/${TURBO_RESIGN_RETRIES}]::: ${url}`, postNumber);
+
+                                try {
+                                    const newUrl = await turboResignSignedUrl(turboId, url);
+                                    if (newUrl) {
+                                        resource.url = newUrl;
+                                    }
+                                } catch (e) {}
+
+                                // Retry once (even if we couldn't re-sign, a plain retry sometimes works).
+                                setTimeout(() => startDownload(resource, pass + 1), st.resign >= 3 ? TURBO_RETRY_DELAY_MS * 2 : TURBO_RETRY_DELAY_MS);
+return;
+                            }
+
+                            if (st.direct < TURBO_DIRECT_FALLBACKS) {
+                                st.direct++;
+                                turboRetryState.set(turboKey, st);
+
+                                log.post.info(postId, `::Turbo stalled (no progress for ${Math.round(stallMs / 1000)}s) -> DIRECT fallback (outside ZIP) [${st.direct}/${TURBO_DIRECT_FALLBACKS}]::: ${url}`, postNumber);
+                                startDirectDownload();
+                                return;
+                            }
+
+                            log.post.error(postId, `::Turbo failed (stalled after retries)::: ${url}`, postNumber);
+
+                            if (completed < totalDownloadable) {
+                                completed++;
+                            }
+                            completedBatchedDownloads++;
+
+                            if (completedBatchedDownloads >= batch.length) {
+                                completedBatchedDownloads = 0;
+                            }
+                            return;
+                        }
+
+                        // Make stalls visible instead of silently counting a failed download as
+                        // complete (previously only GoFile logged this; every other host -- Bunkr
+                        // included -- fell through to completed++ with no indication of failure).
+                        log.post.error(postId, `::Stalled/Failed::: ${url}`, postNumber);
+
+                        if (isGoFile && pass === 1 && !gofileWarmupAttempted.has(url)) {
+                            gofileWarmupAttempted.add(url);
+                            log.post.info(postId, `::GoFile stalled -> warm-up tab (${GOFILE_WARMUP_MS}ms) then retry [1/2]::: ${url}`, postNumber);
+                            // request.abort() above isn't always reliable once a blob response is
+                            // substantially buffered -- mark pass 2 as authoritative so a zombie
+                            // pass-1 onload (see the isGoFile guard at the top of onload) can't
+                            // also save the file.
+                            gofileActivePass.set(url, 2);
+                            gofileWarmupOpenTab(url);
+                            setTimeout(() => startDownload(resource, 2), GOFILE_WARMUP_MS);
+                            return;
+                        }
+
+                        if (completed < totalDownloadable) {
+                            completed++;
+                        }
+                        completedBatchedDownloads++;
+
+                        if (completedBatchedDownloads >= batch.length) {
+                            completedBatchedDownloads = 0;
+                        }
+                    } else {
+                        p.old = p.new;
+                    }
+                }, stallMs);
+
+                requestProgress.push({ url: progressKey, intervalId, old: 0, new: 0 });
+            };
+
+            for (const item of batch) {
+                startDownload(item, 1);
+            }
+
+            while (completedBatchedDownloads < batch.length) {
+                await h.delayedResolve(1000);
+            }
+
+            if (completedBatchedDownloads >= batch.length) {
+                completedBatchedDownloads = 0;
+            }
+
+            batch = getNextBatch();
+        }
+    } else {
+        log.post.info(postId, '::Skipping download::', postNumber);
+    }
+
+    h.hide(filePB);
+    h.hide(totalPB);
+    if (completed < totalResources) {
+        h.ui.setElProps(statusLabel, { color: '#e8a838', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `${completed} / ${totalResources} downloaded`);
+        h.show(statusLabel);
+    } else {
+        h.hide(statusLabel);
+    }
+
+    if (totalDownloadable > 0) {
+        let title = sanitizeWinSegment(threadTitle);
+
+        const mainZipName = customFilename || `${title} #${postNumber}.zip`;
+        const generatedZipName = `${title} #${postNumber} generated.zip`;
+        // Original (single ZIP) behavior.
+        const needZipBlob = (postSettings.generateLog || postSettings.generateLinks || (postSettings.zipped && zipFileCount > 0));
+
+
+                // If "Zipped" is enabled but nothing was added to the ZIP (e.g. everything was saved via DIRECT),
+                // skip creating an empty ZIP file.
+                if (postSettings.zipped && zipFileCount === 0 && !postSettings.generateLog && !postSettings.generateLinks) {
+                    log.post.info(postId, `::Zipped ON but nothing to zip (all DIRECT downloads) -> skipping ZIP::`, postNumber);
+                }
+if (needZipBlob) {
+            log.separator(postId);
+            log.post.info(postId, postSettings.zipped ? `::Preparing zip::` : `::Preparing generated.zip::`, postNumber);
+
+            if (postSettings.generateLog) {
+                log.post.info(postId, `::Generating log file::`, postNumber);
+                zip.file(
+                    isFF ? 'generated/log.txt' : 'log.txt',
+                    logs
+                        .filter(l => l.postId === postId)
+                        .map(l => l.message)
+                        .join('\n'),
+                );
+            }
+
+            if (postSettings.generateLinks) {
+                log.post.info(postId, `::Generating links::`, postNumber);
+                zip.file(
+                    isFF ? 'generated/links.txt' : 'links.txt',
+                    resolved
+                        .filter(r => r.url)
+                        .map(r => r.url)
+                        .join('\n'),
+                );
+            }
+
+            let blob = null;
+            try {
+                blob = await zip.generateAsync({ type: 'blob' });
+            } catch (e) {
+                console.log('JSZip failed to construct the Blob. For very large albums, try unzipped mode.');
+                console.log(e);
+                blob = null;
+            }
+
+            if (blob) {
+                if (postSettings.zipped) {
+                    if (isFF) {
+                        saveAs(blob, mainZipName);
+                    } else {
+                        await new Promise(resolve => {
+                            const url = URL.createObjectURL(blob);
+                            GM_download({
+                                url,
+                                name: `${title}/#${postNumber}.zip`,
+                                onload: () => {
+                                    try { URL.revokeObjectURL(url); } catch (e) {}
+                                    blob = null;
+                                    resolve();
+                                },
+                                onerror: response => {
+                                    try { URL.revokeObjectURL(url); } catch (e) {}
+                                    console.log(`Error writing file to disk. There may be more details below.`);
+                                    console.log(response);
+                                    console.log('Trying to write using FileSaver...');
+                                    try { saveAs(blob, mainZipName); } catch (e) {}
+                                    console.log('Done!');
+                                    resolve();
+                                },
+                            });
+                        });
+                    }
+                } else {
+                    if (postSettings.generateLog || postSettings.generateLinks) {
+                        if (isFF) {
+                            saveAs(blob, generatedZipName);
+                        } else {
+                            await new Promise(resolve => {
+                                const url = URL.createObjectURL(blob);
+                                GM_download({
+                                    url,
+                                    name: `${title}/#${postNumber}/generated.zip`,
+                                    onload: () => {
+                                        try { URL.revokeObjectURL(url); } catch (e) {}
+                                        blob = null;
+                                        resolve();
+                                    },
+                                    onerror: response => {
+                                        try { URL.revokeObjectURL(url); } catch (e) {}
+                                        console.log(`Error writing generated.zip to disk. There may be more details below.`);
+                                        console.log(response);
+                                        blob = null;
+                                        resolve();
+                                    },
+                                });
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+    setProcessing(false, postId);
+
+    if (!processing.some(p => p.processing)) {
+        gofileRestoreCookie();
+    }
+
+    if (totalDownloadable > 0) {
+        // For logging in console since post logs are already written.
+        if (!postSettings.skipDownload) {
+            log.post.info(postId, `::Download completed::`, postNumber);
+        } else {
+            log.post.info(postId, `::Links generation completed::`, postNumber);
+        }
+
+        callbacks && callbacks.onComplete && callbacks.onComplete(totalDownloadable, completed);
+    }
+
+    window.logs = window.logs.filter(l => l.postId !== postId);
 };
 
 /**
  * @param post
  */
 const addDuplicateTabLink = post => {
-  const span = document.createElement('span');
-  span.innerHTML = '<i class="fa fa-copy"></i> Duplicate Tab';
+    const parent = post?.parentNode;
+    if (!parent) return;
+    const attrMain = parent.querySelector('.message-attribution-main');
+    const templateLI = parent.querySelector('.u-concealed');
+    if (!attrMain || !templateLI || attrMain.querySelector('.duplicate-tab')) return;
 
-  const dupTabLI = post.parentNode.querySelector('.u-concealed').cloneNode(true);
-  dupTabLI.setAttribute('class', 'duplicate-tab');
+    const span = document.createElement('span');
+    span.innerHTML = '<i class="fa fa-copy"></i> Duplicate Tab';
 
-  const anchor = dupTabLI.querySelector('a');
-  anchor.style.color = 'rgb(138, 138, 138)';
-  anchor.setAttribute('target', '_blank');
-  anchor.querySelector('time').remove();
-  anchor.parentNode.style.marginLeft = '10px';
-  anchor.append(span);
+    const dupTabLI = templateLI.cloneNode(true);
+    dupTabLI.setAttribute('class', 'duplicate-tab');
 
-  post.parentNode.querySelector('.message-attribution-main').append(dupTabLI);
+    const anchor = dupTabLI.querySelector('a');
+    if (!anchor) return;
+    anchor.style.color = 'rgb(138, 138, 138)';
+    anchor.setAttribute('target', '_blank');
+    anchor.querySelector('time')?.remove();
+    if (anchor.parentNode) anchor.parentNode.style.marginLeft = '10px';
+    anchor.append(span);
+
+    attrMain.append(dupTabLI);
 };
 
 /**
  * @param post
  */
 const addShowDownloadPageBtnLink = post => {
-  const span = document.createElement('span');
-  span.innerHTML = '<i class="fa fa-arrow-up"></i> Download Page';
+    const parent = post?.parentNode;
+    if (!parent) return;
+    const attrMain = parent.querySelector('.message-attribution-main');
+    const templateLI = parent.querySelector('.u-concealed');
+    if (!attrMain || !templateLI || attrMain.querySelector('.show-download-page')) return;
 
-  const dupTabLI = post.parentNode.querySelector('.u-concealed').cloneNode(true);
-  dupTabLI.setAttribute('class', 'show-download-page');
+    const span = document.createElement('span');
+    span.innerHTML = '<i class="fa fa-arrow-up"></i> Download Page';
 
-  const anchor = dupTabLI.querySelector('a');
-  anchor.style.color = 'rgb(138, 138, 138)';
-  anchor.setAttribute('href', '#download-page');
-  anchor.querySelector('time').remove();
-  anchor.parentNode.style.marginLeft = '10px';
-  anchor.append(span);
+    const dupTabLI = templateLI.cloneNode(true);
+    dupTabLI.setAttribute('class', 'show-download-page');
 
-  post.parentNode.querySelector('.message-attribution-main').append(dupTabLI);
+    const anchor = dupTabLI.querySelector('a');
+    if (!anchor) return;
+    anchor.style.color = 'rgb(138, 138, 138)';
+    anchor.setAttribute('href', '#download-page');
+    anchor.querySelector('time')?.remove();
+    if (anchor.parentNode) anchor.parentNode.style.marginLeft = '10px';
+    anchor.append(span);
+
+    attrMain.append(dupTabLI);
 };
 
 // TODO: Extract to ui.js
 const addDownloadPageButton = () => {
-  const downloadAllButton = document.createElement('a');
-  downloadAllButton.setAttribute('id', 'download-page');
-  downloadAllButton.setAttribute('href', '#');
-  downloadAllButton.setAttribute('class', 'button--link button rippleButton');
+    const existing = h.element('#download-page');
+    if (existing) return existing;
 
-  const buttonTextSpan = document.createElement('span');
-  buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
-  buttonTextSpan.innerText = `🡳 Download Page`;
+    const downloadAllButton = document.createElement('a');
+    downloadAllButton.setAttribute('id', 'download-page');
+    downloadAllButton.setAttribute('href', '#');
+    downloadAllButton.setAttribute('class', 'button--link button rippleButton');
 
-  downloadAllButton.appendChild(buttonTextSpan);
+    const buttonTextSpan = document.createElement('span');
+    buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
+    buttonTextSpan.innerText = `🡳 Download Page`;
 
-  const buttonGroup = h.element('.buttonGroup');
-  buttonGroup.prepend(downloadAllButton);
+    downloadAllButton.appendChild(buttonTextSpan);
 
-  return downloadAllButton;
+    let buttonGroup =
+        h.element('.block--messages .block-outer .buttonGroup') ||
+        h.element('.buttonGroup');
+
+    // SocialMediaGirls omits .buttonGroup on guest/locked views or when only sort tabs are rendered.
+    if (!buttonGroup) {
+        const outerOpposite =
+            h.element('.block--messages .block-outer .block-outer-opposite') ||
+            h.element('.block--messages .block-outer');
+        if (outerOpposite) {
+            buttonGroup = document.createElement('div');
+            buttonGroup.setAttribute('class', 'buttonGroup');
+            buttonGroup.style.display = 'inline-block';
+            buttonGroup.style.marginRight = '6px';
+            outerOpposite.prepend(buttonGroup);
+        }
+    }
+
+    if (buttonGroup) {
+        buttonGroup.prepend(downloadAllButton);
+    }
+
+    return downloadAllButton;
 };
 
 /**
  * @param postFooter
  */
 const registerPostReaction = postFooter => {
-  const hasReaction = postFooter.querySelector('.has-reaction');
-  if (!hasReaction) {
-    const reactionAnchor = postFooter.querySelector('.reaction--imageHidden');
-    if (reactionAnchor) {
-      reactionAnchor.setAttribute('href', reactionAnchor.getAttribute('href').replace('_id=1', '_id=33'));
-      reactionAnchor.click();
+    if (!postFooter || !postFooter.querySelector) return;
+    const hasReaction = postFooter.querySelector('.has-reaction');
+    if (!hasReaction) {
+        const reactionAnchor = postFooter.querySelector('.reaction--imageHidden');
+        if (reactionAnchor) {
+            const href = reactionAnchor.getAttribute('href') || '';
+            // SimpCity uses reaction_id=33 for love/thanks; on SocialMediaGirls reaction_id=33 is DMCA, so keep _id=1 (React/Like).
+            if (href && /(^|\.)simpcity\./i.test(location.hostname || '')) {
+                reactionAnchor.setAttribute('href', href.replace('_id=1', '_id=33'));
+            }
+            reactionAnchor.click();
+        }
     }
-  }
 };
+
+
+const CYBERDROP_WARMUP_DEFAULT_MS = 2500;
+let cyberdropWarmupChain = Promise.resolve();
+const cyberdropWarmupAttempted = new Map();
+
+/**
+ * Warm up a Cyberdrop /f/ page in a background tab to let the site set any required cookies.
+ * Ensures at most one warm-up tab is open at any time.
+ */
+async function cyberdropWarmupOnce(key, warmUrl, ms = CYBERDROP_WARMUP_DEFAULT_MS) {
+    // Back-compat: allow cyberdropWarmupOnce(url) calls.
+    if (typeof warmUrl === 'undefined') {
+        const maybeUrl = String(key || '').trim();
+        if (/^https?:\/\//i.test(maybeUrl)) {
+            warmUrl = maybeUrl;
+            try { key = `cyberdrop:${new URL(maybeUrl).origin}`; } catch { key = `cyberdrop:${maybeUrl}`; }
+        }
+    }
+
+    // Normalize keys that accidentally include a full URL (avoid per-file warmups).
+    const _k0 = String(key || '').trim();
+    if (_k0.indexOf('://') !== -1) {
+        const m = _k0.match(/https?:\/\/[^\s]+/i);
+        if (m) { try { key = `cyberdrop:${new URL(m[0]).origin}`; } catch {} }
+    }
+
+    const k = String(key || '').trim();
+    const u = String(warmUrl || '').trim();
+    if (!k || !u) return;
+
+    if (cyberdropWarmupAttempted.has(k)) {
+        try { await cyberdropWarmupAttempted.get(k); } catch (e) {}
+        return;
+    }
+
+    cyberdropWarmupChain = cyberdropWarmupChain.then(() => {
+        return new Promise(resolve => {
+            try {
+                const tab = GM_openInTab(u, { active: false, insert: true, setParent: true });
+                setTimeout(() => {
+                    try { xfpdCloseTabHandle(tab); } catch (e) {}
+                    resolve();
+                }, Math.max(250, ms));
+            } catch (e) {
+                resolve();
+            }
+        });
+    });
+
+    cyberdropWarmupAttempted.set(k, cyberdropWarmupChain);
+    await cyberdropWarmupChain;
+}
+
+
+
+// Legacy helper kept for compatibility (expects a Cyberdrop API URL that returns JSON with a "url" field).
+async function cyberdrop_helper(apiUrl) {
+    const url = String(apiUrl || '');
+    if (!url) return null;
+
+    const headers = { Accept: 'application/json, text/plain, */*' };
+
+    const gmGetText = u =>
+        new Promise(resolve => {
+            try {
+                GM.xmlHttpRequest({
+                    method: 'GET',
+                    url: u,
+                    headers,
+                    onload: r => resolve(r),
+                    onerror: () => resolve(null),
+                    ontimeout: () => resolve(null),
+                });
+            } catch (e) {
+                resolve(null);
+            }
+        });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await gmGetText(url);
+        if (r && r.status === 200 && r.responseText) {
+            try {
+                const j = JSON.parse(r.responseText);
+                const direct = j && (j.url || (j.data && j.data.url) || (j.file && j.file.url));
+                if (direct && typeof direct === 'string') return direct;
+            } catch (e) {}
+        }
+        await new Promise(res => setTimeout(res, 800));
+    }
+
+    return null;
+}
 
 const parsedPosts = [];
 const selectedPosts = [];
 
 (function () {
-  window.addEventListener('beforeunload', e => {
-    if (processing.find(p => p.processing)) {
-      const message = 'Downloads are in progress. Sure you wanna exit this page?';
-      e.returnValue = message;
-      return message;
-    }
-  });
+    try { if (window.__XFPD_ABORT_MAIN) return; } catch (e) {}
 
-  document.addEventListener('DOMContentLoaded', async () => {
-    const goFileTokenFetchFailedErr = 'Failed to create GoFile token. GoFile albums may not work. Refresh the browser to retry.';
+    // @match now covers gofile.io (required by GM_cookie for the accountToken sync -- see
+    // gofileSyncCookie), which also makes Tampermonkey inject/run this whole script on actual
+    // gofile.io page loads (e.g. the warm-up tab). None of the forum-post logic below applies
+    // there, so bail out immediately rather than doing pointless work (redgifs token fetch,
+    // style injection) on GoFile's own pages.
+    try { if (/(^|\.)gofile\.io$/i.test(location.hostname)) return; } catch (e) {}
 
-    if (h.isNullOrUndef(settings.hosts.goFile.token) || settings.hosts.goFile.token.trim() === '') {
-      // TODO: Persist to local storage
-      try {
-        console.log('Creating GoFile token');
-        const { source } = await h.http.get('https://api.gofile.io/createAccount');
-        if (h.isNullOrUndef(source) || source.trim() === '') {
-          console.error(goFileTokenFetchFailedErr);
-        } else {
-          const props = JSON.parse(source);
-          if (props.status === 'ok' && props.data) {
-            const token = props.data.token;
-            settings.hosts.goFile.token = token;
-            console.log(`Created GoFile token: ${token}`);
-          } else {
-            console.error(goFileTokenFetchFailedErr);
-          }
-        }
-      } catch (e) {
-        console.error(goFileTokenFetchFailedErr);
-      }
-    }
-
+    // Same deal for goonbox.cr, except this tab has a job to do: it is the helper tab opened by
+    // goonboxBridgeGet, and it is the only context where fetch() carries Goonbox's first-party
+    // cookies. Serve the bridge, then bail out of the forum-post logic exactly as above. Users who
+    // simply browse goonbox.cr also land here -- the bridge just idles, waiting for a request that
+    // never comes, until the tab is closed.
     try {
-      const { source } = await h.http.get('https://api.redgifs.com/v2/auth/temporary');
-      if (h.contains('token', source)) {
-        const token = JSON.parse(source).token;
-        GM_setValue('redgifs_token', token);
-      }
-    } catch (e) {
-      console.error('Error getting temporary redgifs auth token:');
-      console.error(e);
-    }
+        if (/(^|\.)goonbox\.cr$/i.test(location.hostname)) {
+            try { goonboxBridgeServe(); } catch (e) {}
+            return;
+        }
+    } catch (e) {}
 
-    init.injectCustomStyles();
-
-    h.elements('.message-attribution-opposite').forEach(post => {
-      const settings = {
-        zipped: true,
-        flatten: false,
-        generateLinks: false,
-        generateLog: false,
-        skipDuplicates: false,
-        skipDownload: false,
-        output: [],
-      };
-
-      const parsedPost = parsers.thread.parsePost(post);
-
-      const { content, contentContainer } = parsedPost;
-
-      addDuplicateTabLink(post);
-      addShowDownloadPageBtnLink(post);
-
-      const parsedHosts = parsers.hosts.parseHosts(content);
-
-      const getEnabledHostsCB = parsedHosts => parsedHosts.filter(host => host.enabled);
-
-      if (!parsedHosts.length) {
-        return;
-      }
-
-      const getTotalDownloadableResourcesForPostCB = parsedHosts => {
-        return parsedHosts.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
-      };
-
-      // Create and attach the download button to post.
-      const { btn: btnDownloadPost } = ui.buttons.addDownloadPostButton(post);
-      const totalResources = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
-      const checkedLength = getTotalDownloadableResourcesForPostCB(parsedHosts);
-      btnDownloadPost.innerHTML = `🡳 Download (${checkedLength}/${totalResources})`;
-
-      // Create download status / progress elements.
-      const { el: statusText } = ui.labels.status.createStatusLabel();
-      const filePBar = ui.pBars.createFileProgressBar();
-      const totalPBar = ui.pBars.createTotalProgressBar();
-
-      contentContainer.prepend(totalPBar);
-      contentContainer.prepend(filePBar);
-      contentContainer.prepend(statusText);
-
-      h.hide(statusText);
-      h.hide(filePBar);
-      h.hide(totalPBar);
-
-      const onFormSubmitCB = data => {
-        const { tippyInstance } = data;
-        tippyInstance.hide();
-      };
-
-      ui.forms.config.post.createPostConfigForm(
-        parsedPost,
-        parsedHosts,
-        `#${parsedPost.postNumber}.zip`,
-        settings,
-        onFormSubmitCB,
-        getTotalDownloadableResourcesForPostCB,
-        btnDownloadPost,
-      );
-
-      const statusUI = {
-        status: statusText,
-        filePB: filePBar,
-        totalPB: totalPBar,
-      };
-
-      const postDownloadCallbacks = {
-        onComplete: (total, completed) => {
-          if (total > 0 && completed > 0) {
-            registerPostReaction(parsedPost.footer);
-          }
-        },
-      };
-
-      let getSettingsCB = () => settings;
-
-      parsedPosts.push({
-        parsedPost,
-        parsedHosts,
-        enabledHostsCB: getEnabledHostsCB,
-        resolvers,
-        getSettingsCB,
-        statusUI,
-        postDownloadCallbacks,
-      });
-
-      btnDownloadPost.addEventListener('click', e => {
-        e.preventDefault();
-        downloadPost(parsedPost, parsedHosts, getEnabledHostsCB, resolvers, getSettingsCB, statusUI, postDownloadCallbacks);
-      });
+    window.addEventListener('beforeunload', e => {
+        if (processing.find(p => p.processing)) {
+            const message = 'Downloads are in progress. Sure you wanna exit this page?';
+            e.returnValue = message;
+            return message;
+        }
     });
 
-    if (parsedPosts.filter(p => p.parsedHosts.length).length > 0) {
-      const btnDownloadPage = addDownloadPageButton();
+    const onReady = cb => {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', cb, { once: true });
+        } else {
+            cb();
+        }
+    };
 
-      btnDownloadPage.addEventListener('click', e => {
-        e.preventDefault();
+    onReady(async () => {
+        try {
+            const { source, status } = await h.http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
+            if (status !== 200) { throw new Error(`HTTP ${status}`); }
+            if (h.contains('token', source)) {
+                const token = JSON.parse(source).token;
+                GM_setValue('redgifs_token', token);
+            }
+        } catch (e) {
+            console.error('Error getting temporary redgifs auth token:');
+            console.error(e);
+        }
 
-        selectedPosts
-          .filter(s => s.enabled)
-          .forEach(s => {
-            downloadPost(
-              s.post.parsedPost,
-              s.post.parsedHosts,
-              s.post.enabledHostsCB,
-              s.post.resolvers,
-              s.post.getSettingsCB,
-              s.post.statusUI,
-              s.post.postDownloadCallbacks,
-            );
-          });
-      });
+        init.injectCustomStyles();
 
-      // TODO: Extract to ui.js
-      const color = ui.getTooltipBackgroundColor();
+        let downloadPageTippy = null;
 
-      let html = ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, false);
+        const buildDownloadPageFormHtml = () => {
+            const color = ui.getTooltipBackgroundColor();
+            const threadTitle = parsers.thread.parseTitle();
+            let html = ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, false);
 
-      parsedPosts
-        .filter(p => p.parsedHosts.length)
-        .forEach(post => {
-          const { postId, postNumber, textContent } = post.parsedPost;
+            parsedPosts
+                .filter(p => p.parsedHosts.length)
+                .forEach(post => {
+                    const { postId, postNumber, textContent } = post.parsedPost;
+                    let selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                    if (!selected) {
+                        selected = { post, enabled: false };
+                        selectedPosts.push(selected);
+                    } else {
+                        selected.post = post;
+                    }
 
-          selectedPosts.push({ post, enabled: false });
+                    const defaultPostContent = (textContent || '').trim().replace('​', '');
+                    const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
+                    const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
+                    html += ui.forms.createCheckbox(`config-download-post-${postId}`, `Post #${postNumber} ${summary}`, !!selected.enabled);
+                });
 
-          const threadTitle = parsers.thread.parseTitle();
+            html = `${ui.forms.createRow(ui.forms.createLabel('Post Selection'))} ${html}`;
+            return ui.forms.config.page.createForm(color, html);
+        };
 
-          let defaultPostContent = textContent.trim().replace('​', '');
+        const syncDownloadPageUI = () => {
+            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            if (!downloadablePosts.length) return;
 
-          const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
+            const btnDownloadPage = addDownloadPageButton();
+            if (!btnDownloadPage) return;
 
-          const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: dodgerblue"> ${ellipsedText} </a>`;
-          html += ui.forms.createCheckbox(`config-download-post-${postId}`, `Post #${postNumber} ${summary}`, false);
-        });
+            if (btnDownloadPage.dataset.xfpdClickBound !== '1') {
+                btnDownloadPage.dataset.xfpdClickBound = '1';
+                btnDownloadPage.addEventListener('click', e => {
+                    e.preventDefault();
 
-      html = `${ui.forms.createRow(ui.forms.createLabel('Post Selection'))} ${html}`;
-      ui.tooltip(btnDownloadPage, ui.forms.config.page.createForm(color, html), {
-        placement: 'bottom',
-        interactive: true,
-        onShown: () => {
-          parsedPosts
-            .filter(p => p.parsedHosts.length)
-            .forEach(post => {
-              const { postId, contentContainer } = post.parsedPost;
-              ui.tooltip(
-                `#post-content-${postId}`,
-                `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
+                    selectedPosts
+                        .filter(s => s.enabled)
+                        .forEach(s => {
+                            downloadPost(
+                                s.post.parsedPost,
+                                s.post.parsedHosts,
+                                s.post.enabledHostsCB,
+                                s.post.resolvers,
+                                s.post.getSettingsCB,
+                                s.post.statusUI,
+                                s.post.postDownloadCallbacks,
+                            );
+                        });
+                });
+            }
+
+            const formContent = buildDownloadPageFormHtml();
+
+            if (downloadPageTippy && typeof downloadPageTippy.setContent === 'function') {
+                downloadPageTippy.setContent(formContent);
+                return;
+            }
+
+            downloadPageTippy = ui.tooltip(btnDownloadPage, formContent, {
+                placement: 'bottom',
+                interactive: true,
+                onShown: () => {
+                    const downloadableNow = parsedPosts.filter(p => p.parsedHosts.length);
+
+                    downloadableNow.forEach(post => {
+                        const { postId, contentContainer } = post.parsedPost;
+                        const linkEl = document.querySelector(`#post-content-${postId}`);
+                        if (linkEl && linkEl.dataset.xfpdTipBound !== '1') {
+                            linkEl.dataset.xfpdTipBound = '1';
+                            ui.tooltip(
+                                linkEl,
+                                `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
                           ${contentContainer.innerHTML}
                          </div>`,
-                { placement: 'right', offset: [10, 15] },
-              );
+                                { placement: 'right', offset: [10, 15] },
+                            );
+                        }
 
-              document.querySelector(`#config-download-post-${postId}`).addEventListener('change', e => {
-                const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
-                selectedPost.enabled = e.target.checked;
+                        const postCheckbox = document.querySelector(`#config-download-post-${postId}`);
+                        if (postCheckbox && postCheckbox.dataset.xfpdBound !== '1') {
+                            postCheckbox.dataset.xfpdBound = '1';
+                            postCheckbox.addEventListener('change', e => {
+                                const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                                if (selectedPost) selectedPost.enabled = e.target.checked;
 
-                const checkAllCB = h.element('#config-toggle-all-posts');
-                checkAllCB.checked = selectedPosts.filter(s => s.enabled).length === parsedPosts.length;
-              });
+                                const checkAllCB = h.element('#config-toggle-all-posts');
+                                if (checkAllCB) {
+                                    checkAllCB.checked =
+                                        selectedPosts.filter(s => s.enabled).length === downloadableNow.length;
+                                }
+                            });
+                        }
+                    });
 
-              h.element('#config-toggle-all-posts').addEventListener('change', async e => {
-                e.preventDefault();
+                    const toggleAllEl = h.element('#config-toggle-all-posts');
+                    if (toggleAllEl && toggleAllEl.dataset.xfpdBound !== '1') {
+                        toggleAllEl.dataset.xfpdBound = '1';
+                        toggleAllEl.addEventListener('change', async e => {
+                            e.preventDefault();
 
-                const checked = e.target.checked;
+                            const checked = e.target.checked;
+                            const postCheckboxes = parsedPosts
+                                .filter(p => p.parsedHosts.length)
+                                .map(p => h.element(`#config-download-post-${p.parsedPost.postId}`))
+                                .filter(Boolean);
 
-                const postCheckboxes = parsedPosts
-                  .filter(p => p.parsedHosts.length)
-                  .map(p => p.parsedPost)
-                  .flatMap(p => h.element(`#config-download-post-${p.postId}`));
+                            const checkedPostCheckboxes = postCheckboxes.filter(el => el.checked);
+                            const unCheckedPostCheckboxes = postCheckboxes.filter(el => !el.checked);
 
-                const checkedPostCheckboxes = postCheckboxes.filter(e => e.checked);
-                const unCheckedPostCheckboxes = postCheckboxes.filter(e => !e.checked);
-
-                if (checked) {
-                  unCheckedPostCheckboxes.forEach(c => c.click());
-                } else {
-                  checkedPostCheckboxes.forEach(c => c.click());
-                }
-              });
+                            if (checked) {
+                                unCheckedPostCheckboxes.forEach(c => c.click());
+                            } else {
+                                checkedPostCheckboxes.forEach(c => c.click());
+                            }
+                        });
+                    }
+                },
             });
-        },
-      });
-    }
-  });
+        };
+
+        const initPostElement = post => {
+            if (!post || post.dataset?.xfpdInitialized === '1') return false;
+
+            const parsedPost = parsers.thread.parsePost(post);
+            if (!parsedPost) return false;
+
+            const { postId, content, contentContainer } = parsedPost;
+
+            addDuplicateTabLink(post);
+            addShowDownloadPageBtnLink(post);
+
+            const parsedHosts = parsers.hosts.parseHosts(content);
+            const getEnabledHostsCB = hostsList => hostsList.filter(host => host.enabled);
+
+            if (!parsedHosts.length) {
+                return false;
+            }
+
+            post.dataset.xfpdInitialized = '1';
+
+            const postSettings = {
+                zipped: true,
+                flatten: false,
+                generateLinks: false,
+                generateLog: false,
+                skipDuplicates: false,
+                skipDownload: false,
+                verifyBunkrLinks: false,
+                output: [],
+            };
+
+            const getTotalDownloadableResourcesForPostCB = hostsList => {
+                return hostsList.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
+            };
+
+            // Create and attach the download button to post.
+            const { btn: btnDownloadPost } = ui.buttons.addDownloadPostButton(post);
+            const totalResources = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+            const checkedLength = getTotalDownloadableResourcesForPostCB(parsedHosts);
+            btnDownloadPost.innerHTML = `🡳 Download (${checkedLength}/${totalResources})`;
+
+            // Create download status / progress elements.
+            const { el: statusText } = ui.labels.status.createStatusLabel();
+            const filePBar = ui.pBars.createFileProgressBar();
+            const totalPBar = ui.pBars.createTotalProgressBar();
+
+            contentContainer.prepend(totalPBar);
+            contentContainer.prepend(filePBar);
+            contentContainer.prepend(statusText);
+
+            h.hide(statusText);
+            h.hide(filePBar);
+            h.hide(totalPBar);
+
+            const onFormSubmitCB = data => {
+                const { tippyInstance } = data;
+                tippyInstance.hide();
+            };
+
+            ui.forms.config.post.createPostConfigForm(
+                parsedPost,
+                parsedHosts,
+                `#${parsedPost.postNumber}.zip`,
+                postSettings,
+                onFormSubmitCB,
+                getTotalDownloadableResourcesForPostCB,
+                btnDownloadPost,
+            );
+
+            const statusUI = {
+                status: statusText,
+                filePB: filePBar,
+                totalPB: totalPBar,
+            };
+
+            const postDownloadCallbacks = {
+                onComplete: (total, completed) => {
+                    if (total > 0 && completed > 0) {
+                        registerPostReaction(parsedPost.footer);
+                    }
+                },
+            };
+
+            const getSettingsCB = () => postSettings;
+
+            // Replace any stale entry if a post was re-rendered dynamically (e.g. XenSoluce [HIDEREACT] unlock on SMG).
+            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
+            const postEntry = {
+                parsedPost,
+                parsedHosts,
+                enabledHostsCB: getEnabledHostsCB,
+                resolvers,
+                getSettingsCB,
+                statusUI,
+                postDownloadCallbacks,
+            };
+            if (existingIdx > -1) {
+                parsedPosts[existingIdx] = postEntry;
+            } else {
+                parsedPosts.push(postEntry);
+            }
+
+            btnDownloadPost.addEventListener('click', e => {
+                e.preventDefault();
+                downloadPost(parsedPost, parsedHosts, getEnabledHostsCB, resolvers, getSettingsCB, statusUI, postDownloadCallbacks);
+            });
+
+            return true;
+        };
+
+        const scanPosts = () => {
+            let addedDownloadable = false;
+            h.elements('.message-attribution-opposite').forEach(post => {
+                try {
+                    if (initPostElement(post)) {
+                        addedDownloadable = true;
+                    }
+                } catch (e) {
+                    console.error('[XFPD] Error initializing post:', e);
+                }
+            });
+            if (addedDownloadable) {
+                syncDownloadPageUI();
+            }
+        };
+
+        scanPosts();
+
+        // Watch for dynamically unlocked/inserted posts (e.g. SMG [HIDEREACT]/[HIDETHANKS] AJAX post replacement or quick replies).
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            let rescanTimer = null;
+            const observer = new MutationObserver(mutations => {
+                let shouldScan = false;
+                for (const m of mutations) {
+                    if (!m.addedNodes || !m.addedNodes.length) continue;
+                    for (const node of m.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        if (
+                            (node.matches && node.matches('article.message, .js-post, .message-attribution-opposite')) ||
+                            (node.querySelector && node.querySelector('.message-attribution-opposite')) ||
+                            (node.closest && node.closest('.message-body, .message-userContent'))
+                        ) {
+                            shouldScan = true;
+                            break;
+                        }
+                    }
+                    if (shouldScan) break;
+                }
+                if (shouldScan) {
+                    if (rescanTimer) clearTimeout(rescanTimer);
+                    rescanTimer = setTimeout(() => {
+                        rescanTimer = null;
+                        scanPosts();
+                    }, 120);
+                }
+            });
+            observer.observe(h.element('.block--messages') || document.body, {
+                childList: true,
+                subtree: true,
+            });
+        }
+    });
 })();

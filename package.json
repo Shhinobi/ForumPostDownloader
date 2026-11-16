@@ -1,21 +1,21 @@
 {
   "name": "forum-post-downloader",
-  "version": "2.5.2",
-  "description": "Downloads images and videos from all the popular hosts.",
+  "version": "3.24.0",
+  "description": "Downloads images and videos from SimpCity and SocialMediaGirls XenForo forums across all popular hosts.",
   "scripts": {
     "build": "node build.js",
     "dev": "concurrently \"chokidar build.js ./src/* -c 'node build.js'\" \"node server.js\""
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SkyCloudDev/ForumPostDownloader.git"
+    "url": "git+https://github.com/Shhinobi/ForumPostDownloader.git"
   },
   "author": "x111000111",
   "license": "WTFPL",
   "bugs": {
-    "url": "https://github.com/SkyCloudDev/ForumPostDownloader/issues"
+    "url": "https://github.com/Shhinobi/ForumPostDownloader/issues"
   },
-  "homepage": "https://github.com/SkyCloudDev/ForumPostDownloader#readme",
+  "homepage": "https://github.com/Shhinobi/ForumPostDownloader#readme",
   "devDependencies": {
     "chokidar-cli": "^3.0.0",
     "concurrently": "^7.5.0",
