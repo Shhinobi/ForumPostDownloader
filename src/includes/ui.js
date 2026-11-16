@@ -206,6 +206,7 @@ const ui = {
                     (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
                 const vidQual = currentSettings.videoQuality || 'best';
                 const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+                const dedupHistoryCount = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
 
                 const optLayout = (val, label) =>
                     `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
@@ -221,6 +222,7 @@ const ui = {
                 <span id="${idPrefix}-scope-badge" class="xfpd-scope-badge" style="color: ${hasThreadCustom ? '#47ba24' : '#959595'};">
                   ${hasThreadCustom ? 'Thread ✓' : 'Default'}
                 </span>
+                <button type="button" id="${idPrefix}-clear-dedup" class="xfpd-mini-btn" title="Clear remembered duplicate hashes/URLs for this thread" style="${dedupHistoryCount > 0 ? '' : 'display:none;'}">Clear Dedup (${dedupHistoryCount})</button>
                 <button type="button" id="${idPrefix}-save-global" class="xfpd-mini-btn" title="Save current settings as the default for new threads">Set Global</button>
                 <button type="button" id="${idPrefix}-reset-thread" class="xfpd-mini-btn" title="Reset this thread back to global defaults" style="${hasThreadCustom ? '' : 'display:none;'}">Reset</button>
               </span>
@@ -270,9 +272,9 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(
-                        `${idPrefix}-skip-duplicates`,
-                        'Skip Duplicates',
-                        skipDl ? false : !!currentSettings.skipDuplicates,
+                        `${idPrefix}-content-dedup`,
+                        'Smart Dedup (Byte Hash + URL)',
+                        skipDl ? false : currentSettings.contentDedup !== false,
                         skipDl,
                     ),
                     ui.forms.createCheckbox(
@@ -337,8 +339,14 @@ const ui = {
                 if (resetBtn) {
                     resetBtn.style.display = hasThreadCustom ? '' : 'none';
                 }
+                const clearDedupBtn = rootEl.querySelector(`#${idPrefix}-clear-dedup`);
+                if (clearDedupBtn) {
+                    const cnt = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
+                    clearDedupBtn.style.display = cnt > 0 ? '' : 'none';
+                    if (cnt > 0) clearDedupBtn.textContent = `Clear Dedup (${cnt})`;
+                }
 
-                setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
+                setCb('content-dedup', skipDl ? false : settingsObj.contentDedup !== false, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
                 setCb('skip-download', skipDl, false);
@@ -381,6 +389,18 @@ const ui = {
                         el.addEventListener(eventType, handler);
                     }
                 };
+
+                bindOne(
+                    'clear-dedup',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdClearThreadDedup === 'function') {
+                            xfpdClearThreadDedup();
+                            ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne(
                     'save-global',
@@ -460,15 +480,15 @@ const ui = {
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
-                bindOne('skip-duplicates', e => {
+                bindOne('content-dedup', e => {
                     ensurePreSkip();
-                    settingsObj.skipDuplicates = !!e.target.checked;
+                    settingsObj.contentDedup = !!e.target.checked;
                     if (!settingsObj.skipDownload) {
-                        settingsObj.preSkipDownload.skipDuplicates = settingsObj.skipDuplicates;
+                        settingsObj.preSkipDownload.contentDedup = settingsObj.contentDedup;
                     }
                     notify(
-                        { skipDuplicates: settingsObj.skipDuplicates, preSkipDownload: { ...settingsObj.preSkipDownload } },
-                        ['skipDuplicates'],
+                        { contentDedup: settingsObj.contentDedup, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['contentDedup'],
                     );
                 });
 
@@ -503,6 +523,7 @@ const ui = {
                             folderLayout: curLayout,
                             organizeMedia: curLayout === 'media',
                             flatten: curLayout === 'flat',
+                            contentDedup: settingsObj.contentDedup !== false,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
@@ -517,6 +538,7 @@ const ui = {
                         settingsObj.folderLayout = restoredLayout;
                         settingsObj.organizeMedia = restoredLayout === 'media';
                         settingsObj.flatten = restoredLayout === 'flat';
+                        settingsObj.contentDedup = settingsObj.preSkipDownload.contentDedup !== false;
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
                     }
@@ -526,12 +548,13 @@ const ui = {
                             skipDownload: settingsObj.skipDownload,
                             folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
+                            contentDedup: settingsObj.contentDedup,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'folderLayout', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },

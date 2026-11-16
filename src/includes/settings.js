@@ -55,6 +55,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
+    contentDedup: true,
     smartMirrors: true,
     autoUnlockReaction: true,
     videoQuality: 'best',
@@ -141,6 +142,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
         folderLayout: preLayout,
         organizeMedia: preLayout === 'media',
         flatten: preLayout === 'flat',
+        contentDedup:
+            pre && typeof pre.contentDedup === 'boolean'
+                ? pre.contentDedup
+                : (normalized.skipDownload ? true : normalized.contentDedup),
         skipDuplicates:
             pre && typeof pre.skipDuplicates === 'boolean'
                 ? pre.skipDuplicates
@@ -410,6 +415,7 @@ function xfpdCreatePostSettings() {
         folderLayout: prefs.folderLayout,
         organizeMedia: prefs.organizeMedia,
         includeComments: prefs.includeComments,
+        contentDedup: prefs.contentDedup,
         smartMirrors: prefs.smartMirrors,
         autoUnlockReaction: prefs.autoUnlockReaction,
         videoQuality: prefs.videoQuality,
@@ -429,6 +435,230 @@ function xfpdCreatePostSettings() {
         configurable: true,
     });
     return postSettings;
+}
+
+// --- Fast Zero-Copy Content Hashing & Persistent Per-Thread Dedup Store --------------------------
+const XFPD_THREAD_DEDUP_KEY = 'xfpd_thread_dedup';
+const XFPD_DEDUP_MAX_THREADS = 150;
+const XFPD_DEDUP_MAX_ITEMS_PER_THREAD = 8000;
+const XFPD_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024; // <= 8 MB: full-file SHA-256; > 8 MB: 4 x 256 KB sparse SHA-256
+const XFPD_SPARSE_CHUNK_BYTES = 262144; // 256 KB
+
+let xfpdDedupStoreCache = null; // { _updatedAt, threads: { [tKey]: { u: Set, h: Set, s: Set, _t: number } } }
+let xfpdDedupFlushTimer = null;
+
+function xfpdEnsureDedupStore() {
+    if (xfpdDedupStoreCache) return xfpdDedupStoreCache;
+    const raw = xfpdReadStoredObject(XFPD_THREAD_DEDUP_KEY, null);
+    const threads = {};
+    if (raw && raw.threads && typeof raw.threads === 'object') {
+        for (const [tKey, entry] of Object.entries(raw.threads)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const hSet = new Set(Array.isArray(entry.h) ? entry.h : []);
+            const sSet = new Set();
+            hSet.forEach(fp => {
+                const parts = String(fp).split(':');
+                if (parts.length >= 3) {
+                    const sz = Number(parts[1]);
+                    if (sz > 0) sSet.add(sz);
+                }
+            });
+            threads[tKey] = {
+                u: new Set(Array.isArray(entry.u) ? entry.u : []),
+                h: hSet,
+                s: sSet,
+                _t: Number(entry._t || 0) || 0,
+            };
+        }
+    }
+    xfpdDedupStoreCache = { _updatedAt: Number((raw && raw._updatedAt) || 0) || 0, threads };
+    return xfpdDedupStoreCache;
+}
+
+function xfpdGetThreadDedupBucket(explicitThreadKey = null, createIfMissing = false) {
+    const store = xfpdEnsureDedupStore();
+    const tKey = (explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey()) || '_session';
+    let bucket = store.threads[tKey];
+    if (!bucket && createIfMissing) {
+        bucket = { u: new Set(), h: new Set(), s: new Set(), _t: Date.now() };
+        store.threads[tKey] = bucket;
+    }
+    return bucket || null;
+}
+
+function xfpdFlushDedupStoreNow() {
+    if (xfpdDedupFlushTimer) {
+        clearTimeout(xfpdDedupFlushTimer);
+        xfpdDedupFlushTimer = null;
+    }
+    if (!xfpdDedupStoreCache) return;
+    const entries = Object.entries(xfpdDedupStoreCache.threads).filter(([k]) => k !== '_session');
+    entries.sort((a, b) => (Number(b[1]._t || 0) || 0) - (Number(a[1]._t || 0) || 0));
+
+    const serializedThreads = {};
+    for (const [tKey, b] of entries.slice(0, XFPD_DEDUP_MAX_THREADS)) {
+        const uArr = Array.from(b.u);
+        const hArr = Array.from(b.h);
+        serializedThreads[tKey] = {
+            u: uArr.length > XFPD_DEDUP_MAX_ITEMS_PER_THREAD ? uArr.slice(-XFPD_DEDUP_MAX_ITEMS_PER_THREAD) : uArr,
+            h: hArr.length > XFPD_DEDUP_MAX_ITEMS_PER_THREAD ? hArr.slice(-XFPD_DEDUP_MAX_ITEMS_PER_THREAD) : hArr,
+            _t: b._t || Date.now(),
+        };
+    }
+    const payload = { _updatedAt: Date.now(), threads: serializedThreads };
+    xfpdWriteStoredObject(XFPD_THREAD_DEDUP_KEY, payload);
+}
+
+function xfpdScheduleDedupFlush() {
+    if (xfpdDedupFlushTimer) return;
+    xfpdDedupFlushTimer = setTimeout(() => {
+        xfpdDedupFlushTimer = null;
+        try {
+            xfpdFlushDedupStoreNow();
+        } catch (e) {}
+    }, 200);
+}
+
+function xfpdHasSeenThreadUrl(urlKey, explicitThreadKey = null) {
+    if (!urlKey) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.u.has(urlKey));
+}
+
+function xfpdMarkSeenThreadUrl(urlKey, explicitThreadKey = null) {
+    if (!urlKey) return;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, true);
+    bucket.u.add(urlKey);
+    bucket._t = Date.now();
+    xfpdScheduleDedupFlush();
+}
+
+function xfpdHasSeenThreadHash(fingerprint, explicitThreadKey = null) {
+    if (!fingerprint) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.h.has(fingerprint));
+}
+
+function xfpdThreadHasSeenExactSize(byteSize, explicitThreadKey = null) {
+    const n = Number(byteSize || 0) || 0;
+    if (n <= 0) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.s.has(n));
+}
+
+function xfpdMarkSeenThreadHash(fingerprint, explicitThreadKey = null) {
+    if (!fingerprint) return;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, true);
+    bucket.h.add(fingerprint);
+    const parts = String(fingerprint).split(':');
+    if (parts.length >= 3) {
+        const sz = Number(parts[1]);
+        if (sz > 0) bucket.s.add(sz);
+    }
+    bucket._t = Date.now();
+    xfpdScheduleDedupFlush();
+}
+
+function xfpdGetThreadDedupCount(explicitThreadKey = null) {
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    if (!bucket) return 0;
+    return Math.max(bucket.h.size, bucket.u.size);
+}
+
+function xfpdClearThreadDedup(explicitThreadKey = null) {
+    const store = xfpdEnsureDedupStore();
+    const tKey = (explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey()) || '_session';
+    delete store.threads[tKey];
+    xfpdFlushDedupStoreNow();
+}
+
+async function xfpdReadBlobArrayBuffer(blob) {
+    if (!blob) return new ArrayBuffer(0);
+    if (typeof blob.arrayBuffer === 'function') {
+        return await blob.arrayBuffer();
+    }
+    return await new Promise((resolve, reject) => {
+        try {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result || new ArrayBuffer(0));
+            fr.onerror = err => reject(err);
+            fr.readAsArrayBuffer(blob);
+        } catch (e) {
+            resolve(new ArrayBuffer(0));
+        }
+    });
+}
+
+async function xfpdDigestUint8ArrayToTag(bytes) {
+    if (!bytes || !bytes.byteLength) return '';
+    try {
+        const subtle =
+            (typeof crypto !== 'undefined' && crypto && crypto.subtle) ||
+            (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) ||
+            null;
+        if (subtle && typeof subtle.digest === 'function') {
+            const hashBuf = await subtle.digest('SHA-256', bytes);
+            const arr = new Uint8Array(hashBuf, 0, 18); // 144 bits -> compact 24-char base64url
+            let bin = '';
+            for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+            return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+    } catch (e) {}
+    // Fallback FNV-1a + window.sha256 for environments without WebCrypto subtle
+    try {
+        let h1 = 0x811c9dc5;
+        let h2 = 0x01000193;
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            h1 ^= b;
+            h1 = Math.imul(h1, 0x01000193) >>> 0;
+            h2 ^= b + (i & 0xff);
+            h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+        }
+        if (typeof sha256 === 'function') {
+            return String(sha256(`${bytes.length}:${h1}:${h2}`)).slice(0, 24);
+        }
+        return `${h1.toString(36)}_${h2.toString(36)}`;
+    } catch (e) {
+        return '';
+    }
+}
+
+async function xfpdComputeBlobFingerprint(blob) {
+    if (!blob || typeof blob.size !== 'number' || blob.size <= 0) return '';
+    const size = blob.size;
+    try {
+        if (size <= XFPD_FULL_HASH_MAX_BYTES) {
+            const ab = await xfpdReadBlobArrayBuffer(blob);
+            const tag = await xfpdDigestUint8ArrayToTag(new Uint8Array(ab));
+            return tag ? `f:${size}:${tag}` : '';
+        }
+
+        // Sparse 4 x 256 KB zero-copy slice sampling for large videos (> 8 MB): < 0.5ms CPU, 1 MB temp buffer!
+        const chunk = XFPD_SPARSE_CHUNK_BYTES;
+        const offsets = [
+            0,
+            Math.floor(size / 3),
+            Math.floor((size * 2) / 3),
+            Math.max(0, size - chunk),
+        ];
+        const parts = await Promise.all(
+            offsets.map(off => xfpdReadBlobArrayBuffer(blob.slice(off, Math.min(size, off + chunk)))),
+        );
+        const sizeFooter = new TextEncoder().encode(`|sz:${size}`);
+        const totalBytes = parts.reduce((acc, p) => acc + p.byteLength, 0) + sizeFooter.byteLength;
+        const combined = new Uint8Array(totalBytes);
+        let cursor = 0;
+        for (const p of parts) {
+            combined.set(new Uint8Array(p), cursor);
+            cursor += p.byteLength;
+        }
+        combined.set(sizeFooter, cursor);
+        const tag = await xfpdDigestUint8ArrayToTag(combined);
+        return tag ? `s:${size}:${tag}` : '';
+    } catch (e) {
+        return '';
+    }
 }
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments

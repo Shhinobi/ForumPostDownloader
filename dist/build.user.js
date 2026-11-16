@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.31
+// @version 3.32
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -344,6 +344,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
+    contentDedup: true,
     smartMirrors: true,
     autoUnlockReaction: true,
     videoQuality: 'best',
@@ -430,6 +431,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
         folderLayout: preLayout,
         organizeMedia: preLayout === 'media',
         flatten: preLayout === 'flat',
+        contentDedup:
+            pre && typeof pre.contentDedup === 'boolean'
+                ? pre.contentDedup
+                : (normalized.skipDownload ? true : normalized.contentDedup),
         skipDuplicates:
             pre && typeof pre.skipDuplicates === 'boolean'
                 ? pre.skipDuplicates
@@ -699,6 +704,7 @@ function xfpdCreatePostSettings() {
         folderLayout: prefs.folderLayout,
         organizeMedia: prefs.organizeMedia,
         includeComments: prefs.includeComments,
+        contentDedup: prefs.contentDedup,
         smartMirrors: prefs.smartMirrors,
         autoUnlockReaction: prefs.autoUnlockReaction,
         videoQuality: prefs.videoQuality,
@@ -718,6 +724,230 @@ function xfpdCreatePostSettings() {
         configurable: true,
     });
     return postSettings;
+}
+
+// --- Fast Zero-Copy Content Hashing & Persistent Per-Thread Dedup Store --------------------------
+const XFPD_THREAD_DEDUP_KEY = 'xfpd_thread_dedup';
+const XFPD_DEDUP_MAX_THREADS = 150;
+const XFPD_DEDUP_MAX_ITEMS_PER_THREAD = 8000;
+const XFPD_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024; // <= 8 MB: full-file SHA-256; > 8 MB: 4 x 256 KB sparse SHA-256
+const XFPD_SPARSE_CHUNK_BYTES = 262144; // 256 KB
+
+let xfpdDedupStoreCache = null; // { _updatedAt, threads: { [tKey]: { u: Set, h: Set, s: Set, _t: number } } }
+let xfpdDedupFlushTimer = null;
+
+function xfpdEnsureDedupStore() {
+    if (xfpdDedupStoreCache) return xfpdDedupStoreCache;
+    const raw = xfpdReadStoredObject(XFPD_THREAD_DEDUP_KEY, null);
+    const threads = {};
+    if (raw && raw.threads && typeof raw.threads === 'object') {
+        for (const [tKey, entry] of Object.entries(raw.threads)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const hSet = new Set(Array.isArray(entry.h) ? entry.h : []);
+            const sSet = new Set();
+            hSet.forEach(fp => {
+                const parts = String(fp).split(':');
+                if (parts.length >= 3) {
+                    const sz = Number(parts[1]);
+                    if (sz > 0) sSet.add(sz);
+                }
+            });
+            threads[tKey] = {
+                u: new Set(Array.isArray(entry.u) ? entry.u : []),
+                h: hSet,
+                s: sSet,
+                _t: Number(entry._t || 0) || 0,
+            };
+        }
+    }
+    xfpdDedupStoreCache = { _updatedAt: Number((raw && raw._updatedAt) || 0) || 0, threads };
+    return xfpdDedupStoreCache;
+}
+
+function xfpdGetThreadDedupBucket(explicitThreadKey = null, createIfMissing = false) {
+    const store = xfpdEnsureDedupStore();
+    const tKey = (explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey()) || '_session';
+    let bucket = store.threads[tKey];
+    if (!bucket && createIfMissing) {
+        bucket = { u: new Set(), h: new Set(), s: new Set(), _t: Date.now() };
+        store.threads[tKey] = bucket;
+    }
+    return bucket || null;
+}
+
+function xfpdFlushDedupStoreNow() {
+    if (xfpdDedupFlushTimer) {
+        clearTimeout(xfpdDedupFlushTimer);
+        xfpdDedupFlushTimer = null;
+    }
+    if (!xfpdDedupStoreCache) return;
+    const entries = Object.entries(xfpdDedupStoreCache.threads).filter(([k]) => k !== '_session');
+    entries.sort((a, b) => (Number(b[1]._t || 0) || 0) - (Number(a[1]._t || 0) || 0));
+
+    const serializedThreads = {};
+    for (const [tKey, b] of entries.slice(0, XFPD_DEDUP_MAX_THREADS)) {
+        const uArr = Array.from(b.u);
+        const hArr = Array.from(b.h);
+        serializedThreads[tKey] = {
+            u: uArr.length > XFPD_DEDUP_MAX_ITEMS_PER_THREAD ? uArr.slice(-XFPD_DEDUP_MAX_ITEMS_PER_THREAD) : uArr,
+            h: hArr.length > XFPD_DEDUP_MAX_ITEMS_PER_THREAD ? hArr.slice(-XFPD_DEDUP_MAX_ITEMS_PER_THREAD) : hArr,
+            _t: b._t || Date.now(),
+        };
+    }
+    const payload = { _updatedAt: Date.now(), threads: serializedThreads };
+    xfpdWriteStoredObject(XFPD_THREAD_DEDUP_KEY, payload);
+}
+
+function xfpdScheduleDedupFlush() {
+    if (xfpdDedupFlushTimer) return;
+    xfpdDedupFlushTimer = setTimeout(() => {
+        xfpdDedupFlushTimer = null;
+        try {
+            xfpdFlushDedupStoreNow();
+        } catch (e) {}
+    }, 200);
+}
+
+function xfpdHasSeenThreadUrl(urlKey, explicitThreadKey = null) {
+    if (!urlKey) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.u.has(urlKey));
+}
+
+function xfpdMarkSeenThreadUrl(urlKey, explicitThreadKey = null) {
+    if (!urlKey) return;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, true);
+    bucket.u.add(urlKey);
+    bucket._t = Date.now();
+    xfpdScheduleDedupFlush();
+}
+
+function xfpdHasSeenThreadHash(fingerprint, explicitThreadKey = null) {
+    if (!fingerprint) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.h.has(fingerprint));
+}
+
+function xfpdThreadHasSeenExactSize(byteSize, explicitThreadKey = null) {
+    const n = Number(byteSize || 0) || 0;
+    if (n <= 0) return false;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    return !!(bucket && bucket.s.has(n));
+}
+
+function xfpdMarkSeenThreadHash(fingerprint, explicitThreadKey = null) {
+    if (!fingerprint) return;
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, true);
+    bucket.h.add(fingerprint);
+    const parts = String(fingerprint).split(':');
+    if (parts.length >= 3) {
+        const sz = Number(parts[1]);
+        if (sz > 0) bucket.s.add(sz);
+    }
+    bucket._t = Date.now();
+    xfpdScheduleDedupFlush();
+}
+
+function xfpdGetThreadDedupCount(explicitThreadKey = null) {
+    const bucket = xfpdGetThreadDedupBucket(explicitThreadKey, false);
+    if (!bucket) return 0;
+    return Math.max(bucket.h.size, bucket.u.size);
+}
+
+function xfpdClearThreadDedup(explicitThreadKey = null) {
+    const store = xfpdEnsureDedupStore();
+    const tKey = (explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey()) || '_session';
+    delete store.threads[tKey];
+    xfpdFlushDedupStoreNow();
+}
+
+async function xfpdReadBlobArrayBuffer(blob) {
+    if (!blob) return new ArrayBuffer(0);
+    if (typeof blob.arrayBuffer === 'function') {
+        return await blob.arrayBuffer();
+    }
+    return await new Promise((resolve, reject) => {
+        try {
+            const fr = new FileReader();
+            fr.onload = () => resolve(fr.result || new ArrayBuffer(0));
+            fr.onerror = err => reject(err);
+            fr.readAsArrayBuffer(blob);
+        } catch (e) {
+            resolve(new ArrayBuffer(0));
+        }
+    });
+}
+
+async function xfpdDigestUint8ArrayToTag(bytes) {
+    if (!bytes || !bytes.byteLength) return '';
+    try {
+        const subtle =
+            (typeof crypto !== 'undefined' && crypto && crypto.subtle) ||
+            (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) ||
+            null;
+        if (subtle && typeof subtle.digest === 'function') {
+            const hashBuf = await subtle.digest('SHA-256', bytes);
+            const arr = new Uint8Array(hashBuf, 0, 18); // 144 bits -> compact 24-char base64url
+            let bin = '';
+            for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+            return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+    } catch (e) {}
+    // Fallback FNV-1a + window.sha256 for environments without WebCrypto subtle
+    try {
+        let h1 = 0x811c9dc5;
+        let h2 = 0x01000193;
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            h1 ^= b;
+            h1 = Math.imul(h1, 0x01000193) >>> 0;
+            h2 ^= b + (i & 0xff);
+            h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+        }
+        if (typeof sha256 === 'function') {
+            return String(sha256(`${bytes.length}:${h1}:${h2}`)).slice(0, 24);
+        }
+        return `${h1.toString(36)}_${h2.toString(36)}`;
+    } catch (e) {
+        return '';
+    }
+}
+
+async function xfpdComputeBlobFingerprint(blob) {
+    if (!blob || typeof blob.size !== 'number' || blob.size <= 0) return '';
+    const size = blob.size;
+    try {
+        if (size <= XFPD_FULL_HASH_MAX_BYTES) {
+            const ab = await xfpdReadBlobArrayBuffer(blob);
+            const tag = await xfpdDigestUint8ArrayToTag(new Uint8Array(ab));
+            return tag ? `f:${size}:${tag}` : '';
+        }
+
+        // Sparse 4 x 256 KB zero-copy slice sampling for large videos (> 8 MB): < 0.5ms CPU, 1 MB temp buffer!
+        const chunk = XFPD_SPARSE_CHUNK_BYTES;
+        const offsets = [
+            0,
+            Math.floor(size / 3),
+            Math.floor((size * 2) / 3),
+            Math.max(0, size - chunk),
+        ];
+        const parts = await Promise.all(
+            offsets.map(off => xfpdReadBlobArrayBuffer(blob.slice(off, Math.min(size, off + chunk)))),
+        );
+        const sizeFooter = new TextEncoder().encode(`|sz:${size}`);
+        const totalBytes = parts.reduce((acc, p) => acc + p.byteLength, 0) + sizeFooter.byteLength;
+        const combined = new Uint8Array(totalBytes);
+        let cursor = 0;
+        for (const p of parts) {
+            combined.set(new Uint8Array(p), cursor);
+            cursor += p.byteLength;
+        }
+        combined.set(sizeFooter, cursor);
+        const tag = await xfpdDigestUint8ArrayToTag(combined);
+        return tag ? `s:${size}:${tag}` : '';
+    } catch (e) {
+        return '';
+    }
 }
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
@@ -3127,6 +3357,7 @@ const ui = {
                     (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
                 const vidQual = currentSettings.videoQuality || 'best';
                 const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+                const dedupHistoryCount = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
 
                 const optLayout = (val, label) =>
                     `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
@@ -3142,6 +3373,7 @@ const ui = {
                 <span id="${idPrefix}-scope-badge" class="xfpd-scope-badge" style="color: ${hasThreadCustom ? '#47ba24' : '#959595'};">
                   ${hasThreadCustom ? 'Thread ✓' : 'Default'}
                 </span>
+                <button type="button" id="${idPrefix}-clear-dedup" class="xfpd-mini-btn" title="Clear remembered duplicate hashes/URLs for this thread" style="${dedupHistoryCount > 0 ? '' : 'display:none;'}">Clear Dedup (${dedupHistoryCount})</button>
                 <button type="button" id="${idPrefix}-save-global" class="xfpd-mini-btn" title="Save current settings as the default for new threads">Set Global</button>
                 <button type="button" id="${idPrefix}-reset-thread" class="xfpd-mini-btn" title="Reset this thread back to global defaults" style="${hasThreadCustom ? '' : 'display:none;'}">Reset</button>
               </span>
@@ -3191,9 +3423,9 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(
-                        `${idPrefix}-skip-duplicates`,
-                        'Skip Duplicates',
-                        skipDl ? false : !!currentSettings.skipDuplicates,
+                        `${idPrefix}-content-dedup`,
+                        'Smart Dedup (Byte Hash + URL)',
+                        skipDl ? false : currentSettings.contentDedup !== false,
                         skipDl,
                     ),
                     ui.forms.createCheckbox(
@@ -3258,8 +3490,14 @@ const ui = {
                 if (resetBtn) {
                     resetBtn.style.display = hasThreadCustom ? '' : 'none';
                 }
+                const clearDedupBtn = rootEl.querySelector(`#${idPrefix}-clear-dedup`);
+                if (clearDedupBtn) {
+                    const cnt = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
+                    clearDedupBtn.style.display = cnt > 0 ? '' : 'none';
+                    if (cnt > 0) clearDedupBtn.textContent = `Clear Dedup (${cnt})`;
+                }
 
-                setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
+                setCb('content-dedup', skipDl ? false : settingsObj.contentDedup !== false, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
                 setCb('skip-download', skipDl, false);
@@ -3302,6 +3540,18 @@ const ui = {
                         el.addEventListener(eventType, handler);
                     }
                 };
+
+                bindOne(
+                    'clear-dedup',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdClearThreadDedup === 'function') {
+                            xfpdClearThreadDedup();
+                            ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne(
                     'save-global',
@@ -3381,15 +3631,15 @@ const ui = {
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
-                bindOne('skip-duplicates', e => {
+                bindOne('content-dedup', e => {
                     ensurePreSkip();
-                    settingsObj.skipDuplicates = !!e.target.checked;
+                    settingsObj.contentDedup = !!e.target.checked;
                     if (!settingsObj.skipDownload) {
-                        settingsObj.preSkipDownload.skipDuplicates = settingsObj.skipDuplicates;
+                        settingsObj.preSkipDownload.contentDedup = settingsObj.contentDedup;
                     }
                     notify(
-                        { skipDuplicates: settingsObj.skipDuplicates, preSkipDownload: { ...settingsObj.preSkipDownload } },
-                        ['skipDuplicates'],
+                        { contentDedup: settingsObj.contentDedup, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['contentDedup'],
                     );
                 });
 
@@ -3424,6 +3674,7 @@ const ui = {
                             folderLayout: curLayout,
                             organizeMedia: curLayout === 'media',
                             flatten: curLayout === 'flat',
+                            contentDedup: settingsObj.contentDedup !== false,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
@@ -3438,6 +3689,7 @@ const ui = {
                         settingsObj.folderLayout = restoredLayout;
                         settingsObj.organizeMedia = restoredLayout === 'media';
                         settingsObj.flatten = restoredLayout === 'flat';
+                        settingsObj.contentDedup = settingsObj.preSkipDownload.contentDedup !== false;
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
                     }
@@ -3447,12 +3699,13 @@ const ui = {
                             skipDownload: settingsObj.skipDownload,
                             folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
+                            contentDedup: settingsObj.contentDedup,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'folderLayout', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },
@@ -8526,7 +8779,9 @@ try {
     // 1) If a post includes both single preview links AND an album link resolving to the exact same media,
     //    prefer the album entry (preserving album sequence & album metadata) and drop the duplicate preview.
     // 2) Deduplicate identical canonical URLs within the post and (when running Download Page) across selected posts.
+    const useContentDedup = postSettings.contentDedup !== false;
     let dedupedCount = 0;
+    let runtimeDedupedCount = 0;
     {
         const validResolved = resolved.filter(r => r && r.url);
         const albumKeys = new Set();
@@ -8544,14 +8799,20 @@ try {
         for (const item of validResolved) {
             const hasFolder = !!(item.folderName && String(item.folderName).trim() !== '');
             const key = canonicalizeMediaUrl(item.url);
+            item._canonicalKey = key;
             if (!hasFolder && key && albumKeys.has(key)) {
                 dedupedCount++;
                 log.post.info(postId, `::Skipped single preview (already in album)::: ${item.url}`, postNumber);
                 continue;
             }
-            if (key && (postSeen.has(key) || (sharedSeen && sharedSeen.has(key)))) {
+            if (
+                key &&
+                (postSeen.has(key) ||
+                    (sharedSeen && sharedSeen.has(key)) ||
+                    (useContentDedup && typeof xfpdHasSeenThreadUrl === 'function' && xfpdHasSeenThreadUrl(key)))
+            ) {
                 dedupedCount++;
-                log.post.info(postId, `::Skipped duplicate media URL::: ${item.url}`, postNumber);
+                log.post.info(postId, `::Skipped already-downloaded media URL::: ${item.url}`, postNumber);
                 continue;
             }
             if (key) {
@@ -9234,7 +9495,10 @@ if (tmp.length) {
             if (completed < totalDownloadable) {
                 completed++;
             }
-            if (didSucceed) {
+            if (didSucceed === 'dedup') {
+                dedupedCount++;
+                runtimeDedupedCount++;
+            } else if (didSucceed) {
                 succeededCount++;
             } else {
                 failedCount++;
@@ -10167,8 +10431,81 @@ if (tmp.length) {
                             } catch (e) {}
                         }
 
-const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
-const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : (isEromeCdnUrl(url) ? { Referer: 'https://www.erome.com/' } : null);
+                        const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
+                        const imagebamHeaders = isImagebamCdnUrl(url)
+                            ? { Referer: imagebamRefererForCdn(url) }
+                            : isEromeCdnUrl(url)
+                              ? { Referer: 'https://www.erome.com/' }
+                              : null;
+
+                        // Fast 64 KB Range fingerprint for large DIRECT downloads:
+                        // Skips multi-GB duplicate videos with different filenames before downloading!
+                        let directFingerprint = '';
+                        if (useContentDedup && sizeBytes > 0) {
+                            try {
+                                const probeBuf = await new Promise(resolve => {
+                                    let reqRange = null;
+                                    let settled = false;
+                                    const done = val => {
+                                        if (settled) return;
+                                        settled = true;
+                                        resolve(val);
+                                    };
+                                    try {
+                                        reqRange = GM_xmlhttpRequest({
+                                            method: 'GET',
+                                            url: String(directUrl),
+                                            responseType: 'arraybuffer',
+                                            anonymous: false,
+                                            timeout: 7000,
+                                            headers: {
+                                                Range: 'bytes=0-65535',
+                                                Referer: (imagebamHeaders && imagebamHeaders.Referer) || reflink || directUrl,
+                                            },
+                                            onreadystatechange: r => {
+                                                // If server ignores Range (returns 200 full stream instead of 206), abort immediately!
+                                                if (r.readyState === 2 && r.status && r.status !== 206) {
+                                                    try { reqRange && reqRange.abort(); } catch (e) {}
+                                                    done(null);
+                                                }
+                                            },
+                                            onload: r => {
+                                                if (r.status === 206 && r.response && r.response.byteLength > 0) {
+                                                    done(new Uint8Array(r.response, 0, Math.min(65536, r.response.byteLength)));
+                                                } else {
+                                                    done(null);
+                                                }
+                                            },
+                                            onerror: () => done(null),
+                                            ontimeout: () => done(null),
+                                        });
+                                    } catch (e) {
+                                        done(null);
+                                    }
+                                });
+                                if (probeBuf && probeBuf.byteLength > 0) {
+                                    const tag = await xfpdDigestUint8ArrayToTag(probeBuf);
+                                    if (tag) directFingerprint = `d:${sizeBytes}:${tag}`;
+                                }
+                            } catch (e) {}
+
+                            if (directFingerprint && xfpdHasSeenThreadHash(directFingerprint)) {
+                                usedPaths.delete(fn);
+                                log.post.info(
+                                    postId,
+                                    `::Skipped duplicate DIRECT content (identical size + 64KB header hash)::: ${basename}`,
+                                    postNumber,
+                                );
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                                return;
+                            }
+                        }
+
                         let lastDirectUiAt = 0;
                         const dlOpts = {
                             url: directUrl,
@@ -10192,6 +10529,11 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                                 }
                             },
                             onload: () => {
+                                if (useContentDedup) {
+                                    const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                    if (cKey) xfpdMarkSeenThreadUrl(cKey);
+                                    if (directFingerprint) xfpdMarkSeenThreadHash(directFingerprint);
+                                }
                                 finishBatchItem(true);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -11001,6 +11343,39 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
                         }
 
+                        // Content-level byte deduplication (catches identical photos/videos even with completely different filenames or hosts!)
+                        let blobFingerprint = '';
+                        if (useContentDedup && fileBlob && typeof fileBlob.size === 'number' && fileBlob.size > 0) {
+                            blobFingerprint = await xfpdComputeBlobFingerprint(fileBlob);
+                            if (isCancelled()) {
+                                notifyBatchStep();
+                                return;
+                            }
+                            if (blobFingerprint && xfpdHasSeenThreadHash(blobFingerprint)) {
+                                log.separator(postId);
+                                log.post.info(
+                                    postId,
+                                    `::Skipped duplicate content (identical byte hash)::: ${basename} ::from:: ${url}`,
+                                    postNumber,
+                                );
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                                return;
+                            }
+                            if (blobFingerprint) {
+                                xfpdMarkSeenThreadHash(blobFingerprint);
+                            }
+                        }
+
+                        if (useContentDedup) {
+                            const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                            if (cKey) xfpdMarkSeenThreadUrl(cKey);
+                        }
+
                         const original = basename;
 
                         if (['flat', 'albums'].includes(resolveEffectiveLayout()) && filenames.find(f => f.original === basename)) {
@@ -11370,9 +11745,11 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         }
     } catch (e) {}
 
+    const effectiveTargetTotal = Math.max(0, totalDownloadable - runtimeDedupedCount);
+
     if (postSettings.skipDownload) {
         h.hide(statusLabel);
-    } else if (totalDownloadable === 0 && dedupedCount > 0) {
+    } else if (effectiveTargetTotal === 0 && dedupedCount > 0 && failedCount === 0) {
         h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
         h.ui.setText(statusLabel, `All ${dedupedCount} item(s) already downloaded (duplicates skipped)`);
         h.show(statusLabel);
@@ -11381,13 +11758,17 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         h.ui.setText(statusLabel, `0 / ${totalResources} resolved`);
         appendCopyLogButton(statusLabel, postId);
         h.show(statusLabel);
-    } else if (failedCount > 0 || succeededCount < totalDownloadable) {
+    } else if (failedCount > 0 || succeededCount < effectiveTargetTotal) {
         h.ui.setElProps(statusLabel, { color: succeededCount > 0 ? '#e8a838' : '#d9534f', fontWeight: 'bold' });
         h.ui.setText(
             statusLabel,
-            `${succeededCount} / ${totalDownloadable} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}`,
+            `${succeededCount} / ${effectiveTargetTotal} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}${dedupedCount > 0 ? ` · ${dedupedCount} dupes skipped` : ''}`,
         );
         appendCopyLogButton(statusLabel, postId);
+        h.show(statusLabel);
+    } else if (runtimeDedupedCount > 0) {
+        h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `${succeededCount} saved · ${dedupedCount} duplicate(s) skipped`);
         h.show(statusLabel);
     } else {
         h.hide(statusLabel);
@@ -11397,7 +11778,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         callbacks &&
             callbacks.onComplete &&
             callbacks.onComplete(
-                totalDownloadable,
+                effectiveTargetTotal,
                 postSettings.skipDownload ? totalDownloadable : succeededCount,
                 failedCount,
                 dedupedCount,

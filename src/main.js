@@ -4628,7 +4628,9 @@ try {
     // 1) If a post includes both single preview links AND an album link resolving to the exact same media,
     //    prefer the album entry (preserving album sequence & album metadata) and drop the duplicate preview.
     // 2) Deduplicate identical canonical URLs within the post and (when running Download Page) across selected posts.
+    const useContentDedup = postSettings.contentDedup !== false;
     let dedupedCount = 0;
+    let runtimeDedupedCount = 0;
     {
         const validResolved = resolved.filter(r => r && r.url);
         const albumKeys = new Set();
@@ -4646,14 +4648,20 @@ try {
         for (const item of validResolved) {
             const hasFolder = !!(item.folderName && String(item.folderName).trim() !== '');
             const key = canonicalizeMediaUrl(item.url);
+            item._canonicalKey = key;
             if (!hasFolder && key && albumKeys.has(key)) {
                 dedupedCount++;
                 log.post.info(postId, `::Skipped single preview (already in album)::: ${item.url}`, postNumber);
                 continue;
             }
-            if (key && (postSeen.has(key) || (sharedSeen && sharedSeen.has(key)))) {
+            if (
+                key &&
+                (postSeen.has(key) ||
+                    (sharedSeen && sharedSeen.has(key)) ||
+                    (useContentDedup && typeof xfpdHasSeenThreadUrl === 'function' && xfpdHasSeenThreadUrl(key)))
+            ) {
                 dedupedCount++;
-                log.post.info(postId, `::Skipped duplicate media URL::: ${item.url}`, postNumber);
+                log.post.info(postId, `::Skipped already-downloaded media URL::: ${item.url}`, postNumber);
                 continue;
             }
             if (key) {
@@ -5336,7 +5344,10 @@ if (tmp.length) {
             if (completed < totalDownloadable) {
                 completed++;
             }
-            if (didSucceed) {
+            if (didSucceed === 'dedup') {
+                dedupedCount++;
+                runtimeDedupedCount++;
+            } else if (didSucceed) {
                 succeededCount++;
             } else {
                 failedCount++;
@@ -6269,8 +6280,81 @@ if (tmp.length) {
                             } catch (e) {}
                         }
 
-const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
-const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : (isEromeCdnUrl(url) ? { Referer: 'https://www.erome.com/' } : null);
+                        const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
+                        const imagebamHeaders = isImagebamCdnUrl(url)
+                            ? { Referer: imagebamRefererForCdn(url) }
+                            : isEromeCdnUrl(url)
+                              ? { Referer: 'https://www.erome.com/' }
+                              : null;
+
+                        // Fast 64 KB Range fingerprint for large DIRECT downloads:
+                        // Skips multi-GB duplicate videos with different filenames before downloading!
+                        let directFingerprint = '';
+                        if (useContentDedup && sizeBytes > 0) {
+                            try {
+                                const probeBuf = await new Promise(resolve => {
+                                    let reqRange = null;
+                                    let settled = false;
+                                    const done = val => {
+                                        if (settled) return;
+                                        settled = true;
+                                        resolve(val);
+                                    };
+                                    try {
+                                        reqRange = GM_xmlhttpRequest({
+                                            method: 'GET',
+                                            url: String(directUrl),
+                                            responseType: 'arraybuffer',
+                                            anonymous: false,
+                                            timeout: 7000,
+                                            headers: {
+                                                Range: 'bytes=0-65535',
+                                                Referer: (imagebamHeaders && imagebamHeaders.Referer) || reflink || directUrl,
+                                            },
+                                            onreadystatechange: r => {
+                                                // If server ignores Range (returns 200 full stream instead of 206), abort immediately!
+                                                if (r.readyState === 2 && r.status && r.status !== 206) {
+                                                    try { reqRange && reqRange.abort(); } catch (e) {}
+                                                    done(null);
+                                                }
+                                            },
+                                            onload: r => {
+                                                if (r.status === 206 && r.response && r.response.byteLength > 0) {
+                                                    done(new Uint8Array(r.response, 0, Math.min(65536, r.response.byteLength)));
+                                                } else {
+                                                    done(null);
+                                                }
+                                            },
+                                            onerror: () => done(null),
+                                            ontimeout: () => done(null),
+                                        });
+                                    } catch (e) {
+                                        done(null);
+                                    }
+                                });
+                                if (probeBuf && probeBuf.byteLength > 0) {
+                                    const tag = await xfpdDigestUint8ArrayToTag(probeBuf);
+                                    if (tag) directFingerprint = `d:${sizeBytes}:${tag}`;
+                                }
+                            } catch (e) {}
+
+                            if (directFingerprint && xfpdHasSeenThreadHash(directFingerprint)) {
+                                usedPaths.delete(fn);
+                                log.post.info(
+                                    postId,
+                                    `::Skipped duplicate DIRECT content (identical size + 64KB header hash)::: ${basename}`,
+                                    postNumber,
+                                );
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                                return;
+                            }
+                        }
+
                         let lastDirectUiAt = 0;
                         const dlOpts = {
                             url: directUrl,
@@ -6294,6 +6378,11 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                                 }
                             },
                             onload: () => {
+                                if (useContentDedup) {
+                                    const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                    if (cKey) xfpdMarkSeenThreadUrl(cKey);
+                                    if (directFingerprint) xfpdMarkSeenThreadHash(directFingerprint);
+                                }
                                 finishBatchItem(true);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
@@ -7103,6 +7192,39 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
                         }
 
+                        // Content-level byte deduplication (catches identical photos/videos even with completely different filenames or hosts!)
+                        let blobFingerprint = '';
+                        if (useContentDedup && fileBlob && typeof fileBlob.size === 'number' && fileBlob.size > 0) {
+                            blobFingerprint = await xfpdComputeBlobFingerprint(fileBlob);
+                            if (isCancelled()) {
+                                notifyBatchStep();
+                                return;
+                            }
+                            if (blobFingerprint && xfpdHasSeenThreadHash(blobFingerprint)) {
+                                log.separator(postId);
+                                log.post.info(
+                                    postId,
+                                    `::Skipped duplicate content (identical byte hash)::: ${basename} ::from:: ${url}`,
+                                    postNumber,
+                                );
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                                return;
+                            }
+                            if (blobFingerprint) {
+                                xfpdMarkSeenThreadHash(blobFingerprint);
+                            }
+                        }
+
+                        if (useContentDedup) {
+                            const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                            if (cKey) xfpdMarkSeenThreadUrl(cKey);
+                        }
+
                         const original = basename;
 
                         if (['flat', 'albums'].includes(resolveEffectiveLayout()) && filenames.find(f => f.original === basename)) {
@@ -7472,9 +7594,11 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         }
     } catch (e) {}
 
+    const effectiveTargetTotal = Math.max(0, totalDownloadable - runtimeDedupedCount);
+
     if (postSettings.skipDownload) {
         h.hide(statusLabel);
-    } else if (totalDownloadable === 0 && dedupedCount > 0) {
+    } else if (effectiveTargetTotal === 0 && dedupedCount > 0 && failedCount === 0) {
         h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
         h.ui.setText(statusLabel, `All ${dedupedCount} item(s) already downloaded (duplicates skipped)`);
         h.show(statusLabel);
@@ -7483,13 +7607,17 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         h.ui.setText(statusLabel, `0 / ${totalResources} resolved`);
         appendCopyLogButton(statusLabel, postId);
         h.show(statusLabel);
-    } else if (failedCount > 0 || succeededCount < totalDownloadable) {
+    } else if (failedCount > 0 || succeededCount < effectiveTargetTotal) {
         h.ui.setElProps(statusLabel, { color: succeededCount > 0 ? '#e8a838' : '#d9534f', fontWeight: 'bold' });
         h.ui.setText(
             statusLabel,
-            `${succeededCount} / ${totalDownloadable} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}`,
+            `${succeededCount} / ${effectiveTargetTotal} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}${dedupedCount > 0 ? ` · ${dedupedCount} dupes skipped` : ''}`,
         );
         appendCopyLogButton(statusLabel, postId);
+        h.show(statusLabel);
+    } else if (runtimeDedupedCount > 0) {
+        h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `${succeededCount} saved · ${dedupedCount} duplicate(s) skipped`);
         h.show(statusLabel);
     } else {
         h.hide(statusLabel);
@@ -7499,7 +7627,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         callbacks &&
             callbacks.onComplete &&
             callbacks.onComplete(
-                totalDownloadable,
+                effectiveTargetTotal,
                 postSettings.skipDownload ? totalDownloadable : succeededCount,
                 failedCount,
                 dedupedCount,
