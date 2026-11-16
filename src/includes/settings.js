@@ -42,13 +42,17 @@ const settings = {
     },
 };
 
-// --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
+// --- Persistent User Preferences (Per-Thread + Global Defaults) ---------------------------------
 const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
+const XFPD_THREAD_PREFS_KEY = 'xfpd_thread_prefs';
+const XFPD_MAX_STORED_THREADS = 500;
 
 const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
+const XFPD_VALID_FOLDER_LAYOUTS = ['media', 'post', 'post-media', 'flat', 'albums'];
 
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
+    folderLayout: 'media',
     organizeMedia: true,
     smartMirrors: true,
     autoUnlockReaction: true,
@@ -68,9 +72,44 @@ const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
 const linkHintNameByUrl = new Map();
 const pixeldrainInfoById = new Map();
 
-let xfpdPrefsMirror = null;
+let xfpdGlobalPrefsMirror = null;
+let xfpdThreadPrefsMapMirror = null;
 let xfpdPrefsListenerBound = false;
 const xfpdPrefsSubscribers = new Set();
+
+function xfpdGetCurrentThreadKey() {
+    try {
+        if (typeof location === 'undefined') return '';
+        const host = String(location.hostname || '').toLowerCase();
+        const forumScope = /(^|\.)socialmediagirls\.com$/i.test(host)
+            ? 'smg'
+            : /(^|\.)simpcity\.[a-z]+$/i.test(host)
+              ? 'simpcity'
+              : host || 'forum';
+        const path = String(location.pathname || '');
+        const mId = /\/threads\/(?:[^\/?#]+\.)?(\d+)(?:\/|$)/i.exec(path);
+        if (mId && mId[1]) {
+            return `${forumScope}:${mId[1]}`;
+        }
+        const mSlug = /\/threads\/([^\/?#]+)/i.exec(path);
+        if (mSlug && mSlug[1]) {
+            return `${forumScope}:${mSlug[1].toLowerCase()}`;
+        }
+    } catch (e) {}
+    return '';
+}
+
+function xfpdDeriveFolderLayout(src) {
+    if (src && XFPD_VALID_FOLDER_LAYOUTS.includes(src.folderLayout)) {
+        return src.folderLayout;
+    }
+    if (src && typeof src.organizeMedia === 'boolean') {
+        if (src.organizeMedia) return 'media';
+        return src.flatten ? 'flat' : 'albums';
+    }
+    if (src && src.flatten === true) return 'flat';
+    return XFPD_DEFAULT_USER_PREFS.folderLayout;
+}
 
 function xfpdNormalizeUserPrefs(rawObj) {
     const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
@@ -80,17 +119,27 @@ function xfpdNormalizeUserPrefs(rawObj) {
             normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
                 ? src.videoQuality
                 : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else if (key === 'folderLayout') {
+            normalized.folderLayout = xfpdDeriveFolderLayout(src);
         } else {
             normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
         }
     }
+    // Keep legacy boolean flags synchronized with folderLayout for backward compatibility.
+    normalized.organizeMedia = normalized.folderLayout === 'media';
+    normalized.flatten = normalized.folderLayout === 'flat';
+
     const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
+    const preLayout =
+        pre && XFPD_VALID_FOLDER_LAYOUTS.includes(pre.folderLayout)
+            ? pre.folderLayout
+            : normalized.skipDownload
+              ? 'media'
+              : normalized.folderLayout;
     normalized.preSkipDownload = {
-        organizeMedia:
-            pre && typeof pre.organizeMedia === 'boolean'
-                ? pre.organizeMedia
-                : (normalized.skipDownload ? true : normalized.organizeMedia),
-        flatten: pre && typeof pre.flatten === 'boolean' ? pre.flatten : (normalized.skipDownload ? false : normalized.flatten),
+        folderLayout: preLayout,
+        organizeMedia: preLayout === 'media',
+        flatten: preLayout === 'flat',
         skipDuplicates:
             pre && typeof pre.skipDuplicates === 'boolean'
                 ? pre.skipDuplicates
@@ -121,55 +170,18 @@ function xfpdParsePrefsJson(raw) {
     }
 }
 
-function xfpdBindUserPrefsStorageListener() {
-    if (xfpdPrefsListenerBound) return;
-    const addListener =
-        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
-        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
-            ? window.GM_addValueChangeListener.bind(window)
-            : null);
-    if (!addListener) return;
-    xfpdPrefsListenerBound = true;
-    try {
-        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
-            const parsed = xfpdParsePrefsJson(newVal);
-            if (!parsed) return;
-            const prev = xfpdPrefsMirror;
-            xfpdPrefsMirror = xfpdNormalizeUserPrefs(parsed);
-            try {
-                if (typeof localStorage !== 'undefined' && localStorage) {
-                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdPrefsMirror));
-                }
-            } catch (e) {}
-            if (remote) {
-                const changed = prev
-                    ? XFPD_USER_PREF_KEYS.filter(k => prev[k] !== xfpdPrefsMirror[k])
-                    : XFPD_USER_PREF_KEYS.slice();
-                if (changed.length) {
-                    xfpdPrefsSubscribers.forEach(cb => {
-                        try {
-                            cb(xfpdNormalizeUserPrefs(xfpdPrefsMirror), changed, 'storage');
-                        } catch (e) {}
-                    });
-                }
-            }
-        });
-    } catch (e) {}
-}
-
-function xfpdLoadUserPrefs() {
-    xfpdBindUserPrefsStorageListener();
+function xfpdReadStoredObject(storageKey, mirrorObj) {
     const candidates = [];
-    if (xfpdPrefsMirror) candidates.push(xfpdPrefsMirror);
+    if (mirrorObj && typeof mirrorObj === 'object') candidates.push(mirrorObj);
     try {
         if (typeof GM_getValue === 'function') {
-            const gmParsed = xfpdParsePrefsJson(GM_getValue(XFPD_USER_PREFS_KEY, ''));
+            const gmParsed = xfpdParsePrefsJson(GM_getValue(storageKey, ''));
             if (gmParsed) candidates.push(gmParsed);
         }
     } catch (e) {}
     try {
         if (typeof localStorage !== 'undefined' && localStorage) {
-            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(XFPD_USER_PREFS_KEY));
+            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(storageKey));
             if (lsParsed) candidates.push(lsParsed);
         }
     } catch (e) {}
@@ -186,14 +198,128 @@ function xfpdLoadUserPrefs() {
             chosen = c;
         }
     }
+    return chosen;
+}
 
+function xfpdWriteStoredObject(storageKey, obj) {
+    const serialized = JSON.stringify(obj);
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(storageKey, serialized);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            localStorage.setItem(storageKey, serialized);
+        }
+    } catch (e) {}
+}
+
+function xfpdLoadGlobalPrefs() {
+    const chosen = xfpdReadStoredObject(XFPD_USER_PREFS_KEY, xfpdGlobalPrefsMirror);
     const normalized = xfpdNormalizeUserPrefs(chosen);
-    xfpdPrefsMirror = normalized;
+    xfpdGlobalPrefsMirror = normalized;
     return xfpdNormalizeUserPrefs(normalized);
 }
 
+function xfpdLoadThreadPrefsMap() {
+    const chosen = xfpdReadStoredObject(XFPD_THREAD_PREFS_KEY, xfpdThreadPrefsMapMirror);
+    const rawThreads = chosen && chosen.threads && typeof chosen.threads === 'object' ? chosen.threads : {};
+    const mapObj = {
+        _updatedAt: Number((chosen && chosen._updatedAt) || 0) || 0,
+        threads: { ...rawThreads },
+    };
+    xfpdThreadPrefsMapMirror = mapObj;
+    return mapObj;
+}
+
+function xfpdHasThreadPrefs(threadKey = xfpdGetCurrentThreadKey()) {
+    if (!threadKey) return false;
+    const mapObj = xfpdLoadThreadPrefsMap();
+    return !!(mapObj.threads && mapObj.threads[threadKey] && typeof mapObj.threads[threadKey] === 'object');
+}
+
+function xfpdBindUserPrefsStorageListener() {
+    if (xfpdPrefsListenerBound) return;
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+    if (!addListener) return;
+    xfpdPrefsListenerBound = true;
+
+    const notifyRemoteUpdate = () => {
+        const effective = xfpdLoadUserPrefs();
+        xfpdPrefsSubscribers.forEach(cb => {
+            try {
+                cb(effective, XFPD_USER_PREF_KEYS.slice(), 'storage');
+            } catch (e) {}
+        });
+    };
+
+    try {
+        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed) return;
+            xfpdGlobalPrefsMirror = xfpdNormalizeUserPrefs(parsed);
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdGlobalPrefsMirror));
+                }
+            } catch (e) {}
+            if (remote && !xfpdHasThreadPrefs()) {
+                notifyRemoteUpdate();
+            }
+        });
+    } catch (e) {}
+
+    try {
+        addListener(XFPD_THREAD_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed || typeof parsed !== 'object') return;
+            xfpdThreadPrefsMapMirror = {
+                _updatedAt: Number(parsed._updatedAt || 0) || 0,
+                threads: parsed.threads && typeof parsed.threads === 'object' ? { ...parsed.threads } : {},
+            };
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_THREAD_PREFS_KEY, JSON.stringify(xfpdThreadPrefsMapMirror));
+                }
+            } catch (e) {}
+            if (remote) {
+                notifyRemoteUpdate();
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdLoadUserPrefs(explicitThreadKey = null) {
+    xfpdBindUserPrefsStorageListener();
+    const globalPrefs = xfpdLoadGlobalPrefs();
+    const tKey = explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey();
+    if (!tKey) {
+        return globalPrefs;
+    }
+    const mapObj = xfpdLoadThreadPrefsMap();
+    const threadEntry = mapObj.threads && mapObj.threads[tKey];
+    if (!threadEntry || typeof threadEntry !== 'object') {
+        return globalPrefs;
+    }
+    return xfpdNormalizeUserPrefs({
+        ...globalPrefs,
+        ...threadEntry,
+        preSkipDownload: {
+            ...globalPrefs.preSkipDownload,
+            ...(threadEntry.preSkipDownload && typeof threadEntry.preSkipDownload === 'object' ? threadEntry.preSkipDownload : {}),
+        },
+    });
+}
+
 function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
-    const current = xfpdLoadUserPrefs();
+    const tKey = xfpdGetCurrentThreadKey();
+    const current = xfpdLoadUserPrefs(tKey);
+    const nextStamp = Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1);
     const merged = {
         ...current,
         ...(patch && typeof patch === 'object' ? patch : {}),
@@ -201,7 +327,7 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
             ...current.preSkipDownload,
             ...(patch && patch.preSkipDownload && typeof patch.preSkipDownload === 'object' ? patch.preSkipDownload : {}),
         },
-        _updatedAt: Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1),
+        _updatedAt: nextStamp,
     };
     const next = xfpdNormalizeUserPrefs(merged);
     const changedKeys =
@@ -209,18 +335,23 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
             ? explicitChangedKeys.filter(k => XFPD_USER_PREF_KEYS.includes(k))
             : XFPD_USER_PREF_KEYS.filter(k => current[k] !== next[k]);
 
-    xfpdPrefsMirror = next;
-    const serialized = JSON.stringify(next);
-    try {
-        if (typeof GM_setValue === 'function') {
-            GM_setValue(XFPD_USER_PREFS_KEY, serialized);
+    if (tKey) {
+        const mapObj = xfpdLoadThreadPrefsMap();
+        mapObj.threads[tKey] = next;
+        mapObj._updatedAt = Math.max(Date.now(), (Number(mapObj._updatedAt || 0) || 0) + 1);
+
+        // Bound stored thread count via LRU (_updatedAt) so storage stays compact forever.
+        const entries = Object.entries(mapObj.threads);
+        if (entries.length > XFPD_MAX_STORED_THREADS) {
+            entries.sort((a, b) => (Number(b[1]?._updatedAt || 0) || 0) - (Number(a[1]?._updatedAt || 0) || 0));
+            mapObj.threads = Object.fromEntries(entries.slice(0, XFPD_MAX_STORED_THREADS));
         }
-    } catch (e) {}
-    try {
-        if (typeof localStorage !== 'undefined' && localStorage) {
-            localStorage.setItem(XFPD_USER_PREFS_KEY, serialized);
-        }
-    } catch (e) {}
+        xfpdThreadPrefsMapMirror = mapObj;
+        xfpdWriteStoredObject(XFPD_THREAD_PREFS_KEY, mapObj);
+    } else {
+        xfpdGlobalPrefsMirror = next;
+        xfpdWriteStoredObject(XFPD_USER_PREFS_KEY, next);
+    }
 
     xfpdPrefsSubscribers.forEach(cb => {
         try {
@@ -229,6 +360,39 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
     });
 
     return xfpdNormalizeUserPrefs(next);
+}
+
+function xfpdSaveGlobalDefaultPrefs(prefsSnapshot = null) {
+    const base = prefsSnapshot && typeof prefsSnapshot === 'object' ? prefsSnapshot : xfpdLoadUserPrefs();
+    const currentGlobal = xfpdLoadGlobalPrefs();
+    const nextGlobal = xfpdNormalizeUserPrefs({
+        ...currentGlobal,
+        ...base,
+        _updatedAt: Math.max(Date.now(), (Number(currentGlobal._updatedAt || 0) || 0) + 1),
+    });
+    xfpdGlobalPrefsMirror = nextGlobal;
+    xfpdWriteStoredObject(XFPD_USER_PREFS_KEY, nextGlobal);
+    return xfpdNormalizeUserPrefs(nextGlobal);
+}
+
+function xfpdResetThreadPrefs(explicitThreadKey = null) {
+    const tKey = explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey();
+    if (tKey) {
+        const mapObj = xfpdLoadThreadPrefsMap();
+        if (mapObj.threads && Object.prototype.hasOwnProperty.call(mapObj.threads, tKey)) {
+            delete mapObj.threads[tKey];
+            mapObj._updatedAt = Math.max(Date.now(), (Number(mapObj._updatedAt || 0) || 0) + 1);
+            xfpdThreadPrefsMapMirror = mapObj;
+            xfpdWriteStoredObject(XFPD_THREAD_PREFS_KEY, mapObj);
+        }
+    }
+    const fallbackGlobal = xfpdLoadGlobalPrefs();
+    xfpdPrefsSubscribers.forEach(cb => {
+        try {
+            cb(xfpdNormalizeUserPrefs(fallbackGlobal), XFPD_USER_PREF_KEYS.slice(), 'page');
+        } catch (e) {}
+    });
+    return fallbackGlobal;
 }
 
 function xfpdOnUserPrefsChange(cb) {
@@ -242,6 +406,7 @@ function xfpdCreatePostSettings() {
     const prefs = xfpdLoadUserPrefs();
     const postSettings = {
         zipped: prefs.zipped,
+        folderLayout: prefs.folderLayout,
         organizeMedia: prefs.organizeMedia,
         smartMirrors: prefs.smartMirrors,
         autoUnlockReaction: prefs.autoUnlockReaction,

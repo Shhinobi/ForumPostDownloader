@@ -197,25 +197,46 @@ const ui = {
        */
             createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
                 const skipDl = !!currentSettings.skipDownload;
-                const orgMedia = skipDl ? false : currentSettings.organizeMedia !== false;
                 const smartMirrors = currentSettings.smartMirrors !== false;
+                const layoutVal =
+                    currentSettings.folderLayout ||
+                    (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
                 const vidQual = currentSettings.videoQuality || 'best';
-                const opt = (val, label) => `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+
+                const optLayout = (val, label) =>
+                    `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const optQual = (val, label) =>
+                    `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
+
                 return [
                     `
           <div class="menu-row">
-            <div style="font-weight: bold; margin-top:3px; margin-bottom: 4px; color: #3DB7C7;">
-                Settings
+            <div class="xfpd-settings-head">
+              <span style="font-weight: bold; color: #3DB7C7;">Settings</span>
+              <span class="xfpd-scope-actions">
+                <span id="${idPrefix}-scope-badge" class="xfpd-scope-badge" style="color: ${hasThreadCustom ? '#47ba24' : '#959595'};">
+                  ${hasThreadCustom ? 'Thread ✓' : 'Default'}
+                </span>
+                <button type="button" id="${idPrefix}-save-global" class="xfpd-mini-btn" title="Save current settings as the default for new threads">Set Global</button>
+                <button type="button" id="${idPrefix}-reset-thread" class="xfpd-mini-btn" title="Reset this thread back to global defaults" style="${hasThreadCustom ? '' : 'display:none;'}">Reset</button>
+              </span>
             </div>
           </div>
           `,
                     ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
-                    ui.forms.createCheckbox(
-                        `${idPrefix}-organize-media`,
-                        'Organize Media (Photos/Videos)',
-                        orgMedia,
-                        skipDl,
-                    ),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-folder-layout">Folder Layout</label>
+            <select id="${idPrefix}-folder-layout" class="xfpd-select" ${skipDl ? 'disabled="disabled"' : ''}>
+              ${optLayout('media', 'Photos & Videos')}
+              ${optLayout('post', 'Per Post (1 Folder/Post)')}
+              ${optLayout('post-media', 'Per Post (Photos/Videos)')}
+              ${optLayout('flat', 'Flat (Single Folder)')}
+              ${optLayout('albums', 'Original Host Folders')}
+            </select>
+          </div>
+          `,
                     ui.forms.createCheckbox(
                         `${idPrefix}-smart-mirrors`,
                         'Smart Mirrors (Auto-Fallback)',
@@ -232,19 +253,13 @@ const ui = {
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
             <select id="${idPrefix}-video-quality" class="xfpd-select">
-              ${opt('best', 'Best Available (4K)')}
-              ${opt('1080p', 'Max 1080p')}
-              ${opt('720p', 'Max 720p')}
-              ${opt('all', 'All Resolutions')}
+              ${optQual('best', 'Best Available (4K)')}
+              ${optQual('1080p', 'Max 1080p')}
+              ${optQual('720p', 'Max 720p')}
+              ${optQual('all', 'All Resolutions')}
             </select>
           </div>
           `,
-                    ui.forms.createCheckbox(
-                        `${idPrefix}-flatten`,
-                        'Flatten',
-                        skipDl || orgMedia ? false : !!currentSettings.flatten,
-                        skipDl || orgMedia,
-                    ),
                     ui.forms.createCheckbox(
                         `${idPrefix}-skip-duplicates`,
                         'Skip Duplicates',
@@ -282,17 +297,37 @@ const ui = {
                     }
                 };
                 const skipDl = !!settingsObj.skipDownload;
-                const orgMedia = skipDl ? false : settingsObj.organizeMedia !== false;
                 setCb('zipped', settingsObj.zipped, false);
-                setCb('organize-media', orgMedia, skipDl);
+
+                const layoutEl = rootEl.querySelector(`#${idPrefix}-folder-layout`);
+                if (layoutEl) {
+                    const lay =
+                        settingsObj.folderLayout ||
+                        (settingsObj.organizeMedia !== false ? 'media' : settingsObj.flatten ? 'flat' : 'albums');
+                    if (layoutEl.value !== lay) layoutEl.value = lay;
+                    layoutEl.disabled = skipDl;
+                }
+
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
                 setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
+
                 const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
                 if (qualEl) {
                     const q = settingsObj.videoQuality || 'best';
                     if (qualEl.value !== q) qualEl.value = q;
                 }
-                setCb('flatten', skipDl || orgMedia ? false : settingsObj.flatten, skipDl || orgMedia);
+
+                const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+                const badgeEl = rootEl.querySelector(`#${idPrefix}-scope-badge`);
+                if (badgeEl) {
+                    badgeEl.textContent = hasThreadCustom ? 'Thread ✓' : 'Default';
+                    badgeEl.style.color = hasThreadCustom ? '#47ba24' : '#959595';
+                }
+                const resetBtn = rootEl.querySelector(`#${idPrefix}-reset-thread`);
+                if (resetBtn) {
+                    resetBtn.style.display = hasThreadCustom ? '' : 'none';
+                }
+
                 setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
@@ -300,7 +335,7 @@ const ui = {
                 setCb('verify-bunkr-links', settingsObj.verifyBunkrLinks, false);
             },
             /**
-       * Binds change handlers once per form element for the settings checkboxes.
+       * Binds change handlers once per form element for the settings controls.
        * @param rootEl
        * @param idPrefix
        * @param settingsObj
@@ -314,42 +349,84 @@ const ui = {
                     if (typeof onSettingChange === 'function') {
                         onSettingChange(patch, keys);
                     }
+                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
                 };
 
                 const ensurePreSkip = () => {
                     if (!settingsObj.preSkipDownload || typeof settingsObj.preSkipDownload !== 'object') {
                         settingsObj.preSkipDownload = {
-                            organizeMedia: settingsObj.organizeMedia !== false,
-                            flatten: !!settingsObj.flatten,
+                            folderLayout: settingsObj.folderLayout || 'media',
+                            organizeMedia: (settingsObj.folderLayout || 'media') === 'media',
+                            flatten: settingsObj.folderLayout === 'flat',
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
                     }
                 };
 
-                const bindOne = (suffix, handler) => {
+                const bindOne = (suffix, handler, eventType = 'change') => {
                     const el = rootEl.querySelector(`#${idPrefix}-${suffix}`);
                     if (el && el.dataset.xfpdBound !== '1') {
                         el.dataset.xfpdBound = '1';
-                        el.addEventListener('change', handler);
+                        el.addEventListener(eventType, handler);
                     }
                 };
+
+                bindOne(
+                    'save-global',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdSaveGlobalDefaultPrefs === 'function') {
+                            xfpdSaveGlobalDefaultPrefs(settingsObj);
+                            const btn = e.currentTarget;
+                            if (btn) {
+                                const orig = btn.textContent;
+                                btn.textContent = 'Saved!';
+                                setTimeout(() => {
+                                    if (btn.isConnected) btn.textContent = orig;
+                                }, 1200);
+                            }
+                        }
+                    },
+                    'click',
+                );
+
+                bindOne(
+                    'reset-thread',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdResetThreadPrefs === 'function') {
+                            xfpdResetThreadPrefs();
+                            ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne('zipped', e => {
                     settingsObj.zipped = !!e.target.checked;
                     notify({ zipped: settingsObj.zipped }, ['zipped']);
                 });
 
-                bindOne('organize-media', e => {
+                bindOne('folder-layout', e => {
                     ensurePreSkip();
-                    settingsObj.organizeMedia = !!e.target.checked;
+                    const layout = e.target.value || 'media';
+                    settingsObj.folderLayout = layout;
+                    settingsObj.organizeMedia = layout === 'media';
+                    settingsObj.flatten = layout === 'flat';
                     if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.folderLayout = layout;
                         settingsObj.preSkipDownload.organizeMedia = settingsObj.organizeMedia;
+                        settingsObj.preSkipDownload.flatten = settingsObj.flatten;
                     }
-                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
                     notify(
-                        { organizeMedia: settingsObj.organizeMedia, preSkipDownload: { ...settingsObj.preSkipDownload } },
-                        ['organizeMedia'],
+                        {
+                            folderLayout: layout,
+                            organizeMedia: settingsObj.organizeMedia,
+                            flatten: settingsObj.flatten,
+                            preSkipDownload: { ...settingsObj.preSkipDownload },
+                        },
+                        ['folderLayout', 'organizeMedia', 'flatten'],
                     );
                 });
 
@@ -366,15 +443,6 @@ const ui = {
                 bindOne('video-quality', e => {
                     settingsObj.videoQuality = e.target.value || 'best';
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
-                });
-
-                bindOne('flatten', e => {
-                    ensurePreSkip();
-                    settingsObj.flatten = !!e.target.checked;
-                    if (!settingsObj.skipDownload) {
-                        settingsObj.preSkipDownload.flatten = settingsObj.flatten;
-                    }
-                    notify({ flatten: settingsObj.flatten, preSkipDownload: { ...settingsObj.preSkipDownload } }, ['flatten']);
                 });
 
                 bindOne('skip-duplicates', e => {
@@ -415,9 +483,11 @@ const ui = {
                     ensurePreSkip();
                     const checked = !!e.target.checked;
                     if (checked) {
+                        const curLayout = settingsObj.folderLayout || 'media';
                         settingsObj.preSkipDownload = {
-                            organizeMedia: settingsObj.organizeMedia !== false,
-                            flatten: !!settingsObj.flatten,
+                            folderLayout: curLayout,
+                            organizeMedia: curLayout === 'media',
+                            flatten: curLayout === 'flat',
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
@@ -427,9 +497,11 @@ const ui = {
                         settingsObj.skipDuplicates = false;
                         settingsObj.generateLinks = true;
                     } else {
+                        const restoredLayout = settingsObj.preSkipDownload.folderLayout || 'media';
                         settingsObj.skipDownload = false;
-                        settingsObj.organizeMedia = settingsObj.preSkipDownload.organizeMedia !== false;
-                        settingsObj.flatten = !!settingsObj.preSkipDownload.flatten;
+                        settingsObj.folderLayout = restoredLayout;
+                        settingsObj.organizeMedia = restoredLayout === 'media';
+                        settingsObj.flatten = restoredLayout === 'flat';
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
                     }
@@ -437,13 +509,14 @@ const ui = {
                     notify(
                         {
                             skipDownload: settingsObj.skipDownload,
+                            folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },

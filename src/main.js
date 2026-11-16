@@ -5023,13 +5023,50 @@ try {
         return 'Archives';
     };
 
+    const resolveEffectiveLayout = () => {
+        if (postSettings.folderLayout && ['media', 'post', 'post-media', 'flat', 'albums'].includes(postSettings.folderLayout)) {
+            return postSettings.folderLayout;
+        }
+        if (postSettings.organizeMedia !== false) return 'media';
+        return postSettings.flatten ? 'flat' : 'albums';
+    };
+
+    const firstAlbumHint = (() => {
+        for (const it of resolved) {
+            const lbl = cleanAlbumLabel(it && it.folderName);
+            if (lbl) return lbl;
+        }
+        return '';
+    })();
+
+    const buildPostSubfolderName = sanitizeSegFn => {
+        const postTag = formatPostOrderTag(postNumber);
+        let label = String(parsedPost.postCaption || '').trim();
+        if (label && threadTitle && label.toLowerCase() === String(threadTitle).trim().toLowerCase()) {
+            label = '';
+        }
+        if (!label && firstAlbumHint) {
+            label = firstAlbumHint;
+        }
+        if (!label) {
+            return postTag;
+        }
+        const cleanLbl = sanitizeSegFn(label, '');
+        if (!cleanLbl || cleanLbl === 'file' || cleanLbl === '_') {
+            return postTag;
+        }
+        const trimmedLbl = cleanLbl.length > 75 ? cleanLbl.slice(0, 75).trim().replace(/[. ]+$/g, '') : cleanLbl;
+        return sanitizeSegFn(`${postTag} - ${trimmedLbl}`, postTag);
+    };
+
     const buildTargetRelativePath = ({ basename, folderName, seqIndex, contentType, hostCategory, sanitizeSegFn, sanitizePathFn }) => {
-        if (postSettings.organizeMedia !== false) {
+        const layout = resolveEffectiveLayout();
+
+        if (layout === 'media' || layout === 'post' || layout === 'post-media') {
             const bucket = classifyMediaBucket(basename, contentType, hostCategory);
             const postTag = formatPostOrderTag(postNumber);
             const seqWidth = Math.max(3, String(totalDownloadable || 1).length);
             const seqTag = String(seqIndex || 1).padStart(seqWidth, '0');
-            const prefix = `${postTag}_${seqTag}`;
 
             const ext = String(h.extension(basename) || h.ext(basename) || '').trim();
             let stem = ext ? h.fnNoExt(basename) : String(basename || 'file');
@@ -5042,31 +5079,44 @@ try {
             stem = stem.replace(/\s*\(online-video-cutter\.com\)\s*/gi, ' ').replace(/\s+/g, ' ').trim();
 
             const albumLabel = cleanAlbumLabel(folderName);
-            // If file comes from a named album but its own filename is just a bare hex hash or plain counter,
-            // include the cleaned album title so context isn't lost inside Photos/ or Videos/.
             const looksOpaqueStem =
                 /^[0-9a-f]{12,}$/i.test(stem) ||
                 /^[0-9a-f]{8}-[0-9a-f-]{13,}$/i.test(stem) ||
                 /^\d{1,6}$/.test(stem) ||
                 /^(?:image|img|photo|video|file)[_-]?\d*$/i.test(stem);
-            if (albumLabel && looksOpaqueStem) {
+
+            // In unified 'media' mode, inject album label onto opaque stems; in 'post'/'post-media' mode,
+            // only inject if the post folder didn't already use that album label!
+            const postFolder = layout === 'media' ? '' : buildPostSubfolderName(sanitizeSegFn);
+            if (albumLabel && looksOpaqueStem && (layout === 'media' || !postFolder.includes(albumLabel.slice(0, 20)))) {
                 const shortAlbum = albumLabel.length > 70 ? albumLabel.slice(0, 70).trim() : albumLabel;
                 stem = `${shortAlbum} - ${stem}`;
             }
 
+            const filePrefix = layout === 'media' ? `${postTag}_${seqTag}` : seqTag;
             stem = sanitizeSegFn(stem || 'file');
-            const maxStemLen = Math.max(24, 165 - prefix.length - (ext ? ext.length + 4 : 3));
+            const maxStemLen = Math.max(24, 155 - filePrefix.length - (ext ? ext.length + 4 : 3));
             if (stem.length > maxStemLen) {
                 stem = stem.slice(0, maxStemLen).trim().replace(/[. ]+$/g, '');
             }
 
-            const finalFile = ext ? `${prefix} - ${stem}.${ext}` : `${prefix} - ${stem}`;
-            return sanitizePathFn(`${bucket}/${finalFile}`);
+            const finalFile = ext ? `${filePrefix} - ${stem}.${ext}` : `${filePrefix} - ${stem}`;
+
+            if (layout === 'media') {
+                return sanitizePathFn(`${bucket}/${finalFile}`);
+            }
+            if (layout === 'post') {
+                return postSettings.zipped ? sanitizePathFn(finalFile) : sanitizePathFn(`${postFolder}/${finalFile}`);
+            }
+            // layout === 'post-media'
+            return postSettings.zipped
+                ? sanitizePathFn(`${bucket}/${finalFile}`)
+                : sanitizePathFn(`${postFolder}/${bucket}/${finalFile}`);
         }
 
         const folder = folderName || '';
         let rel = basename;
-        if (!postSettings.flatten && folder && folder.trim() !== '') {
+        if (layout === 'albums' && folder && folder.trim() !== '') {
             rel = `${folder}/${basename}`;
         }
         return sanitizePathFn(rel);
@@ -6088,9 +6138,8 @@ if (tmp.length) {
 
                         const originalName = basename;
 
-                        // In legacy mode (organizeMedia OFF), disambiguate same-named files before building path.
-                        // When organizeMedia is ON, each file already receives a unique P000X_00Y prefix.
-                        if (postSettings.organizeMedia === false) {
+                        // In flat/albums modes (without sequence prefix), disambiguate same-named files before building path.
+                        if (['flat', 'albums'].includes(resolveEffectiveLayout())) {
                             const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
                             if (same.length) {
                                 const ext2 = h.extension(basename);
@@ -7056,7 +7105,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                         const original = basename;
 
-                        if (postSettings.organizeMedia === false && filenames.find(f => f.original === basename)) {
+                        if (['flat', 'albums'].includes(resolveEffectiveLayout()) && filenames.find(f => f.original === basename)) {
                             const count = filenames.filter(f => f.original === basename).length;
                             const baseNoExt = (ext && h.fnNoExt(basename)) ? h.fnNoExt(basename) : basename;
                             basename = ext ? `${baseNoExt} (${count + 1}).${ext}` : `${baseNoExt} (${count + 1})`;
@@ -8387,6 +8436,7 @@ const selectedPosts = [];
                 if (!reParsed) return false;
                 parsedPost.content = reParsed.content;
                 parsedPost.textContent = reParsed.textContent;
+                parsedPost.postCaption = reParsed.postCaption;
                 parsedPost.spoilers = reParsed.spoilers;
                 parsedPost.footer = reParsed.footer;
                 parsedPost.hasLockedContent = reParsed.hasLockedContent;

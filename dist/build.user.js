@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.29
+// @version 3.30
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -331,13 +331,17 @@ const settings = {
     },
 };
 
-// --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
+// --- Persistent User Preferences (Per-Thread + Global Defaults) ---------------------------------
 const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
+const XFPD_THREAD_PREFS_KEY = 'xfpd_thread_prefs';
+const XFPD_MAX_STORED_THREADS = 500;
 
 const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
+const XFPD_VALID_FOLDER_LAYOUTS = ['media', 'post', 'post-media', 'flat', 'albums'];
 
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
+    folderLayout: 'media',
     organizeMedia: true,
     smartMirrors: true,
     autoUnlockReaction: true,
@@ -357,9 +361,44 @@ const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
 const linkHintNameByUrl = new Map();
 const pixeldrainInfoById = new Map();
 
-let xfpdPrefsMirror = null;
+let xfpdGlobalPrefsMirror = null;
+let xfpdThreadPrefsMapMirror = null;
 let xfpdPrefsListenerBound = false;
 const xfpdPrefsSubscribers = new Set();
+
+function xfpdGetCurrentThreadKey() {
+    try {
+        if (typeof location === 'undefined') return '';
+        const host = String(location.hostname || '').toLowerCase();
+        const forumScope = /(^|\.)socialmediagirls\.com$/i.test(host)
+            ? 'smg'
+            : /(^|\.)simpcity\.[a-z]+$/i.test(host)
+              ? 'simpcity'
+              : host || 'forum';
+        const path = String(location.pathname || '');
+        const mId = /\/threads\/(?:[^\/?#]+\.)?(\d+)(?:\/|$)/i.exec(path);
+        if (mId && mId[1]) {
+            return `${forumScope}:${mId[1]}`;
+        }
+        const mSlug = /\/threads\/([^\/?#]+)/i.exec(path);
+        if (mSlug && mSlug[1]) {
+            return `${forumScope}:${mSlug[1].toLowerCase()}`;
+        }
+    } catch (e) {}
+    return '';
+}
+
+function xfpdDeriveFolderLayout(src) {
+    if (src && XFPD_VALID_FOLDER_LAYOUTS.includes(src.folderLayout)) {
+        return src.folderLayout;
+    }
+    if (src && typeof src.organizeMedia === 'boolean') {
+        if (src.organizeMedia) return 'media';
+        return src.flatten ? 'flat' : 'albums';
+    }
+    if (src && src.flatten === true) return 'flat';
+    return XFPD_DEFAULT_USER_PREFS.folderLayout;
+}
 
 function xfpdNormalizeUserPrefs(rawObj) {
     const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
@@ -369,17 +408,27 @@ function xfpdNormalizeUserPrefs(rawObj) {
             normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
                 ? src.videoQuality
                 : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else if (key === 'folderLayout') {
+            normalized.folderLayout = xfpdDeriveFolderLayout(src);
         } else {
             normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
         }
     }
+    // Keep legacy boolean flags synchronized with folderLayout for backward compatibility.
+    normalized.organizeMedia = normalized.folderLayout === 'media';
+    normalized.flatten = normalized.folderLayout === 'flat';
+
     const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
+    const preLayout =
+        pre && XFPD_VALID_FOLDER_LAYOUTS.includes(pre.folderLayout)
+            ? pre.folderLayout
+            : normalized.skipDownload
+              ? 'media'
+              : normalized.folderLayout;
     normalized.preSkipDownload = {
-        organizeMedia:
-            pre && typeof pre.organizeMedia === 'boolean'
-                ? pre.organizeMedia
-                : (normalized.skipDownload ? true : normalized.organizeMedia),
-        flatten: pre && typeof pre.flatten === 'boolean' ? pre.flatten : (normalized.skipDownload ? false : normalized.flatten),
+        folderLayout: preLayout,
+        organizeMedia: preLayout === 'media',
+        flatten: preLayout === 'flat',
         skipDuplicates:
             pre && typeof pre.skipDuplicates === 'boolean'
                 ? pre.skipDuplicates
@@ -410,55 +459,18 @@ function xfpdParsePrefsJson(raw) {
     }
 }
 
-function xfpdBindUserPrefsStorageListener() {
-    if (xfpdPrefsListenerBound) return;
-    const addListener =
-        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
-        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
-            ? window.GM_addValueChangeListener.bind(window)
-            : null);
-    if (!addListener) return;
-    xfpdPrefsListenerBound = true;
-    try {
-        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
-            const parsed = xfpdParsePrefsJson(newVal);
-            if (!parsed) return;
-            const prev = xfpdPrefsMirror;
-            xfpdPrefsMirror = xfpdNormalizeUserPrefs(parsed);
-            try {
-                if (typeof localStorage !== 'undefined' && localStorage) {
-                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdPrefsMirror));
-                }
-            } catch (e) {}
-            if (remote) {
-                const changed = prev
-                    ? XFPD_USER_PREF_KEYS.filter(k => prev[k] !== xfpdPrefsMirror[k])
-                    : XFPD_USER_PREF_KEYS.slice();
-                if (changed.length) {
-                    xfpdPrefsSubscribers.forEach(cb => {
-                        try {
-                            cb(xfpdNormalizeUserPrefs(xfpdPrefsMirror), changed, 'storage');
-                        } catch (e) {}
-                    });
-                }
-            }
-        });
-    } catch (e) {}
-}
-
-function xfpdLoadUserPrefs() {
-    xfpdBindUserPrefsStorageListener();
+function xfpdReadStoredObject(storageKey, mirrorObj) {
     const candidates = [];
-    if (xfpdPrefsMirror) candidates.push(xfpdPrefsMirror);
+    if (mirrorObj && typeof mirrorObj === 'object') candidates.push(mirrorObj);
     try {
         if (typeof GM_getValue === 'function') {
-            const gmParsed = xfpdParsePrefsJson(GM_getValue(XFPD_USER_PREFS_KEY, ''));
+            const gmParsed = xfpdParsePrefsJson(GM_getValue(storageKey, ''));
             if (gmParsed) candidates.push(gmParsed);
         }
     } catch (e) {}
     try {
         if (typeof localStorage !== 'undefined' && localStorage) {
-            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(XFPD_USER_PREFS_KEY));
+            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(storageKey));
             if (lsParsed) candidates.push(lsParsed);
         }
     } catch (e) {}
@@ -475,14 +487,128 @@ function xfpdLoadUserPrefs() {
             chosen = c;
         }
     }
+    return chosen;
+}
 
+function xfpdWriteStoredObject(storageKey, obj) {
+    const serialized = JSON.stringify(obj);
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(storageKey, serialized);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            localStorage.setItem(storageKey, serialized);
+        }
+    } catch (e) {}
+}
+
+function xfpdLoadGlobalPrefs() {
+    const chosen = xfpdReadStoredObject(XFPD_USER_PREFS_KEY, xfpdGlobalPrefsMirror);
     const normalized = xfpdNormalizeUserPrefs(chosen);
-    xfpdPrefsMirror = normalized;
+    xfpdGlobalPrefsMirror = normalized;
     return xfpdNormalizeUserPrefs(normalized);
 }
 
+function xfpdLoadThreadPrefsMap() {
+    const chosen = xfpdReadStoredObject(XFPD_THREAD_PREFS_KEY, xfpdThreadPrefsMapMirror);
+    const rawThreads = chosen && chosen.threads && typeof chosen.threads === 'object' ? chosen.threads : {};
+    const mapObj = {
+        _updatedAt: Number((chosen && chosen._updatedAt) || 0) || 0,
+        threads: { ...rawThreads },
+    };
+    xfpdThreadPrefsMapMirror = mapObj;
+    return mapObj;
+}
+
+function xfpdHasThreadPrefs(threadKey = xfpdGetCurrentThreadKey()) {
+    if (!threadKey) return false;
+    const mapObj = xfpdLoadThreadPrefsMap();
+    return !!(mapObj.threads && mapObj.threads[threadKey] && typeof mapObj.threads[threadKey] === 'object');
+}
+
+function xfpdBindUserPrefsStorageListener() {
+    if (xfpdPrefsListenerBound) return;
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+    if (!addListener) return;
+    xfpdPrefsListenerBound = true;
+
+    const notifyRemoteUpdate = () => {
+        const effective = xfpdLoadUserPrefs();
+        xfpdPrefsSubscribers.forEach(cb => {
+            try {
+                cb(effective, XFPD_USER_PREF_KEYS.slice(), 'storage');
+            } catch (e) {}
+        });
+    };
+
+    try {
+        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed) return;
+            xfpdGlobalPrefsMirror = xfpdNormalizeUserPrefs(parsed);
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdGlobalPrefsMirror));
+                }
+            } catch (e) {}
+            if (remote && !xfpdHasThreadPrefs()) {
+                notifyRemoteUpdate();
+            }
+        });
+    } catch (e) {}
+
+    try {
+        addListener(XFPD_THREAD_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed || typeof parsed !== 'object') return;
+            xfpdThreadPrefsMapMirror = {
+                _updatedAt: Number(parsed._updatedAt || 0) || 0,
+                threads: parsed.threads && typeof parsed.threads === 'object' ? { ...parsed.threads } : {},
+            };
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_THREAD_PREFS_KEY, JSON.stringify(xfpdThreadPrefsMapMirror));
+                }
+            } catch (e) {}
+            if (remote) {
+                notifyRemoteUpdate();
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdLoadUserPrefs(explicitThreadKey = null) {
+    xfpdBindUserPrefsStorageListener();
+    const globalPrefs = xfpdLoadGlobalPrefs();
+    const tKey = explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey();
+    if (!tKey) {
+        return globalPrefs;
+    }
+    const mapObj = xfpdLoadThreadPrefsMap();
+    const threadEntry = mapObj.threads && mapObj.threads[tKey];
+    if (!threadEntry || typeof threadEntry !== 'object') {
+        return globalPrefs;
+    }
+    return xfpdNormalizeUserPrefs({
+        ...globalPrefs,
+        ...threadEntry,
+        preSkipDownload: {
+            ...globalPrefs.preSkipDownload,
+            ...(threadEntry.preSkipDownload && typeof threadEntry.preSkipDownload === 'object' ? threadEntry.preSkipDownload : {}),
+        },
+    });
+}
+
 function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
-    const current = xfpdLoadUserPrefs();
+    const tKey = xfpdGetCurrentThreadKey();
+    const current = xfpdLoadUserPrefs(tKey);
+    const nextStamp = Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1);
     const merged = {
         ...current,
         ...(patch && typeof patch === 'object' ? patch : {}),
@@ -490,7 +616,7 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
             ...current.preSkipDownload,
             ...(patch && patch.preSkipDownload && typeof patch.preSkipDownload === 'object' ? patch.preSkipDownload : {}),
         },
-        _updatedAt: Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1),
+        _updatedAt: nextStamp,
     };
     const next = xfpdNormalizeUserPrefs(merged);
     const changedKeys =
@@ -498,18 +624,23 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
             ? explicitChangedKeys.filter(k => XFPD_USER_PREF_KEYS.includes(k))
             : XFPD_USER_PREF_KEYS.filter(k => current[k] !== next[k]);
 
-    xfpdPrefsMirror = next;
-    const serialized = JSON.stringify(next);
-    try {
-        if (typeof GM_setValue === 'function') {
-            GM_setValue(XFPD_USER_PREFS_KEY, serialized);
+    if (tKey) {
+        const mapObj = xfpdLoadThreadPrefsMap();
+        mapObj.threads[tKey] = next;
+        mapObj._updatedAt = Math.max(Date.now(), (Number(mapObj._updatedAt || 0) || 0) + 1);
+
+        // Bound stored thread count via LRU (_updatedAt) so storage stays compact forever.
+        const entries = Object.entries(mapObj.threads);
+        if (entries.length > XFPD_MAX_STORED_THREADS) {
+            entries.sort((a, b) => (Number(b[1]?._updatedAt || 0) || 0) - (Number(a[1]?._updatedAt || 0) || 0));
+            mapObj.threads = Object.fromEntries(entries.slice(0, XFPD_MAX_STORED_THREADS));
         }
-    } catch (e) {}
-    try {
-        if (typeof localStorage !== 'undefined' && localStorage) {
-            localStorage.setItem(XFPD_USER_PREFS_KEY, serialized);
-        }
-    } catch (e) {}
+        xfpdThreadPrefsMapMirror = mapObj;
+        xfpdWriteStoredObject(XFPD_THREAD_PREFS_KEY, mapObj);
+    } else {
+        xfpdGlobalPrefsMirror = next;
+        xfpdWriteStoredObject(XFPD_USER_PREFS_KEY, next);
+    }
 
     xfpdPrefsSubscribers.forEach(cb => {
         try {
@@ -518,6 +649,39 @@ function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
     });
 
     return xfpdNormalizeUserPrefs(next);
+}
+
+function xfpdSaveGlobalDefaultPrefs(prefsSnapshot = null) {
+    const base = prefsSnapshot && typeof prefsSnapshot === 'object' ? prefsSnapshot : xfpdLoadUserPrefs();
+    const currentGlobal = xfpdLoadGlobalPrefs();
+    const nextGlobal = xfpdNormalizeUserPrefs({
+        ...currentGlobal,
+        ...base,
+        _updatedAt: Math.max(Date.now(), (Number(currentGlobal._updatedAt || 0) || 0) + 1),
+    });
+    xfpdGlobalPrefsMirror = nextGlobal;
+    xfpdWriteStoredObject(XFPD_USER_PREFS_KEY, nextGlobal);
+    return xfpdNormalizeUserPrefs(nextGlobal);
+}
+
+function xfpdResetThreadPrefs(explicitThreadKey = null) {
+    const tKey = explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey();
+    if (tKey) {
+        const mapObj = xfpdLoadThreadPrefsMap();
+        if (mapObj.threads && Object.prototype.hasOwnProperty.call(mapObj.threads, tKey)) {
+            delete mapObj.threads[tKey];
+            mapObj._updatedAt = Math.max(Date.now(), (Number(mapObj._updatedAt || 0) || 0) + 1);
+            xfpdThreadPrefsMapMirror = mapObj;
+            xfpdWriteStoredObject(XFPD_THREAD_PREFS_KEY, mapObj);
+        }
+    }
+    const fallbackGlobal = xfpdLoadGlobalPrefs();
+    xfpdPrefsSubscribers.forEach(cb => {
+        try {
+            cb(xfpdNormalizeUserPrefs(fallbackGlobal), XFPD_USER_PREF_KEYS.slice(), 'page');
+        } catch (e) {}
+    });
+    return fallbackGlobal;
 }
 
 function xfpdOnUserPrefsChange(cb) {
@@ -531,6 +695,7 @@ function xfpdCreatePostSettings() {
     const prefs = xfpdLoadUserPrefs();
     const postSettings = {
         zipped: prefs.zipped,
+        folderLayout: prefs.folderLayout,
         organizeMedia: prefs.organizeMedia,
         smartMirrors: prefs.smartMirrors,
         autoUnlockReaction: prefs.autoUnlockReaction,
@@ -2121,6 +2286,59 @@ function xfpdDetectLockedReactionContent(messageEl, cleanedClone) {
     return false;
 }
 
+function xfpdExtractCleanPostCaption(cleanedClone) {
+    if (!cleanedClone) return '';
+    try {
+        const capClone = cleanedClone.cloneNode(true);
+        // Strip unfurl cards, hide boxes, spoilers, quotes, scripts, and reaction overlays so only real human post caption remains.
+        capClone
+            .querySelectorAll('.bbCodeBlock, .js-unfurl, blockquote, script, style, .smgTargetReactions, .blockMessage')
+            .forEach(el => el.remove());
+
+        capClone.querySelectorAll('a').forEach(a => {
+            const t = String(a.textContent || '').trim();
+            if (
+                !t ||
+                /^https?:\/\//i.test(t) ||
+                /\.[A-Za-z0-9]{2,5}$/.test(t) ||
+                /^(?:download|mirror\s*\d*|link\s*\d*|click\s*here|here|source|mega|gofile|pixeldrain|bunkr|cyberdrop|filester)$/i.test(t)
+            ) {
+                a.remove();
+            }
+        });
+
+        // Convert <br> to newlines before reading textContent so JSDOM and browsers agree on line breaks.
+        capClone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+
+        const rawText = String(capClone.textContent || '');
+        const lines = rawText
+            .split(/\r?\n/)
+            .map(l =>
+                l
+                    .replace(/https?:\/\/\S+/gi, '')
+                    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim(),
+            )
+            .filter(Boolean);
+
+        for (const line of lines) {
+            if (line.length < 2) continue;
+            // Skip bare technical/resolution headers
+            if (
+                /^(?:4k|8k|2160p?|1440p?|1080p?|720p?|540p?|480p?|360p?|hd|fhd|uhd|sd|mp4|mkv|zip|rar|pack|preview|fotos?|videos?|links?|mirrors?)$/i.test(
+                    line,
+                )
+            ) {
+                continue;
+            }
+            if (!/[A-Za-zÀ-ÖØ-öø-ÿ0-9]{2}/.test(line)) continue;
+            return line.length > 55 ? line.slice(0, 55).trim() : line;
+        }
+    } catch (e) {}
+    return '';
+}
+
 const parsers = {
     thread: {
         /**
@@ -2447,6 +2665,7 @@ const parsers = {
             .unique();
 
             const hasLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone);
+            const postCaption = xfpdExtractCleanPostCaption(messageContentClone);
             const postContent = messageContentClone.innerHTML;
             const postTextContent = messageContentClone.innerText;
 
@@ -2463,6 +2682,7 @@ const parsers = {
                 spoilers,
                 footer,
                 hasLockedContent,
+                postCaption,
                 content: postContent,
                 textContent: postTextContent,
                 contentContainer: messageContent,
@@ -2612,7 +2832,7 @@ const parsers = {
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:165px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
     },
 };
 
@@ -2815,25 +3035,46 @@ const ui = {
        */
             createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
                 const skipDl = !!currentSettings.skipDownload;
-                const orgMedia = skipDl ? false : currentSettings.organizeMedia !== false;
                 const smartMirrors = currentSettings.smartMirrors !== false;
+                const layoutVal =
+                    currentSettings.folderLayout ||
+                    (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
                 const vidQual = currentSettings.videoQuality || 'best';
-                const opt = (val, label) => `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+
+                const optLayout = (val, label) =>
+                    `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const optQual = (val, label) =>
+                    `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
+
                 return [
                     `
           <div class="menu-row">
-            <div style="font-weight: bold; margin-top:3px; margin-bottom: 4px; color: #3DB7C7;">
-                Settings
+            <div class="xfpd-settings-head">
+              <span style="font-weight: bold; color: #3DB7C7;">Settings</span>
+              <span class="xfpd-scope-actions">
+                <span id="${idPrefix}-scope-badge" class="xfpd-scope-badge" style="color: ${hasThreadCustom ? '#47ba24' : '#959595'};">
+                  ${hasThreadCustom ? 'Thread ✓' : 'Default'}
+                </span>
+                <button type="button" id="${idPrefix}-save-global" class="xfpd-mini-btn" title="Save current settings as the default for new threads">Set Global</button>
+                <button type="button" id="${idPrefix}-reset-thread" class="xfpd-mini-btn" title="Reset this thread back to global defaults" style="${hasThreadCustom ? '' : 'display:none;'}">Reset</button>
+              </span>
             </div>
           </div>
           `,
                     ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
-                    ui.forms.createCheckbox(
-                        `${idPrefix}-organize-media`,
-                        'Organize Media (Photos/Videos)',
-                        orgMedia,
-                        skipDl,
-                    ),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-folder-layout">Folder Layout</label>
+            <select id="${idPrefix}-folder-layout" class="xfpd-select" ${skipDl ? 'disabled="disabled"' : ''}>
+              ${optLayout('media', 'Photos & Videos')}
+              ${optLayout('post', 'Per Post (1 Folder/Post)')}
+              ${optLayout('post-media', 'Per Post (Photos/Videos)')}
+              ${optLayout('flat', 'Flat (Single Folder)')}
+              ${optLayout('albums', 'Original Host Folders')}
+            </select>
+          </div>
+          `,
                     ui.forms.createCheckbox(
                         `${idPrefix}-smart-mirrors`,
                         'Smart Mirrors (Auto-Fallback)',
@@ -2850,19 +3091,13 @@ const ui = {
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
             <select id="${idPrefix}-video-quality" class="xfpd-select">
-              ${opt('best', 'Best Available (4K)')}
-              ${opt('1080p', 'Max 1080p')}
-              ${opt('720p', 'Max 720p')}
-              ${opt('all', 'All Resolutions')}
+              ${optQual('best', 'Best Available (4K)')}
+              ${optQual('1080p', 'Max 1080p')}
+              ${optQual('720p', 'Max 720p')}
+              ${optQual('all', 'All Resolutions')}
             </select>
           </div>
           `,
-                    ui.forms.createCheckbox(
-                        `${idPrefix}-flatten`,
-                        'Flatten',
-                        skipDl || orgMedia ? false : !!currentSettings.flatten,
-                        skipDl || orgMedia,
-                    ),
                     ui.forms.createCheckbox(
                         `${idPrefix}-skip-duplicates`,
                         'Skip Duplicates',
@@ -2900,17 +3135,37 @@ const ui = {
                     }
                 };
                 const skipDl = !!settingsObj.skipDownload;
-                const orgMedia = skipDl ? false : settingsObj.organizeMedia !== false;
                 setCb('zipped', settingsObj.zipped, false);
-                setCb('organize-media', orgMedia, skipDl);
+
+                const layoutEl = rootEl.querySelector(`#${idPrefix}-folder-layout`);
+                if (layoutEl) {
+                    const lay =
+                        settingsObj.folderLayout ||
+                        (settingsObj.organizeMedia !== false ? 'media' : settingsObj.flatten ? 'flat' : 'albums');
+                    if (layoutEl.value !== lay) layoutEl.value = lay;
+                    layoutEl.disabled = skipDl;
+                }
+
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
                 setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
+
                 const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
                 if (qualEl) {
                     const q = settingsObj.videoQuality || 'best';
                     if (qualEl.value !== q) qualEl.value = q;
                 }
-                setCb('flatten', skipDl || orgMedia ? false : settingsObj.flatten, skipDl || orgMedia);
+
+                const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
+                const badgeEl = rootEl.querySelector(`#${idPrefix}-scope-badge`);
+                if (badgeEl) {
+                    badgeEl.textContent = hasThreadCustom ? 'Thread ✓' : 'Default';
+                    badgeEl.style.color = hasThreadCustom ? '#47ba24' : '#959595';
+                }
+                const resetBtn = rootEl.querySelector(`#${idPrefix}-reset-thread`);
+                if (resetBtn) {
+                    resetBtn.style.display = hasThreadCustom ? '' : 'none';
+                }
+
                 setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
@@ -2918,7 +3173,7 @@ const ui = {
                 setCb('verify-bunkr-links', settingsObj.verifyBunkrLinks, false);
             },
             /**
-       * Binds change handlers once per form element for the settings checkboxes.
+       * Binds change handlers once per form element for the settings controls.
        * @param rootEl
        * @param idPrefix
        * @param settingsObj
@@ -2932,42 +3187,84 @@ const ui = {
                     if (typeof onSettingChange === 'function') {
                         onSettingChange(patch, keys);
                     }
+                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
                 };
 
                 const ensurePreSkip = () => {
                     if (!settingsObj.preSkipDownload || typeof settingsObj.preSkipDownload !== 'object') {
                         settingsObj.preSkipDownload = {
-                            organizeMedia: settingsObj.organizeMedia !== false,
-                            flatten: !!settingsObj.flatten,
+                            folderLayout: settingsObj.folderLayout || 'media',
+                            organizeMedia: (settingsObj.folderLayout || 'media') === 'media',
+                            flatten: settingsObj.folderLayout === 'flat',
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
                     }
                 };
 
-                const bindOne = (suffix, handler) => {
+                const bindOne = (suffix, handler, eventType = 'change') => {
                     const el = rootEl.querySelector(`#${idPrefix}-${suffix}`);
                     if (el && el.dataset.xfpdBound !== '1') {
                         el.dataset.xfpdBound = '1';
-                        el.addEventListener('change', handler);
+                        el.addEventListener(eventType, handler);
                     }
                 };
+
+                bindOne(
+                    'save-global',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdSaveGlobalDefaultPrefs === 'function') {
+                            xfpdSaveGlobalDefaultPrefs(settingsObj);
+                            const btn = e.currentTarget;
+                            if (btn) {
+                                const orig = btn.textContent;
+                                btn.textContent = 'Saved!';
+                                setTimeout(() => {
+                                    if (btn.isConnected) btn.textContent = orig;
+                                }, 1200);
+                            }
+                        }
+                    },
+                    'click',
+                );
+
+                bindOne(
+                    'reset-thread',
+                    e => {
+                        e.preventDefault();
+                        if (typeof xfpdResetThreadPrefs === 'function') {
+                            xfpdResetThreadPrefs();
+                            ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne('zipped', e => {
                     settingsObj.zipped = !!e.target.checked;
                     notify({ zipped: settingsObj.zipped }, ['zipped']);
                 });
 
-                bindOne('organize-media', e => {
+                bindOne('folder-layout', e => {
                     ensurePreSkip();
-                    settingsObj.organizeMedia = !!e.target.checked;
+                    const layout = e.target.value || 'media';
+                    settingsObj.folderLayout = layout;
+                    settingsObj.organizeMedia = layout === 'media';
+                    settingsObj.flatten = layout === 'flat';
                     if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.folderLayout = layout;
                         settingsObj.preSkipDownload.organizeMedia = settingsObj.organizeMedia;
+                        settingsObj.preSkipDownload.flatten = settingsObj.flatten;
                     }
-                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
                     notify(
-                        { organizeMedia: settingsObj.organizeMedia, preSkipDownload: { ...settingsObj.preSkipDownload } },
-                        ['organizeMedia'],
+                        {
+                            folderLayout: layout,
+                            organizeMedia: settingsObj.organizeMedia,
+                            flatten: settingsObj.flatten,
+                            preSkipDownload: { ...settingsObj.preSkipDownload },
+                        },
+                        ['folderLayout', 'organizeMedia', 'flatten'],
                     );
                 });
 
@@ -2984,15 +3281,6 @@ const ui = {
                 bindOne('video-quality', e => {
                     settingsObj.videoQuality = e.target.value || 'best';
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
-                });
-
-                bindOne('flatten', e => {
-                    ensurePreSkip();
-                    settingsObj.flatten = !!e.target.checked;
-                    if (!settingsObj.skipDownload) {
-                        settingsObj.preSkipDownload.flatten = settingsObj.flatten;
-                    }
-                    notify({ flatten: settingsObj.flatten, preSkipDownload: { ...settingsObj.preSkipDownload } }, ['flatten']);
                 });
 
                 bindOne('skip-duplicates', e => {
@@ -3033,9 +3321,11 @@ const ui = {
                     ensurePreSkip();
                     const checked = !!e.target.checked;
                     if (checked) {
+                        const curLayout = settingsObj.folderLayout || 'media';
                         settingsObj.preSkipDownload = {
-                            organizeMedia: settingsObj.organizeMedia !== false,
-                            flatten: !!settingsObj.flatten,
+                            folderLayout: curLayout,
+                            organizeMedia: curLayout === 'media',
+                            flatten: curLayout === 'flat',
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
@@ -3045,9 +3335,11 @@ const ui = {
                         settingsObj.skipDuplicates = false;
                         settingsObj.generateLinks = true;
                     } else {
+                        const restoredLayout = settingsObj.preSkipDownload.folderLayout || 'media';
                         settingsObj.skipDownload = false;
-                        settingsObj.organizeMedia = settingsObj.preSkipDownload.organizeMedia !== false;
-                        settingsObj.flatten = !!settingsObj.preSkipDownload.flatten;
+                        settingsObj.folderLayout = restoredLayout;
+                        settingsObj.organizeMedia = restoredLayout === 'media';
+                        settingsObj.flatten = restoredLayout === 'flat';
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
                     }
@@ -3055,13 +3347,14 @@ const ui = {
                     notify(
                         {
                             skipDownload: settingsObj.skipDownload,
+                            folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },
@@ -8530,13 +8823,50 @@ try {
         return 'Archives';
     };
 
+    const resolveEffectiveLayout = () => {
+        if (postSettings.folderLayout && ['media', 'post', 'post-media', 'flat', 'albums'].includes(postSettings.folderLayout)) {
+            return postSettings.folderLayout;
+        }
+        if (postSettings.organizeMedia !== false) return 'media';
+        return postSettings.flatten ? 'flat' : 'albums';
+    };
+
+    const firstAlbumHint = (() => {
+        for (const it of resolved) {
+            const lbl = cleanAlbumLabel(it && it.folderName);
+            if (lbl) return lbl;
+        }
+        return '';
+    })();
+
+    const buildPostSubfolderName = sanitizeSegFn => {
+        const postTag = formatPostOrderTag(postNumber);
+        let label = String(parsedPost.postCaption || '').trim();
+        if (label && threadTitle && label.toLowerCase() === String(threadTitle).trim().toLowerCase()) {
+            label = '';
+        }
+        if (!label && firstAlbumHint) {
+            label = firstAlbumHint;
+        }
+        if (!label) {
+            return postTag;
+        }
+        const cleanLbl = sanitizeSegFn(label, '');
+        if (!cleanLbl || cleanLbl === 'file' || cleanLbl === '_') {
+            return postTag;
+        }
+        const trimmedLbl = cleanLbl.length > 75 ? cleanLbl.slice(0, 75).trim().replace(/[. ]+$/g, '') : cleanLbl;
+        return sanitizeSegFn(`${postTag} - ${trimmedLbl}`, postTag);
+    };
+
     const buildTargetRelativePath = ({ basename, folderName, seqIndex, contentType, hostCategory, sanitizeSegFn, sanitizePathFn }) => {
-        if (postSettings.organizeMedia !== false) {
+        const layout = resolveEffectiveLayout();
+
+        if (layout === 'media' || layout === 'post' || layout === 'post-media') {
             const bucket = classifyMediaBucket(basename, contentType, hostCategory);
             const postTag = formatPostOrderTag(postNumber);
             const seqWidth = Math.max(3, String(totalDownloadable || 1).length);
             const seqTag = String(seqIndex || 1).padStart(seqWidth, '0');
-            const prefix = `${postTag}_${seqTag}`;
 
             const ext = String(h.extension(basename) || h.ext(basename) || '').trim();
             let stem = ext ? h.fnNoExt(basename) : String(basename || 'file');
@@ -8549,31 +8879,44 @@ try {
             stem = stem.replace(/\s*\(online-video-cutter\.com\)\s*/gi, ' ').replace(/\s+/g, ' ').trim();
 
             const albumLabel = cleanAlbumLabel(folderName);
-            // If file comes from a named album but its own filename is just a bare hex hash or plain counter,
-            // include the cleaned album title so context isn't lost inside Photos/ or Videos/.
             const looksOpaqueStem =
                 /^[0-9a-f]{12,}$/i.test(stem) ||
                 /^[0-9a-f]{8}-[0-9a-f-]{13,}$/i.test(stem) ||
                 /^\d{1,6}$/.test(stem) ||
                 /^(?:image|img|photo|video|file)[_-]?\d*$/i.test(stem);
-            if (albumLabel && looksOpaqueStem) {
+
+            // In unified 'media' mode, inject album label onto opaque stems; in 'post'/'post-media' mode,
+            // only inject if the post folder didn't already use that album label!
+            const postFolder = layout === 'media' ? '' : buildPostSubfolderName(sanitizeSegFn);
+            if (albumLabel && looksOpaqueStem && (layout === 'media' || !postFolder.includes(albumLabel.slice(0, 20)))) {
                 const shortAlbum = albumLabel.length > 70 ? albumLabel.slice(0, 70).trim() : albumLabel;
                 stem = `${shortAlbum} - ${stem}`;
             }
 
+            const filePrefix = layout === 'media' ? `${postTag}_${seqTag}` : seqTag;
             stem = sanitizeSegFn(stem || 'file');
-            const maxStemLen = Math.max(24, 165 - prefix.length - (ext ? ext.length + 4 : 3));
+            const maxStemLen = Math.max(24, 155 - filePrefix.length - (ext ? ext.length + 4 : 3));
             if (stem.length > maxStemLen) {
                 stem = stem.slice(0, maxStemLen).trim().replace(/[. ]+$/g, '');
             }
 
-            const finalFile = ext ? `${prefix} - ${stem}.${ext}` : `${prefix} - ${stem}`;
-            return sanitizePathFn(`${bucket}/${finalFile}`);
+            const finalFile = ext ? `${filePrefix} - ${stem}.${ext}` : `${filePrefix} - ${stem}`;
+
+            if (layout === 'media') {
+                return sanitizePathFn(`${bucket}/${finalFile}`);
+            }
+            if (layout === 'post') {
+                return postSettings.zipped ? sanitizePathFn(finalFile) : sanitizePathFn(`${postFolder}/${finalFile}`);
+            }
+            // layout === 'post-media'
+            return postSettings.zipped
+                ? sanitizePathFn(`${bucket}/${finalFile}`)
+                : sanitizePathFn(`${postFolder}/${bucket}/${finalFile}`);
         }
 
         const folder = folderName || '';
         let rel = basename;
-        if (!postSettings.flatten && folder && folder.trim() !== '') {
+        if (layout === 'albums' && folder && folder.trim() !== '') {
             rel = `${folder}/${basename}`;
         }
         return sanitizePathFn(rel);
@@ -9595,9 +9938,8 @@ if (tmp.length) {
 
                         const originalName = basename;
 
-                        // In legacy mode (organizeMedia OFF), disambiguate same-named files before building path.
-                        // When organizeMedia is ON, each file already receives a unique P000X_00Y prefix.
-                        if (postSettings.organizeMedia === false) {
+                        // In flat/albums modes (without sequence prefix), disambiguate same-named files before building path.
+                        if (['flat', 'albums'].includes(resolveEffectiveLayout())) {
                             const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
                             if (same.length) {
                                 const ext2 = h.extension(basename);
@@ -10563,7 +10905,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                         const original = basename;
 
-                        if (postSettings.organizeMedia === false && filenames.find(f => f.original === basename)) {
+                        if (['flat', 'albums'].includes(resolveEffectiveLayout()) && filenames.find(f => f.original === basename)) {
                             const count = filenames.filter(f => f.original === basename).length;
                             const baseNoExt = (ext && h.fnNoExt(basename)) ? h.fnNoExt(basename) : basename;
                             basename = ext ? `${baseNoExt} (${count + 1}).${ext}` : `${baseNoExt} (${count + 1})`;
@@ -11894,6 +12236,7 @@ const selectedPosts = [];
                 if (!reParsed) return false;
                 parsedPost.content = reParsed.content;
                 parsedPost.textContent = reParsed.textContent;
+                parsedPost.postCaption = reParsed.postCaption;
                 parsedPost.spoilers = reParsed.spoilers;
                 parsedPost.footer = reParsed.footer;
                 parsedPost.hasLockedContent = reParsed.hasLockedContent;

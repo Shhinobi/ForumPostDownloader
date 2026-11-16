@@ -63,6 +63,59 @@ function xfpdDetectLockedReactionContent(messageEl, cleanedClone) {
     return false;
 }
 
+function xfpdExtractCleanPostCaption(cleanedClone) {
+    if (!cleanedClone) return '';
+    try {
+        const capClone = cleanedClone.cloneNode(true);
+        // Strip unfurl cards, hide boxes, spoilers, quotes, scripts, and reaction overlays so only real human post caption remains.
+        capClone
+            .querySelectorAll('.bbCodeBlock, .js-unfurl, blockquote, script, style, .smgTargetReactions, .blockMessage')
+            .forEach(el => el.remove());
+
+        capClone.querySelectorAll('a').forEach(a => {
+            const t = String(a.textContent || '').trim();
+            if (
+                !t ||
+                /^https?:\/\//i.test(t) ||
+                /\.[A-Za-z0-9]{2,5}$/.test(t) ||
+                /^(?:download|mirror\s*\d*|link\s*\d*|click\s*here|here|source|mega|gofile|pixeldrain|bunkr|cyberdrop|filester)$/i.test(t)
+            ) {
+                a.remove();
+            }
+        });
+
+        // Convert <br> to newlines before reading textContent so JSDOM and browsers agree on line breaks.
+        capClone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+
+        const rawText = String(capClone.textContent || '');
+        const lines = rawText
+            .split(/\r?\n/)
+            .map(l =>
+                l
+                    .replace(/https?:\/\/\S+/gi, '')
+                    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim(),
+            )
+            .filter(Boolean);
+
+        for (const line of lines) {
+            if (line.length < 2) continue;
+            // Skip bare technical/resolution headers
+            if (
+                /^(?:4k|8k|2160p?|1440p?|1080p?|720p?|540p?|480p?|360p?|hd|fhd|uhd|sd|mp4|mkv|zip|rar|pack|preview|fotos?|videos?|links?|mirrors?)$/i.test(
+                    line,
+                )
+            ) {
+                continue;
+            }
+            if (!/[A-Za-zÀ-ÖØ-öø-ÿ0-9]{2}/.test(line)) continue;
+            return line.length > 55 ? line.slice(0, 55).trim() : line;
+        }
+    } catch (e) {}
+    return '';
+}
+
 const parsers = {
     thread: {
         /**
@@ -389,6 +442,7 @@ const parsers = {
             .unique();
 
             const hasLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone);
+            const postCaption = xfpdExtractCleanPostCaption(messageContentClone);
             const postContent = messageContentClone.innerHTML;
             const postTextContent = messageContentClone.innerText;
 
@@ -405,6 +459,7 @@ const parsers = {
                 spoilers,
                 footer,
                 hasLockedContent,
+                postCaption,
                 content: postContent,
                 textContent: postTextContent,
                 contentContainer: messageContent,
