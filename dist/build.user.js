@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.28
+// @version 3.29
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -340,6 +340,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
     organizeMedia: true,
     smartMirrors: true,
+    autoUnlockReaction: true,
     videoQuality: 'best',
     flatten: false,
     generateLinks: false,
@@ -532,6 +533,7 @@ function xfpdCreatePostSettings() {
         zipped: prefs.zipped,
         organizeMedia: prefs.organizeMedia,
         smartMirrors: prefs.smartMirrors,
+        autoUnlockReaction: prefs.autoUnlockReaction,
         videoQuality: prefs.videoQuality,
         flatten: prefs.flatten,
         generateLinks: prefs.generateLinks,
@@ -2054,6 +2056,71 @@ Array.prototype.unique = function (cb) {
     return h.unique(this, cb);
 };
 
+function xfpdFindPostNativeReactLink(messageEl) {
+    if (!messageEl || !messageEl.querySelectorAll) return null;
+    const candidates = messageEl.querySelectorAll(
+        'footer a.reaction[href], .message-actionBar a.reaction[href], a.reaction[data-xf-init~="reaction"][href]',
+    );
+    for (const link of candidates) {
+        if (link.closest && link.closest('.smgReactionPills, .comment, .js-comment, .uw_fcs_comment_section, .message-responses')) {
+            continue;
+        }
+        const href = link.getAttribute('href') || '';
+        if (/\/react(?=[?&]|$)/i.test(href) && href.includes('reaction_id=')) {
+            return link;
+        }
+    }
+    return null;
+}
+
+function xfpdDetectLockedReactionContent(messageEl, cleanedClone) {
+    if (!messageEl || !cleanedClone || !cleanedClone.querySelectorAll) return false;
+    // Only offer reaction-unlock when a native reaction control exists on the post (user is logged in & permitted to react).
+    const reactLink = xfpdFindPostNativeReactLink(messageEl);
+    if (!reactLink) return false;
+
+    const explicitReactionLockSel = [
+        '.hidethanks:not(.bbCodeBlock--visible)',
+        '.hidereact:not(.bbCodeBlock--visible)',
+        '.hidereactscore:not(.bbCodeBlock--visible)',
+        '.hidereplyreact:not(.bbCodeBlock--visible)',
+        '[class*="xs_hide_react"]:not([class*="visible"])',
+        '[class*="xs_hide_like"]:not([class*="visible"])',
+    ].join(', ');
+
+    if (cleanedClone.querySelector(explicitReactionLockSel)) {
+        return true;
+    }
+
+    const genericHiddenBlocks = cleanedClone.querySelectorAll(
+        '.bbCodeBlock--hidden:not(.bbCodeBlock--visible), .bbCodeBlock--hide:not(.bbCodeBlock--visible), [class*="xs_hide"]:not([class*="visible"]), .messageHide, .th_hide_block',
+    );
+    for (const blk of genericHiddenBlocks) {
+        const txt = String(blk.textContent || '').replace(/\s+/g, ' ').trim();
+        // Exclude reply-only or post-count-only locks unless react/like/thank is also an option.
+        const isStrictlyNonReact =
+            /\b(?:you\s+must\s+reply|reply\s+to\s+(?:this|view|see)|must\s+have\s+\d+\s+posts)\b/i.test(txt) &&
+            !/\b(?:react|like|thank)\b/i.test(txt);
+        if (!isStrictlyNonReact) {
+            return true;
+        }
+    }
+
+    const candidateBoxes = cleanedClone.querySelectorAll(
+        '.bbCodeBlock:not(.bbCodeBlock--spoiler):not(.bbCodeBlock--unfurl):not(.bbCodeBlock--quote):not(.bbCodeBlock--visible), .blockMessage',
+    );
+    const reactPromptRe =
+        /(?:you\s+must|need\s+to|have\s+to|please)\s+(?:react|like|thank)|(?:react|like)\s+(?:or\s+\w+\s+)?to\s+(?:this\s+(?:post|message)|unlock|view|see)|hidden\s+content[\s\S]{0,140}\b(?:react|like|thank)\b/i;
+    for (const box of candidateBoxes) {
+        const txt = String(box.textContent || '').replace(/\s+/g, ' ').trim();
+        if (reactPromptRe.test(txt)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 const parsers = {
     thread: {
         /**
@@ -2379,6 +2446,7 @@ const parsers = {
             .filter(s => s !== '')
             .unique();
 
+            const hasLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone);
             const postContent = messageContentClone.innerHTML;
             const postTextContent = messageContentClone.innerText;
 
@@ -2388,11 +2456,13 @@ const parsers = {
 
             return {
                 post,
+                messageEl,
                 postId,
                 postNumber,
                 pageNumber,
                 spoilers,
                 footer,
+                hasLockedContent,
                 content: postContent,
                 textContent: postTextContent,
                 contentContainer: messageContent,
@@ -2770,6 +2840,12 @@ const ui = {
                         smartMirrors,
                         false,
                     ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-auto-unlock-reaction`,
+                        'Auto-React Locked Posts',
+                        currentSettings.autoUnlockReaction !== false,
+                        false,
+                    ),
                     `
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
@@ -2828,6 +2904,7 @@ const ui = {
                 setCb('zipped', settingsObj.zipped, false);
                 setCb('organize-media', orgMedia, skipDl);
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
+                setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
                 const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
                 if (qualEl) {
                     const q = settingsObj.videoQuality || 'best';
@@ -2897,6 +2974,11 @@ const ui = {
                 bindOne('smart-mirrors', e => {
                     settingsObj.smartMirrors = !!e.target.checked;
                     notify({ smartMirrors: settingsObj.smartMirrors }, ['smartMirrors']);
+                });
+
+                bindOne('auto-unlock-reaction', e => {
+                    settingsObj.autoUnlockReaction = !!e.target.checked;
+                    notify({ autoUnlockReaction: settingsObj.autoUnlockReaction }, ['autoUnlockReaction']);
                 });
 
                 bindOne('video-quality', e => {
@@ -3153,33 +3235,61 @@ const ui = {
                     btnDownloadPost,
                 ) => {
                     const { postId } = parsedPost;
-                    const color = ui.getTooltipBackgroundColor();
-
-                    const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
-
-                    let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
-                    parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
-                    hostsHtml += '</div>';
-
-                    const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
-                    const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
-                    const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB, postId);
                     const idPrefix = `settings-${postId}`;
-
-                    const formHtml = [
-                        window.isFF ? ui.forms.config.post.createFilenameInput(customFilename, postId, color, defaultFilename) : null,
-                        ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
-                        ui.forms.config.post.createHostCheckboxes(postId, filterLabel, hostsHtml, parsedHosts.length > 1),
-                        ui.forms.createRow(
-                            `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">🡳 Download Post (${initialFilteredCount}/${totalResourcesCount})</button>`,
-                        ),
-                        ui.forms.createRow(
-                            '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
-                        ),
-                    ].filter(c => c !== null);
-
-                    const configForm = ui.forms.config.post.createForm(postId, color, formHtml.join(''));
                     let activeInstance = null;
+
+                    const getActionBtnLabel = (filteredCount, totalCount) => {
+                        if (totalCount === 0 && parsedPost.hasLockedContent) {
+                            return '🔓 Unlock & Download Post';
+                        }
+                        const lockSuffix = parsedPost.hasLockedContent ? ' + 🔒' : '';
+                        return `🡳 Download Post (${filteredCount}/${totalCount}${lockSuffix})`;
+                    };
+
+                    const renderPostFormHtml = () => {
+                        const color = ui.getTooltipBackgroundColor();
+                        const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
+                        const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+                        const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
+
+                        let filterSectionHtml = '';
+                        if (parsedHosts.length > 0) {
+                            let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
+                            parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
+                            hostsHtml += '</div>';
+                            const filterLabel = ui.forms.config.post.createFilterLabel(
+                                parsedHosts,
+                                totalDownloadableResourcesForPostCB,
+                                postId,
+                            );
+                            filterSectionHtml = ui.forms.config.post.createHostCheckboxes(
+                                postId,
+                                filterLabel,
+                                hostsHtml,
+                                parsedHosts.length > 1,
+                            );
+                        } else if (parsedPost.hasLockedContent) {
+                            filterSectionHtml = ui.forms.createRow(
+                                '<div style="font-size:12px; color:#e8a838; margin:4px 0;">🔒 Links hidden behind reaction — will unlock automatically before downloading.</div>',
+                            );
+                        }
+
+                        const formParts = [
+                            window.isFF
+                                ? ui.forms.config.post.createFilenameInput(customFilename, postId, color, defaultFilename)
+                                : null,
+                            ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
+                            filterSectionHtml,
+                            ui.forms.createRow(
+                                `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">${getActionBtnLabel(initialFilteredCount, totalResourcesCount)}</button>`,
+                            ),
+                            ui.forms.createRow(
+                                '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
+                            ),
+                        ].filter(c => c !== null && c !== '');
+
+                        return ui.forms.config.post.createForm(postId, color, formParts.join(''));
+                    };
 
                     const setupPostForm = instance => {
                         activeInstance = instance || activeInstance;
@@ -3221,6 +3331,7 @@ const ui = {
                         });
 
                         // Sync host checkboxes, filtered count, and action button on every open.
+                        const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
                         let enabledHostCount = 0;
                         parsedHosts.forEach(host => {
                             const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
@@ -3236,8 +3347,8 @@ const ui = {
                         }
                         const startBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
                         if (startBtn) {
-                            startBtn.disabled = liveFilteredCount === 0;
-                            startBtn.textContent = `🡳 Download Post (${liveFilteredCount}/${totalResourcesCount})`;
+                            startBtn.disabled = liveFilteredCount === 0 && !parsedPost.hasLockedContent;
+                            startBtn.textContent = getActionBtnLabel(liveFilteredCount, totalResourcesCount);
                         }
                         if (parsedHosts.length > 1) {
                             const toggleAllCb = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -3326,13 +3437,14 @@ const ui = {
                                         .reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
                                     if (btnDownloadPost.dataset.xfpdState !== 'running') {
+                                        const lockTag = parsedPost.hasLockedContent ? ' + 🔒' : '';
                                         btnDownloadPost.style.color = '';
-                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources}${lockTag})`;
                                     }
                                     const startActionBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
                                     if (startActionBtn) {
-                                        startActionBtn.disabled = totalDownloadableResources === 0;
-                                        startActionBtn.textContent = `🡳 Download Post (${totalDownloadableResources}/${totalResources})`;
+                                        startActionBtn.disabled = totalDownloadableResources === 0 && !parsedPost.hasLockedContent;
+                                        startActionBtn.textContent = getActionBtnLabel(totalDownloadableResources, totalResources);
                                     }
 
                                     if (parsedHosts.length > 1) {
@@ -3352,12 +3464,21 @@ const ui = {
                         });
                     };
 
-                    return ui.tooltip(btnDownloadPost, configForm, {
+                    const tippyInst = ui.tooltip(btnDownloadPost, renderPostFormHtml(), {
                         onCreate: instance => setupPostForm(instance),
                         onShow: instance => setupPostForm(instance),
                         onMount: instance => setupPostForm(instance),
                         onShown: instance => setupPostForm(instance),
                     });
+                    if (tippyInst) {
+                        tippyInst.__xfpdRebuildForm = () => {
+                            if (typeof tippyInst.setContent === 'function') {
+                                tippyInst.setContent(renderPostFormHtml());
+                                setupPostForm(tippyInst);
+                            }
+                        };
+                    }
+                    return tippyInst;
                 },
             },
         },
@@ -10955,12 +11076,93 @@ const addDownloadPageButton = () => {
     return downloadAllButton;
 };
 
+const xfpdGetXenForoCsrfToken = () => {
+    try {
+        const inputEl = document.querySelector('input[name="_xfToken"]');
+        if (inputEl && inputEl.value) return String(inputEl.value);
+        const htmlCsrf = document.documentElement && document.documentElement.getAttribute('data-csrf');
+        if (htmlCsrf) return String(htmlCsrf);
+        const scripts = document.querySelectorAll('script:not([src])');
+        for (const s of scripts) {
+            const m = /\bcsrf\s*:\s*['"]([^'"]+)['"]/.exec(s.textContent || '');
+            if (m && m[1]) return m[1];
+        }
+    } catch (e) {}
+    return '';
+};
+
+const xfpdBuildPostReactUrl = rawHref => {
+    if (!rawHref) return '';
+    try {
+        const u = new URL(rawHref, location.origin);
+        // SimpCity uses reaction_id=33 for love/thanks; SocialMediaGirls uses reaction_id=1 (Like/React; 33 is DMCA!).
+        const targetId = /(^|\.)simpcity\./i.test(location.hostname || '') ? '33' : '1';
+        if (u.searchParams.has('reaction_id')) {
+            u.searchParams.set('reaction_id', targetId);
+        } else {
+            return u.href.replace(/([?&]reaction_id=)\d*/i, `$1${targetId}`);
+        }
+        return u.href;
+    } catch (e) {
+        return String(rawHref);
+    }
+};
+
+const xfpdUnlockAttemptedPosts = new Set();
+
+const xfpdSameOriginFetchText = async (targetUrl, method = 'GET', formBody = null) => {
+    if (typeof window.fetch === 'function') {
+        try {
+            const initOpts = {
+                method,
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers:
+                    method === 'POST'
+                        ? {
+                              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                              'X-Requested-With': 'XMLHttpRequest',
+                              Accept: 'application/json, text/javascript, */*; q=0.01',
+                          }
+                        : {
+                              Accept: 'text/html,application/xhtml+xml,*/*',
+                          },
+            };
+            if (formBody !== null) initOpts.body = formBody;
+            const res = await window.fetch(targetUrl, initOpts);
+            const text = await res.text();
+            return { ok: res.ok, status: res.status, text };
+        } catch (e) {}
+    }
+    try {
+        const hdrs =
+            method === 'POST'
+                ? {
+                      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                      'X-Requested-With': 'XMLHttpRequest',
+                      Accept: 'application/json, text/javascript, */*; q=0.01',
+                      __xfpd_withCredentials: true,
+                      __xfpd_timeout: 15000,
+                  }
+                : {
+                      Accept: 'text/html,application/xhtml+xml,*/*',
+                      __xfpd_withCredentials: true,
+                      __xfpd_timeout: 15000,
+                  };
+        const r = await h.http.base(method, targetUrl, {}, hdrs, formBody || '', 'text');
+        const st = Number((r && r.status) || 0) || 0;
+        return { ok: st >= 200 && st < 400, status: st, text: String((r && r.source) || '') };
+    } catch (e) {
+        return { ok: false, status: 0, text: '' };
+    }
+};
+
 /**
  * @param postFooter
  */
 const registerPostReaction = postFooter => {
     if (!postFooter || !postFooter.querySelector) return;
-    const hasReaction = postFooter.querySelector('.has-reaction');
+    const hasReaction = postFooter.querySelector('.has-reaction, .smgReactionPill--reacted');
     if (!hasReaction) {
         const reactionAnchor = postFooter.querySelector('.reaction--imageHidden');
         if (reactionAnchor) {
@@ -11124,6 +11326,11 @@ const selectedPosts = [];
             activePostIds: new Set(),
         };
 
+        const isPostDownloadableOrLocked = postEntry => {
+            if (!postEntry) return false;
+            return postEntry.parsedHosts.length > 0 || !!(postEntry.parsedPost && postEntry.parsedPost.hasLockedContent);
+        };
+
         const getPostEnabledResourceCount = postEntry => {
             if (!postEntry || !Array.isArray(postEntry.parsedHosts)) return 0;
             return postEntry.parsedHosts
@@ -11132,20 +11339,25 @@ const selectedPosts = [];
         };
 
         const getPageSelectionStats = () => {
-            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
             let enabledPostsCount = 0;
             let selectedResourcesCount = 0;
+            let selectedLockedPosts = 0;
             downloadablePosts.forEach(p => {
                 const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
                 if (sp && sp.enabled) {
                     enabledPostsCount++;
                     selectedResourcesCount += getPostEnabledResourceCount(p);
+                    if (p.parsedPost && p.parsedPost.hasLockedContent) {
+                        selectedLockedPosts++;
+                    }
                 }
             });
             return {
                 totalPosts: downloadablePosts.length,
                 enabledPosts: enabledPostsCount,
                 selectedResources: selectedResourcesCount,
+                selectedLockedPosts,
             };
         };
 
@@ -11164,11 +11376,12 @@ const selectedPosts = [];
                 return;
             }
             btn.style.color = '';
-            const { totalPosts, enabledPosts, selectedResources } = getPageSelectionStats();
+            const { totalPosts, enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
+            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
             if (!totalPosts) {
                 span.textContent = '🡳 Download Page';
             } else if (enabledPosts > 0) {
-                span.textContent = `🡳 Download Page (${enabledPosts}/${totalPosts} · ${selectedResources})`;
+                span.textContent = `🡳 Download Page (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
             } else {
                 span.textContent = `🡳 Download Page (0/${totalPosts})`;
             }
@@ -11183,13 +11396,14 @@ const selectedPosts = [];
                 actionBtn.textContent = `✕ Cancel Page (${pageBatchState.finished}/${pageBatchState.total})`;
                 return;
             }
-            const { enabledPosts, selectedResources } = getPageSelectionStats();
+            const { enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
+            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
             if (enabledPosts === 0) {
                 actionBtn.disabled = true;
                 actionBtn.textContent = 'Select posts above (0 selected)';
             } else {
                 actionBtn.disabled = false;
-                actionBtn.textContent = `🡳 Download Selected (${enabledPosts} ${enabledPosts === 1 ? 'post' : 'posts'} · ${selectedResources})`;
+                actionBtn.textContent = `🡳 Download Selected (${enabledPosts} ${enabledPosts === 1 ? 'post' : 'posts'} · ${selectedResources}${lockBadge})`;
             }
         };
 
@@ -11324,11 +11538,11 @@ const selectedPosts = [];
         const buildDownloadPageFormHtml = () => {
             const color = ui.getTooltipBackgroundColor();
             const threadTitle = parsers.thread.parseTitle();
-            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
 
             let postsHtml = '';
             downloadablePosts.forEach(post => {
-                const { postId, postNumber, textContent } = post.parsedPost;
+                const { postId, postNumber, textContent, hasLockedContent } = post.parsedPost;
                 let selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
                 if (!selected) {
                     selected = { post, enabled: false };
@@ -11338,12 +11552,18 @@ const selectedPosts = [];
                 }
 
                 const resCount = getPostEnabledResourceCount(post);
+                const badgeText =
+                    resCount === 0 && hasLockedContent
+                        ? '🔒'
+                        : hasLockedContent
+                          ? `${resCount} + 🔒`
+                          : `${resCount}`;
                 const defaultPostContent = (textContent || '').trim().replace('​', '');
                 const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 18);
                 const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
                 postsHtml += ui.forms.createCheckbox(
                     `config-download-post-${postId}`,
-                    `Post #${postNumber} <span style="opacity:0.7;font-size:11.5px;">(${resCount})</span> ${summary}`,
+                    `Post #${postNumber} <span style="opacity:0.75;font-size:11.5px;">(${badgeText})</span> ${summary}`,
                     !!selected.enabled,
                 );
             });
@@ -11399,7 +11619,7 @@ const selectedPosts = [];
                 });
             }
 
-            const downloadableNow = parsedPosts.filter(p => p.parsedHosts.length);
+            const downloadableNow = parsedPosts.filter(isPostDownloadableOrLocked);
 
             downloadableNow.forEach(post => {
                 const { postId, contentContainer } = post.parsedPost;
@@ -11425,7 +11645,7 @@ const selectedPosts = [];
                             const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
                             if (selectedPost) selectedPost.enabled = e.target.checked;
 
-                            const currentDownloadable = parsedPosts.filter(p => p.parsedHosts.length);
+                            const currentDownloadable = parsedPosts.filter(isPostDownloadableOrLocked);
                             const checkAllCB = formEl.querySelector('#config-toggle-all-posts');
                             if (checkAllCB) {
                                 const enabledCount = currentDownloadable.filter(p => {
@@ -11456,7 +11676,7 @@ const selectedPosts = [];
 
                         const checked = e.target.checked;
                         const postCheckboxes = parsedPosts
-                            .filter(p => p.parsedHosts.length)
+                            .filter(isPostDownloadableOrLocked)
                             .map(p => formEl.querySelector(`#config-download-post-${p.parsedPost.postId}`))
                             .filter(Boolean);
 
@@ -11478,7 +11698,7 @@ const selectedPosts = [];
         };
 
         const syncDownloadPageUI = () => {
-            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
             if (!downloadablePosts.length) return;
 
             const btnDownloadPage = addDownloadPageButton();
@@ -11511,6 +11731,99 @@ const selectedPosts = [];
             });
         };
 
+        const unlockPostViaReaction = async (postEntry, statusLabel) => {
+            const { parsedPost } = postEntry;
+            const { postId, postNumber } = parsedPost;
+            if (xfpdUnlockAttemptedPosts.has(postId)) {
+                return false;
+            }
+            xfpdUnlockAttemptedPosts.add(postId);
+
+            const messageEl =
+                parsedPost.messageEl ||
+                document.querySelector(`#js-post-${postId}, [data-content="post-${postId}"]`) ||
+                (parsedPost.post && parsedPost.post.closest && parsedPost.post.closest('article.message, .message--post, .js-post'));
+            if (!messageEl) return false;
+
+            const reactLink = xfpdFindPostNativeReactLink(messageEl);
+            if (!reactLink) return false;
+
+            if (statusLabel) {
+                h.ui.setElProps(statusLabel, { color: '#3DB7C7', fontWeight: 'bold' });
+                h.ui.setText(statusLabel, '🔓 Reacting to unlock hidden links...');
+                h.show(statusLabel);
+            }
+            log.post.info(postId, '::Locked content detected -> reacting to unlock links::', postNumber);
+
+            const alreadyReacted =
+                reactLink.classList.contains('has-reaction') || !!messageEl.querySelector('.has-reaction, .smgReactionPill--reacted');
+
+            if (!alreadyReacted) {
+                const reactUrl = xfpdBuildPostReactUrl(reactLink.getAttribute('href') || '');
+                const csrfToken = xfpdGetXenForoCsrfToken();
+                let postedViaAjax = false;
+
+                if (reactUrl && csrfToken) {
+                    const bodyParams = new URLSearchParams({
+                        _xfToken: csrfToken,
+                        _xfRequestUri: `${location.pathname}${location.search || ''}`,
+                        _xfWithData: '1',
+                        _xfResponseType: 'json',
+                    }).toString();
+                    const res = await xfpdSameOriginFetchText(reactUrl, 'POST', bodyParams);
+                    if (res && res.ok) {
+                        postedViaAjax = true;
+                        reactLink.classList.add('has-reaction');
+                        reactLink.classList.remove('reaction--imageHidden');
+                    }
+                }
+
+                if (!postedViaAjax) {
+                    const href = reactLink.getAttribute('href') || '';
+                    if (href && /(^|\.)simpcity\./i.test(location.hostname || '')) {
+                        reactLink.setAttribute('href', href.replace('_id=1', '_id=33'));
+                    }
+                    reactLink.click();
+                    reactLink.classList.add('has-reaction');
+                    await h.delayedResolve(700);
+                } else {
+                    await h.delayedResolve(180);
+                }
+            }
+
+            // Check if client-side XenForo/SMG JS already swapped the hidden block into visible links.
+            let refreshed = postEntry.refreshUnlockedDom();
+
+            // If still locked (e.g. server-rendered [HIDETHANKS]/[HIDEREACT] block), fetch the fresh page HTML
+            // and update the post's .message-userContent in-place so both the page UI and parser get the unlocked links!
+            if (parsedPost.hasLockedContent || !postEntry.parsedHosts.length) {
+                if (statusLabel) {
+                    h.ui.setText(statusLabel, '🔓 Loading unlocked post links...');
+                }
+                const pageUrl = String(location.href || '').split('#')[0];
+                const pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                if (pageRes && pageRes.ok && pageRes.text) {
+                    try {
+                        const doc = new DOMParser().parseFromString(pageRes.text, 'text/html');
+                        const freshPostEl = doc.querySelector(`#js-post-${postId}, [data-content="post-${postId}"]`);
+                        const freshContent = freshPostEl && freshPostEl.querySelector('.message-content > .message-userContent');
+                        if (freshContent && parsedPost.contentContainer) {
+                            parsedPost.contentContainer.innerHTML = freshContent.innerHTML;
+                            refreshed = postEntry.refreshUnlockedDom() || refreshed;
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            parsedPost.hasLockedContent = false;
+            postEntry.updateIdleButtonLabel();
+            if (postEntry.tippyInstance && typeof postEntry.tippyInstance.__xfpdRebuildForm === 'function') {
+                postEntry.tippyInstance.__xfpdRebuildForm();
+            }
+            syncDownloadPageUI();
+            return refreshed;
+        };
+
         const initPostElement = post => {
             if (!post || post.dataset?.xfpdInitialized === '1') return false;
 
@@ -11525,7 +11838,7 @@ const selectedPosts = [];
             const parsedHosts = parsers.hosts.parseHosts(content);
             const getEnabledHostsCB = hostsList => hostsList.filter(host => host.enabled);
 
-            if (!parsedHosts.length) {
+            if (!parsedHosts.length && !parsedPost.hasLockedContent) {
                 return false;
             }
 
@@ -11537,12 +11850,23 @@ const selectedPosts = [];
             const getTotalDownloadableResourcesForPostCB = hostsList => {
                 return hostsList.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
             };
+            const getTotalResourcesCount = () => parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
 
             // Create and attach the download button to post.
             const { btn: btnDownloadPost } = ui.buttons.addDownloadPostButton(post);
-            const totalResources = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
-            const checkedLength = getTotalDownloadableResourcesForPostCB(parsedHosts);
-            btnDownloadPost.innerHTML = `🡳 Download (${checkedLength}/${totalResources})`;
+            const updateIdleButtonLabel = () => {
+                const totalRes = getTotalResourcesCount();
+                const checkedLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
+                if (totalRes === 0 && parsedPost.hasLockedContent) {
+                    btnDownloadPost.style.color = '#3DB7C7';
+                    btnDownloadPost.innerHTML = '🔓 Unlock & Download';
+                } else {
+                    const lockSuffix = parsedPost.hasLockedContent ? ' + 🔒' : '';
+                    btnDownloadPost.style.color = '';
+                    btnDownloadPost.innerHTML = `🡳 Download (${checkedLen}/${totalRes}${lockSuffix})`;
+                }
+            };
+            updateIdleButtonLabel();
 
             // Create download status / progress elements.
             const { el: statusText } = ui.labels.status.createStatusLabel();
@@ -11565,6 +11889,38 @@ const selectedPosts = [];
 
             const getSettingsCB = () => postSettings;
 
+            const refreshUnlockedDom = () => {
+                const reParsed = parsers.thread.parsePost(post);
+                if (!reParsed) return false;
+                parsedPost.content = reParsed.content;
+                parsedPost.textContent = reParsed.textContent;
+                parsedPost.spoilers = reParsed.spoilers;
+                parsedPost.footer = reParsed.footer;
+                parsedPost.hasLockedContent = reParsed.hasLockedContent;
+
+                const disabledNames = new Set(
+                    parsedHosts.filter(hItem => !hItem.enabled).map(hItem => `${hItem.name}:${hItem.category}`),
+                );
+                const freshHosts = parsers.hosts.parseHosts(reParsed.content);
+                freshHosts.forEach(hItem => {
+                    if (disabledNames.has(`${hItem.name}:${hItem.category}`)) {
+                        hItem.enabled = false;
+                    }
+                });
+
+                const prevTotal = getTotalResourcesCount();
+                parsedHosts.splice(0, parsedHosts.length, ...freshHosts);
+                const newTotal = getTotalResourcesCount();
+
+                if (btnDownloadPost.dataset.xfpdState !== 'running') {
+                    updateIdleButtonLabel();
+                }
+                if (postEntry.tippyInstance && typeof postEntry.tippyInstance.__xfpdRebuildForm === 'function') {
+                    postEntry.tippyInstance.__xfpdRebuildForm();
+                }
+                return newTotal !== prevTotal || !reParsed.hasLockedContent;
+            };
+
             const postDownloadCallbacks = {
                 onProgress: ({ phase, completed: doneCount, total: totalCount }) => {
                     btnDownloadPost.dataset.xfpdState = 'running';
@@ -11577,9 +11933,7 @@ const selectedPosts = [];
                 },
                 onCancel: () => {
                     btnDownloadPost.dataset.xfpdState = 'idle';
-                    btnDownloadPost.style.color = '';
-                    const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
-                    btnDownloadPost.innerHTML = `🡳 Download (${enabledLen}/${totalResources})`;
+                    updateIdleButtonLabel();
                 },
                 onComplete: (total, succeeded, failed = 0, deduped = 0) => {
                     btnDownloadPost.dataset.xfpdState = 'done';
@@ -11606,15 +11960,36 @@ const selectedPosts = [];
                 },
             };
 
-            const startPostDownload = (extraCallbacks = null) => {
+            const startPostDownload = async (extraCallbacks = null) => {
                 if (isPostProcessing(postId)) {
                     const ctrl = activePostControllers.get(postId);
                     if (ctrl) ctrl.cancel();
-                    return Promise.resolve();
+                    return;
                 }
                 btnDownloadPost.dataset.xfpdState = 'running';
                 btnDownloadPost.style.color = '#e8a838';
+
+                // Automatically react & unlock hidden [HIDEREACT]/[HIDETHANKS] links before downloading!
+                if (parsedPost.hasLockedContent && (postSettings.autoUnlockReaction !== false || parsedHosts.length === 0)) {
+                    btnDownloadPost.innerHTML = '⏳ Unlocking...';
+                    try {
+                        await unlockPostViaReaction(postEntry, statusText);
+                    } catch (e) {
+                        console.error('[XFPD] Error unlocking post reaction:', e);
+                    }
+                }
+
                 const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
+                if (enabledLen === 0) {
+                    btnDownloadPost.dataset.xfpdState = 'done';
+                    btnDownloadPost.style.color = '#959595';
+                    btnDownloadPost.innerHTML = '✓ Unlocked (0 links)';
+                    h.ui.setElProps(statusText, { color: '#959595', fontWeight: 'normal' });
+                    h.ui.setText(statusText, 'Unlocked post — no supported host links found.');
+                    h.show(statusText);
+                    return;
+                }
+
                 btnDownloadPost.innerHTML = `✕ Cancel (0/${enabledLen})`;
                 const mergedCallbacks = extraCallbacks ? { ...postDownloadCallbacks, ...extraCallbacks } : postDownloadCallbacks;
                 return downloadPost(
@@ -11658,6 +12033,8 @@ const selectedPosts = [];
                 statusUI,
                 postDownloadCallbacks,
                 startPostDownload,
+                refreshUnlockedDom,
+                updateIdleButtonLabel,
                 tippyInstance: postTippyInstance,
             };
             if (existingIdx > -1) {
@@ -11675,35 +12052,53 @@ const selectedPosts = [];
         };
 
         const scanPosts = () => {
-            let addedDownloadable = false;
+            let changed = false;
+            // Also refresh any already-initialized locked posts whose DOM was unlocked manually on the page.
+            parsedPosts.forEach(entry => {
+                if (entry.parsedPost && entry.parsedPost.hasLockedContent && !isPostProcessing(entry.parsedPost.postId)) {
+                    try {
+                        if (entry.refreshUnlockedDom && entry.refreshUnlockedDom()) {
+                            changed = true;
+                        }
+                    } catch (e) {}
+                }
+            });
             h.elements('.message-attribution-opposite').forEach(post => {
                 try {
                     if (initPostElement(post)) {
-                        addedDownloadable = true;
+                        changed = true;
                     }
                 } catch (e) {
                     console.error('[XFPD] Error initializing post:', e);
                 }
             });
-            if (addedDownloadable) {
+            if (changed) {
                 syncDownloadPageUI();
             }
         };
 
         scanPosts();
 
-        // Watch for dynamically unlocked/inserted posts (e.g. SMG [HIDEREACT]/[HIDETHANKS] AJAX post replacement or quick replies).
+        // Watch for dynamically unlocked/inserted posts (e.g. SMG [HIDEREACT]/[HIDETHANKS] AJAX post replacement, class changes, or quick replies).
         if (typeof MutationObserver !== 'undefined' && document.body) {
             let rescanTimer = null;
             const observer = new MutationObserver(mutations => {
                 let shouldScan = false;
                 for (const m of mutations) {
+                    if (m.type === 'attributes') {
+                        const t = m.target;
+                        if (t && t.classList && (t.classList.contains('bbCodeBlock--visible') || t.classList.contains('hidethanks'))) {
+                            shouldScan = true;
+                            break;
+                        }
+                        continue;
+                    }
                     if (!m.addedNodes || !m.addedNodes.length) continue;
                     for (const node of m.addedNodes) {
                         if (node.nodeType !== 1) continue;
                         if (
-                            (node.matches && node.matches('article.message, .js-post, .message-attribution-opposite')) ||
-                            (node.querySelector && node.querySelector('.message-attribution-opposite')) ||
+                            (node.matches && node.matches('article.message, .js-post, .message-attribution-opposite, .bbCodeBlock--visible')) ||
+                            (node.querySelector && node.querySelector('.message-attribution-opposite, .bbCodeBlock--visible')) ||
                             (node.closest && node.closest('.message-body, .message-userContent'))
                         ) {
                             shouldScan = true;
@@ -11723,6 +12118,8 @@ const selectedPosts = [];
             observer.observe(h.element('.block--messages') || document.body, {
                 childList: true,
                 subtree: true,
+                attributes: true,
+                attributeFilter: ['class'],
             });
         }
     });

@@ -1,3 +1,68 @@
+function xfpdFindPostNativeReactLink(messageEl) {
+    if (!messageEl || !messageEl.querySelectorAll) return null;
+    const candidates = messageEl.querySelectorAll(
+        'footer a.reaction[href], .message-actionBar a.reaction[href], a.reaction[data-xf-init~="reaction"][href]',
+    );
+    for (const link of candidates) {
+        if (link.closest && link.closest('.smgReactionPills, .comment, .js-comment, .uw_fcs_comment_section, .message-responses')) {
+            continue;
+        }
+        const href = link.getAttribute('href') || '';
+        if (/\/react(?=[?&]|$)/i.test(href) && href.includes('reaction_id=')) {
+            return link;
+        }
+    }
+    return null;
+}
+
+function xfpdDetectLockedReactionContent(messageEl, cleanedClone) {
+    if (!messageEl || !cleanedClone || !cleanedClone.querySelectorAll) return false;
+    // Only offer reaction-unlock when a native reaction control exists on the post (user is logged in & permitted to react).
+    const reactLink = xfpdFindPostNativeReactLink(messageEl);
+    if (!reactLink) return false;
+
+    const explicitReactionLockSel = [
+        '.hidethanks:not(.bbCodeBlock--visible)',
+        '.hidereact:not(.bbCodeBlock--visible)',
+        '.hidereactscore:not(.bbCodeBlock--visible)',
+        '.hidereplyreact:not(.bbCodeBlock--visible)',
+        '[class*="xs_hide_react"]:not([class*="visible"])',
+        '[class*="xs_hide_like"]:not([class*="visible"])',
+    ].join(', ');
+
+    if (cleanedClone.querySelector(explicitReactionLockSel)) {
+        return true;
+    }
+
+    const genericHiddenBlocks = cleanedClone.querySelectorAll(
+        '.bbCodeBlock--hidden:not(.bbCodeBlock--visible), .bbCodeBlock--hide:not(.bbCodeBlock--visible), [class*="xs_hide"]:not([class*="visible"]), .messageHide, .th_hide_block',
+    );
+    for (const blk of genericHiddenBlocks) {
+        const txt = String(blk.textContent || '').replace(/\s+/g, ' ').trim();
+        // Exclude reply-only or post-count-only locks unless react/like/thank is also an option.
+        const isStrictlyNonReact =
+            /\b(?:you\s+must\s+reply|reply\s+to\s+(?:this|view|see)|must\s+have\s+\d+\s+posts)\b/i.test(txt) &&
+            !/\b(?:react|like|thank)\b/i.test(txt);
+        if (!isStrictlyNonReact) {
+            return true;
+        }
+    }
+
+    const candidateBoxes = cleanedClone.querySelectorAll(
+        '.bbCodeBlock:not(.bbCodeBlock--spoiler):not(.bbCodeBlock--unfurl):not(.bbCodeBlock--quote):not(.bbCodeBlock--visible), .blockMessage',
+    );
+    const reactPromptRe =
+        /(?:you\s+must|need\s+to|have\s+to|please)\s+(?:react|like|thank)|(?:react|like)\s+(?:or\s+\w+\s+)?to\s+(?:this\s+(?:post|message)|unlock|view|see)|hidden\s+content[\s\S]{0,140}\b(?:react|like|thank)\b/i;
+    for (const box of candidateBoxes) {
+        const txt = String(box.textContent || '').replace(/\s+/g, ' ').trim();
+        if (reactPromptRe.test(txt)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 const parsers = {
     thread: {
         /**
@@ -323,6 +388,7 @@ const parsers = {
             .filter(s => s !== '')
             .unique();
 
+            const hasLockedContent = xfpdDetectLockedReactionContent(messageEl, messageContentClone);
             const postContent = messageContentClone.innerHTML;
             const postTextContent = messageContentClone.innerText;
 
@@ -332,11 +398,13 @@ const parsers = {
 
             return {
                 post,
+                messageEl,
                 postId,
                 postNumber,
                 pageNumber,
                 spoilers,
                 footer,
+                hasLockedContent,
                 content: postContent,
                 textContent: postTextContent,
                 contentContainer: messageContent,

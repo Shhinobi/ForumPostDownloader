@@ -222,6 +222,12 @@ const ui = {
                         smartMirrors,
                         false,
                     ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-auto-unlock-reaction`,
+                        'Auto-React Locked Posts',
+                        currentSettings.autoUnlockReaction !== false,
+                        false,
+                    ),
                     `
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-video-quality">Video Quality</label>
@@ -280,6 +286,7 @@ const ui = {
                 setCb('zipped', settingsObj.zipped, false);
                 setCb('organize-media', orgMedia, skipDl);
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
+                setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
                 const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
                 if (qualEl) {
                     const q = settingsObj.videoQuality || 'best';
@@ -349,6 +356,11 @@ const ui = {
                 bindOne('smart-mirrors', e => {
                     settingsObj.smartMirrors = !!e.target.checked;
                     notify({ smartMirrors: settingsObj.smartMirrors }, ['smartMirrors']);
+                });
+
+                bindOne('auto-unlock-reaction', e => {
+                    settingsObj.autoUnlockReaction = !!e.target.checked;
+                    notify({ autoUnlockReaction: settingsObj.autoUnlockReaction }, ['autoUnlockReaction']);
                 });
 
                 bindOne('video-quality', e => {
@@ -605,33 +617,61 @@ const ui = {
                     btnDownloadPost,
                 ) => {
                     const { postId } = parsedPost;
-                    const color = ui.getTooltipBackgroundColor();
-
-                    const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
-
-                    let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
-                    parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
-                    hostsHtml += '</div>';
-
-                    const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
-                    const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
-                    const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB, postId);
                     const idPrefix = `settings-${postId}`;
-
-                    const formHtml = [
-                        window.isFF ? ui.forms.config.post.createFilenameInput(customFilename, postId, color, defaultFilename) : null,
-                        ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
-                        ui.forms.config.post.createHostCheckboxes(postId, filterLabel, hostsHtml, parsedHosts.length > 1),
-                        ui.forms.createRow(
-                            `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">🡳 Download Post (${initialFilteredCount}/${totalResourcesCount})</button>`,
-                        ),
-                        ui.forms.createRow(
-                            '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
-                        ),
-                    ].filter(c => c !== null);
-
-                    const configForm = ui.forms.config.post.createForm(postId, color, formHtml.join(''));
                     let activeInstance = null;
+
+                    const getActionBtnLabel = (filteredCount, totalCount) => {
+                        if (totalCount === 0 && parsedPost.hasLockedContent) {
+                            return '🔓 Unlock & Download Post';
+                        }
+                        const lockSuffix = parsedPost.hasLockedContent ? ' + 🔒' : '';
+                        return `🡳 Download Post (${filteredCount}/${totalCount}${lockSuffix})`;
+                    };
+
+                    const renderPostFormHtml = () => {
+                        const color = ui.getTooltipBackgroundColor();
+                        const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
+                        const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+                        const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
+
+                        let filterSectionHtml = '';
+                        if (parsedHosts.length > 0) {
+                            let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
+                            parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
+                            hostsHtml += '</div>';
+                            const filterLabel = ui.forms.config.post.createFilterLabel(
+                                parsedHosts,
+                                totalDownloadableResourcesForPostCB,
+                                postId,
+                            );
+                            filterSectionHtml = ui.forms.config.post.createHostCheckboxes(
+                                postId,
+                                filterLabel,
+                                hostsHtml,
+                                parsedHosts.length > 1,
+                            );
+                        } else if (parsedPost.hasLockedContent) {
+                            filterSectionHtml = ui.forms.createRow(
+                                '<div style="font-size:12px; color:#e8a838; margin:4px 0;">🔒 Links hidden behind reaction — will unlock automatically before downloading.</div>',
+                            );
+                        }
+
+                        const formParts = [
+                            window.isFF
+                                ? ui.forms.config.post.createFilenameInput(customFilename, postId, color, defaultFilename)
+                                : null,
+                            ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
+                            filterSectionHtml,
+                            ui.forms.createRow(
+                                `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">${getActionBtnLabel(initialFilteredCount, totalResourcesCount)}</button>`,
+                            ),
+                            ui.forms.createRow(
+                                '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
+                            ),
+                        ].filter(c => c !== null && c !== '');
+
+                        return ui.forms.config.post.createForm(postId, color, formParts.join(''));
+                    };
 
                     const setupPostForm = instance => {
                         activeInstance = instance || activeInstance;
@@ -673,6 +713,7 @@ const ui = {
                         });
 
                         // Sync host checkboxes, filtered count, and action button on every open.
+                        const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
                         let enabledHostCount = 0;
                         parsedHosts.forEach(host => {
                             const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
@@ -688,8 +729,8 @@ const ui = {
                         }
                         const startBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
                         if (startBtn) {
-                            startBtn.disabled = liveFilteredCount === 0;
-                            startBtn.textContent = `🡳 Download Post (${liveFilteredCount}/${totalResourcesCount})`;
+                            startBtn.disabled = liveFilteredCount === 0 && !parsedPost.hasLockedContent;
+                            startBtn.textContent = getActionBtnLabel(liveFilteredCount, totalResourcesCount);
                         }
                         if (parsedHosts.length > 1) {
                             const toggleAllCb = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -778,13 +819,14 @@ const ui = {
                                         .reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
                                     if (btnDownloadPost.dataset.xfpdState !== 'running') {
+                                        const lockTag = parsedPost.hasLockedContent ? ' + 🔒' : '';
                                         btnDownloadPost.style.color = '';
-                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources}${lockTag})`;
                                     }
                                     const startActionBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
                                     if (startActionBtn) {
-                                        startActionBtn.disabled = totalDownloadableResources === 0;
-                                        startActionBtn.textContent = `🡳 Download Post (${totalDownloadableResources}/${totalResources})`;
+                                        startActionBtn.disabled = totalDownloadableResources === 0 && !parsedPost.hasLockedContent;
+                                        startActionBtn.textContent = getActionBtnLabel(totalDownloadableResources, totalResources);
                                     }
 
                                     if (parsedHosts.length > 1) {
@@ -804,12 +846,21 @@ const ui = {
                         });
                     };
 
-                    return ui.tooltip(btnDownloadPost, configForm, {
+                    const tippyInst = ui.tooltip(btnDownloadPost, renderPostFormHtml(), {
                         onCreate: instance => setupPostForm(instance),
                         onShow: instance => setupPostForm(instance),
                         onMount: instance => setupPostForm(instance),
                         onShown: instance => setupPostForm(instance),
                     });
+                    if (tippyInst) {
+                        tippyInst.__xfpdRebuildForm = () => {
+                            if (typeof tippyInst.setContent === 'function') {
+                                tippyInst.setContent(renderPostFormHtml());
+                                setupPostForm(tippyInst);
+                            }
+                        };
+                    }
+                    return tippyInst;
                 },
             },
         },
