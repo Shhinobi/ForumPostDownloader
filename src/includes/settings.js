@@ -16,7 +16,7 @@ const settings = {
     extensions: {
         documents: ['.txt', '.doc', '.docx', '.pdf'],
         compressed: ['.zip', '.rar', '.7z', '.tar', '.bz2', '.gzip'],
-        image: ['.jpg', '.jpeg', '.png', '.gif', '.gif', '.webp', '.jpe', '.svg', '.tif', '.tiff', '.jif'],
+        image: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.heic', '.heif', '.jfif', '.jpe', '.svg', '.tif', '.tiff', '.jif'],
         video: [
             '.mpeg',
             '.avchd',
@@ -31,6 +31,9 @@ const settings = {
             '.qt',
             '.mpe',
             '.mp4',
+            '.mkv',
+            '.ts',
+            '.m2ts',
             '.flv',
             '.mov',
             '.mpg',

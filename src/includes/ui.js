@@ -541,10 +541,12 @@ const ui = {
 
                     const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
 
-                    let hostsHtml = '<div>';
+                    let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
                     parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
                     hostsHtml += '</div>';
 
+                    const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+                    const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
                     const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB, postId);
                     const idPrefix = `settings-${postId}`;
 
@@ -553,7 +555,10 @@ const ui = {
                         ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
                         ui.forms.config.post.createHostCheckboxes(postId, filterLabel, hostsHtml, parsedHosts.length > 1),
                         ui.forms.createRow(
-                            '<a href="#download-page" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
+                            `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">🡳 Download Post (${initialFilteredCount}/${totalResourcesCount})</button>`,
+                        ),
+                        ui.forms.createRow(
+                            '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
                         ),
                     ].filter(c => c !== null);
 
@@ -599,7 +604,7 @@ const ui = {
                             }
                         });
 
-                        // Sync host checkboxes & filtered count on every open.
+                        // Sync host checkboxes, filtered count, and action button on every open.
                         let enabledHostCount = 0;
                         parsedHosts.forEach(host => {
                             const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
@@ -608,9 +613,15 @@ const ui = {
                                 if (host.enabled) enabledHostCount++;
                             }
                         });
+                        const liveFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
                         const countSpan = formEl.querySelector('[data-xfpd-filtered-count]') || formEl.querySelector('#filtered-count');
                         if (countSpan) {
-                            countSpan.textContent = `(${totalDownloadableResourcesForPostCB(parsedHosts)})`;
+                            countSpan.textContent = `(${liveFilteredCount})`;
+                        }
+                        const startBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
+                        if (startBtn) {
+                            startBtn.disabled = liveFilteredCount === 0;
+                            startBtn.textContent = `🡳 Download Post (${liveFilteredCount}/${totalResourcesCount})`;
                         }
                         if (parsedHosts.length > 1) {
                             const toggleAllCb = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -632,6 +643,26 @@ const ui = {
                             e.preventDefault();
                             onSubmitFormCB({ tippyInstance: activeInstance });
                         });
+
+                        if (startBtn) {
+                            startBtn.addEventListener('click', e => {
+                                e.preventDefault();
+                                onSubmitFormCB({ tippyInstance: activeInstance, startDownload: true });
+                            });
+                        }
+
+                        const jumpPageLink = formEl.querySelector('[data-xfpd-jump-page="1"]');
+                        if (jumpPageLink) {
+                            jumpPageLink.addEventListener('click', e => {
+                                if (typeof window.__xfpdFocusDownloadPage === 'function') {
+                                    e.preventDefault();
+                                    if (activeInstance && typeof activeInstance.hide === 'function') {
+                                        activeInstance.hide();
+                                    }
+                                    window.__xfpdFocusDownloadPage();
+                                }
+                            });
+                        }
 
                         if (parsedHosts.length > 1) {
                             const toggleAllEl = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -678,7 +709,15 @@ const ui = {
                                         .filter(hItem => hItem.enabled && hItem.resources.length)
                                         .reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
-                                    btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                    if (btnDownloadPost.dataset.xfpdState !== 'running') {
+                                        btnDownloadPost.style.color = '';
+                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                    }
+                                    const startActionBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
+                                    if (startActionBtn) {
+                                        startActionBtn.disabled = totalDownloadableResources === 0;
+                                        startActionBtn.textContent = `🡳 Download Post (${totalDownloadableResources}/${totalResources})`;
+                                    }
 
                                     if (parsedHosts.length > 1) {
                                         const toggleAllHostsCheckbox = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);

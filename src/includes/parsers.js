@@ -312,119 +312,143 @@ const parsers = {
             };
         },
     },
-    hosts: {
-        /**
-     * @param postContent
-     * @returns {(*&{id: number, enabled: boolean})[]}
-     */
-        parseHosts: postContent => {
-            let parsed = [];
+    hosts: (() => {
+        let compiledHostsCache = null;
+        let nextHostId = 1;
 
-            for (const host of hosts) {
-                // Require at-least the signature plus an array of matchers.
-                if (host.length < 2) {
-                    continue;
-                }
+        const compileMatcher = matcher => {
+            if (!matcher) return null;
+            let patternStr = matcher.toString().replace(/~an@/g, 'a-zA-Z0-9');
+            const stripQueryString = h.contains('<no_qs>', patternStr);
+            const stripTrailingSlash = !h.contains('<keep_ts>', patternStr);
+            patternStr = patternStr.replace('<no_qs>', '').replace('<keep_ts>', '');
 
-                const signature = host[0].split(':');
-                const matchers = host[1];
-
-                if (!h.isArray(matchers) || !matchers.length) {
-                    continue;
-                }
-
-                const name = signature[0];
-                let category = signature.length > 1 ? signature[1] : 'misc';
-
-                let singleMatcherPattern = matchers[0];
-                let albumMatcherPattern = matchers.length > 1 ? matchers[1] : null;
-
-                const execMatcher = matcher => {
-                    let pattern = matcher.toString().replace(/~an@/g, 'a-zA-Z0-9');
-
-                    const stripQueryString = h.contains('<no_qs>', pattern.toString());
-                    const stripTrailingSlash = !h.contains('<keep_ts>', pattern.toString());
-                    pattern = pattern.replace('<no_qs>', '').replace('<keep_ts>', '');
-
-                    if (h.contains('!!', pattern)) {
-                        pattern = pattern.replace('!!', '');
-                        pattern = h.re.toRegExp(h.re.toString(pattern), 'igs');
-                    } else {
-                        const pat = `(?<=data-url="|data-src="|src="|href=")${h.re.toString(pattern)}.*?(?=")|https?:\/\/(www.)?${h.re.toString(pattern)}.*?(?=("|<|$|\]|'))`;
-                        pattern = h.re.toRegExp(pat, 'igs');
-                    }
-
-                    let matches = h.re.matchAll(pattern, postContent).unique();
-
-                    matches = matches.map(url => {
-                // Some XenForo post HTML can leak into the match (e.g. trailing </a>...</div>), which then
-                // creates "ghost" resources (and broken filenames like "div>"). Strip anything after the URL.
-                url = String(url || '');
-                url = url.replace(/&amp;/g, '&');
-                url = url.split(/[\s"'<>]/)[0].trim();
-                // Normalize scheme so the same link in different representations dedupes cleanly.
-                if (url && !/^https?:\/\//i.test(url)) {
-                    url = `https://${url}`;
-                }
-
-                        if (stripQueryString && h.contains('?', url)) {
-                            url = url.substring(0, url.indexOf('?'));
-                        }
-
-                        if (stripTrailingSlash && url[url.length - 1]) {
-                            url = url[url.length - 1] === '/' ? url.substring(0, url.length - 1) : url;
-                        }
-
-                        return url.trim();
-                    });
-
-                    return h.unique(matches);
-                };
-
-                const categories = category.split(',');
-
-                if (singleMatcherPattern) {
-                    let singleCategory = [categories[0]].map(c => {
-                        if (c === 'image' || c === 'video') {
-                            return `${h.ucFirst(c)}s`;
-                        }
-
-                        if (c.trim() !== '') {
-                            return h.ucFirst(c);
-                        }
-
-                        return 'Links';
-                    })[0];
-
-                    parsed.push({
-                        name,
-                        type: 'single',
-                        category: singleCategory,
-                        resources: execMatcher(singleMatcherPattern),
-                    });
-                }
-
-                if (albumMatcherPattern) {
-                    let albumCategory = categories.length > 1 ? categories[1] : categories[0];
-
-                    albumCategory = `${h.ucFirst(albumCategory)} Albums`;
-
-                    parsed.push({
-                        name,
-                        type: 'album',
-                        category: albumCategory,
-                        resources: execMatcher(albumMatcherPattern),
-                    });
-                }
+            let regex;
+            if (h.contains('!!', patternStr)) {
+                patternStr = patternStr.replace('!!', '');
+                regex = h.re.toRegExp(h.re.toString(patternStr), 'igs');
+            } else {
+                const rawInner = h.re.toString(patternStr);
+                const pat = `(?<=data-url="|data-src="|src="|href=")${rawInner}.*?(?=")|https?:\\/\\/(www\\.)?${rawInner}.*?(?=("|<|$|\\]|'))`;
+                regex = h.re.toRegExp(pat, 'igs');
             }
 
-            return parsed
-                .map(p => ({
-                ...p,
-                enabled: true,
-                id: Math.round(Math.random() * Number.MAX_SAFE_INTEGER),
-            }))
-                .filter(p => p.resources.length);
-        },
-    },
+            return { regex, stripQueryString, stripTrailingSlash };
+        };
+
+        const getCompiledHosts = () => {
+            if (compiledHostsCache && compiledHostsCache.source === hosts) {
+                return compiledHostsCache.items;
+            }
+            const items = [];
+            for (const host of hosts) {
+                if (!host || host.length < 2) continue;
+                const signature = host[0].split(':');
+                const matchers = host[1];
+                if (!h.isArray(matchers) || !matchers.length) continue;
+
+                const name = signature[0];
+                const category = signature.length > 1 ? signature[1] : 'misc';
+                const categories = category.split(',');
+
+                const firstCat = categories[0];
+                const singleCategory =
+                    firstCat === 'image' || firstCat === 'video'
+                        ? `${h.ucFirst(firstCat)}s`
+                        : firstCat.trim() !== ''
+                          ? h.ucFirst(firstCat)
+                          : 'Links';
+
+                const albumCatRaw = categories.length > 1 ? categories[1] : categories[0];
+                const albumCategory = `${h.ucFirst(albumCatRaw)} Albums`;
+
+                items.push({
+                    name,
+                    singleCategory,
+                    albumCategory,
+                    singleMatcher: compileMatcher(matchers[0]),
+                    albumMatcher: matchers.length > 1 ? compileMatcher(matchers[1]) : null,
+                });
+            }
+            compiledHostsCache = { source: hosts, items };
+            return items;
+        };
+
+        const execCompiledMatcher = (compiled, postContent) => {
+            if (!compiled) return [];
+            const rawMatches = h.re.matchAll(compiled.regex, postContent);
+            if (!rawMatches.length) return [];
+
+            const seen = new Set();
+            const out = [];
+            for (let i = 0; i < rawMatches.length; i++) {
+                // Some XenForo post HTML can leak into the match (e.g. trailing </a>...</div>), which then
+                // creates "ghost" resources (and broken filenames like "div>"). Strip anything after the URL.
+                let url = String(rawMatches[i] || '').replace(/&amp;/g, '&');
+                url = url.split(/[\s"'<>]/)[0].trim();
+                if (!url) continue;
+                // Normalize scheme so the same link in different representations dedupes cleanly.
+                if (!/^https?:\/\//i.test(url)) {
+                    url = `https://${url}`;
+                }
+                if (compiled.stripQueryString) {
+                    const qIdx = url.indexOf('?');
+                    if (qIdx > -1) url = url.substring(0, qIdx);
+                }
+                if (compiled.stripTrailingSlash && url.endsWith('/')) {
+                    url = url.slice(0, -1);
+                }
+                url = url.trim();
+                if (url && !seen.has(url)) {
+                    seen.add(url);
+                    out.push(url);
+                }
+            }
+            return out;
+        };
+
+        return {
+            /**
+       * @param postContent
+       * @returns {(*&{id: number, enabled: boolean})[]}
+       */
+            parseHosts: postContent => {
+                if (!postContent) return [];
+                const parsed = [];
+                const compiledList = getCompiledHosts();
+
+                for (let i = 0; i < compiledList.length; i++) {
+                    const entry = compiledList[i];
+                    if (entry.singleMatcher) {
+                        const resources = execCompiledMatcher(entry.singleMatcher, postContent);
+                        if (resources.length) {
+                            parsed.push({
+                                name: entry.name,
+                                type: 'single',
+                                category: entry.singleCategory,
+                                resources,
+                                enabled: true,
+                                id: nextHostId++,
+                            });
+                        }
+                    }
+                    if (entry.albumMatcher) {
+                        const resources = execCompiledMatcher(entry.albumMatcher, postContent);
+                        if (resources.length) {
+                            parsed.push({
+                                name: entry.name,
+                                type: 'album',
+                                category: entry.albumCategory,
+                                resources,
+                                enabled: true,
+                                id: nextHostId++,
+                            });
+                        }
+                    }
+                }
+
+                return parsed;
+            },
+        };
+    })(),
 };

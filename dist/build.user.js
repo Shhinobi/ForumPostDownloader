@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.25
+// @version 3.26
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -305,7 +305,7 @@ const settings = {
     extensions: {
         documents: ['.txt', '.doc', '.docx', '.pdf'],
         compressed: ['.zip', '.rar', '.7z', '.tar', '.bz2', '.gzip'],
-        image: ['.jpg', '.jpeg', '.png', '.gif', '.gif', '.webp', '.jpe', '.svg', '.tif', '.tiff', '.jif'],
+        image: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.heic', '.heif', '.jfif', '.jpe', '.svg', '.tif', '.tiff', '.jif'],
         video: [
             '.mpeg',
             '.avchd',
@@ -320,6 +320,9 @@ const settings = {
             '.qt',
             '.mpe',
             '.mp4',
+            '.mkv',
+            '.ts',
+            '.m2ts',
             '.flv',
             '.mov',
             '.mpg',
@@ -1626,16 +1629,20 @@ const h = {
    * @param path
    * @returns {unknown}
    */
-    basename: path =>
-    path
-    .replace(/\/(\s+)?$/, '')
-    .split('/')
-    .reverse()[0],
+    basename: path => {
+        const cleaned = String(path || '').replace(/\/(\s+)?$/, '');
+        const idx = cleaned.lastIndexOf('/');
+        return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+    },
     /**
    * @param path
    * @returns {string}
    */
-    fnNoExt: path => path.trim().split('.').reverse().slice(1).reverse().join('.'),
+    fnNoExt: path => {
+        const trimmed = String(path || '').trim();
+        const dotIdx = trimmed.lastIndexOf('.');
+        return dotIdx > 0 ? trimmed.slice(0, dotIdx) : (dotIdx === 0 ? '' : trimmed);
+    },
     /**
    * Extension without the dot, or '' if there isn't one. Counterpart to fnNoExt.
    * This was referenced by the duplicate-filename path but never actually defined, so any post with
@@ -1653,7 +1660,10 @@ const h = {
    * @returns {unknown}
    */
     ext: path => {
-        return !path || path.indexOf('.') < 0 ? null : path.split('.').reverse()[0];
+        if (!path) return null;
+        const s = String(path);
+        const dotIdx = s.lastIndexOf('.');
+        return dotIdx < 0 ? null : s.slice(dotIdx + 1);
     },
     /**
    * @param element
@@ -1724,11 +1734,23 @@ const h = {
    * @returns {*}
    */
     unique: (items, cb) => {
+        if (!Array.isArray(items) || items.length === 0) return [];
         if (cb) {
-            return items.reduce((acc, item) => (!acc.find(i => i[byKey] === item[byKey]) ? acc.concat(item) : acc), []);
+            const seen = new Set();
+            const out = [];
+            const getKey = typeof cb === 'function' ? cb : item => (item && typeof item === 'object' ? item[cb] : item);
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                const key = getKey(item);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    out.push(item);
+                }
+            }
+            return out;
         }
 
-        return items.reduce((acc, item) => (acc.indexOf(item) < 0 ? acc.concat(item) : acc), []);
+        return Array.from(new Set(items));
     },
     /**
    * https://github.com/sindresorhus/pretty-bytes
@@ -1937,15 +1959,9 @@ const h = {
      * @returns {string|*}
      */
         stripFlags: pattern => {
-            if (!h.contains('/', pattern)) {
-                return pattern;
-            }
-
-            const s = pattern.split('').reverse().join('');
-
-            const index = s.indexOf('/');
-
-            return s.substring(index).split('').reverse().join('');
+            const str = String(pattern || '');
+            const lastSlash = str.lastIndexOf('/');
+            return lastSlash < 0 ? str : str.slice(0, lastSlash + 1);
         },
         /**
      * @param pattern
@@ -1978,7 +1994,9 @@ const h = {
      * @returns {*|null}
      */
         match: (pattern, subject) => {
+            if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
             const matches = pattern.exec(subject);
+            if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
             return matches && matches.length ? matches[0] : null;
         },
         /**
@@ -1989,6 +2007,7 @@ const h = {
      */
         matchAll: (pattern, subject) => {
             const matches = [];
+            pattern.lastIndex = 0;
 
             let m;
 
@@ -2001,6 +2020,7 @@ const h = {
                 matches.push(m[0]);
             }
 
+            pattern.lastIndex = 0;
             return matches;
         },
     },
@@ -2324,126 +2344,150 @@ const parsers = {
             };
         },
     },
-    hosts: {
-        /**
-     * @param postContent
-     * @returns {(*&{id: number, enabled: boolean})[]}
-     */
-        parseHosts: postContent => {
-            let parsed = [];
+    hosts: (() => {
+        let compiledHostsCache = null;
+        let nextHostId = 1;
 
-            for (const host of hosts) {
-                // Require at-least the signature plus an array of matchers.
-                if (host.length < 2) {
-                    continue;
-                }
+        const compileMatcher = matcher => {
+            if (!matcher) return null;
+            let patternStr = matcher.toString().replace(/~an@/g, 'a-zA-Z0-9');
+            const stripQueryString = h.contains('<no_qs>', patternStr);
+            const stripTrailingSlash = !h.contains('<keep_ts>', patternStr);
+            patternStr = patternStr.replace('<no_qs>', '').replace('<keep_ts>', '');
 
-                const signature = host[0].split(':');
-                const matchers = host[1];
-
-                if (!h.isArray(matchers) || !matchers.length) {
-                    continue;
-                }
-
-                const name = signature[0];
-                let category = signature.length > 1 ? signature[1] : 'misc';
-
-                let singleMatcherPattern = matchers[0];
-                let albumMatcherPattern = matchers.length > 1 ? matchers[1] : null;
-
-                const execMatcher = matcher => {
-                    let pattern = matcher.toString().replace(/~an@/g, 'a-zA-Z0-9');
-
-                    const stripQueryString = h.contains('<no_qs>', pattern.toString());
-                    const stripTrailingSlash = !h.contains('<keep_ts>', pattern.toString());
-                    pattern = pattern.replace('<no_qs>', '').replace('<keep_ts>', '');
-
-                    if (h.contains('!!', pattern)) {
-                        pattern = pattern.replace('!!', '');
-                        pattern = h.re.toRegExp(h.re.toString(pattern), 'igs');
-                    } else {
-                        const pat = `(?<=data-url="|data-src="|src="|href=")${h.re.toString(pattern)}.*?(?=")|https?:\/\/(www.)?${h.re.toString(pattern)}.*?(?=("|<|$|\]|'))`;
-                        pattern = h.re.toRegExp(pat, 'igs');
-                    }
-
-                    let matches = h.re.matchAll(pattern, postContent).unique();
-
-                    matches = matches.map(url => {
-                // Some XenForo post HTML can leak into the match (e.g. trailing </a>...</div>), which then
-                // creates "ghost" resources (and broken filenames like "div>"). Strip anything after the URL.
-                url = String(url || '');
-                url = url.replace(/&amp;/g, '&');
-                url = url.split(/[\s"'<>]/)[0].trim();
-                // Normalize scheme so the same link in different representations dedupes cleanly.
-                if (url && !/^https?:\/\//i.test(url)) {
-                    url = `https://${url}`;
-                }
-
-                        if (stripQueryString && h.contains('?', url)) {
-                            url = url.substring(0, url.indexOf('?'));
-                        }
-
-                        if (stripTrailingSlash && url[url.length - 1]) {
-                            url = url[url.length - 1] === '/' ? url.substring(0, url.length - 1) : url;
-                        }
-
-                        return url.trim();
-                    });
-
-                    return h.unique(matches);
-                };
-
-                const categories = category.split(',');
-
-                if (singleMatcherPattern) {
-                    let singleCategory = [categories[0]].map(c => {
-                        if (c === 'image' || c === 'video') {
-                            return `${h.ucFirst(c)}s`;
-                        }
-
-                        if (c.trim() !== '') {
-                            return h.ucFirst(c);
-                        }
-
-                        return 'Links';
-                    })[0];
-
-                    parsed.push({
-                        name,
-                        type: 'single',
-                        category: singleCategory,
-                        resources: execMatcher(singleMatcherPattern),
-                    });
-                }
-
-                if (albumMatcherPattern) {
-                    let albumCategory = categories.length > 1 ? categories[1] : categories[0];
-
-                    albumCategory = `${h.ucFirst(albumCategory)} Albums`;
-
-                    parsed.push({
-                        name,
-                        type: 'album',
-                        category: albumCategory,
-                        resources: execMatcher(albumMatcherPattern),
-                    });
-                }
+            let regex;
+            if (h.contains('!!', patternStr)) {
+                patternStr = patternStr.replace('!!', '');
+                regex = h.re.toRegExp(h.re.toString(patternStr), 'igs');
+            } else {
+                const rawInner = h.re.toString(patternStr);
+                const pat = `(?<=data-url="|data-src="|src="|href=")${rawInner}.*?(?=")|https?:\\/\\/(www\\.)?${rawInner}.*?(?=("|<|$|\\]|'))`;
+                regex = h.re.toRegExp(pat, 'igs');
             }
 
-            return parsed
-                .map(p => ({
-                ...p,
-                enabled: true,
-                id: Math.round(Math.random() * Number.MAX_SAFE_INTEGER),
-            }))
-                .filter(p => p.resources.length);
-        },
-    },
+            return { regex, stripQueryString, stripTrailingSlash };
+        };
+
+        const getCompiledHosts = () => {
+            if (compiledHostsCache && compiledHostsCache.source === hosts) {
+                return compiledHostsCache.items;
+            }
+            const items = [];
+            for (const host of hosts) {
+                if (!host || host.length < 2) continue;
+                const signature = host[0].split(':');
+                const matchers = host[1];
+                if (!h.isArray(matchers) || !matchers.length) continue;
+
+                const name = signature[0];
+                const category = signature.length > 1 ? signature[1] : 'misc';
+                const categories = category.split(',');
+
+                const firstCat = categories[0];
+                const singleCategory =
+                    firstCat === 'image' || firstCat === 'video'
+                        ? `${h.ucFirst(firstCat)}s`
+                        : firstCat.trim() !== ''
+                          ? h.ucFirst(firstCat)
+                          : 'Links';
+
+                const albumCatRaw = categories.length > 1 ? categories[1] : categories[0];
+                const albumCategory = `${h.ucFirst(albumCatRaw)} Albums`;
+
+                items.push({
+                    name,
+                    singleCategory,
+                    albumCategory,
+                    singleMatcher: compileMatcher(matchers[0]),
+                    albumMatcher: matchers.length > 1 ? compileMatcher(matchers[1]) : null,
+                });
+            }
+            compiledHostsCache = { source: hosts, items };
+            return items;
+        };
+
+        const execCompiledMatcher = (compiled, postContent) => {
+            if (!compiled) return [];
+            const rawMatches = h.re.matchAll(compiled.regex, postContent);
+            if (!rawMatches.length) return [];
+
+            const seen = new Set();
+            const out = [];
+            for (let i = 0; i < rawMatches.length; i++) {
+                // Some XenForo post HTML can leak into the match (e.g. trailing </a>...</div>), which then
+                // creates "ghost" resources (and broken filenames like "div>"). Strip anything after the URL.
+                let url = String(rawMatches[i] || '').replace(/&amp;/g, '&');
+                url = url.split(/[\s"'<>]/)[0].trim();
+                if (!url) continue;
+                // Normalize scheme so the same link in different representations dedupes cleanly.
+                if (!/^https?:\/\//i.test(url)) {
+                    url = `https://${url}`;
+                }
+                if (compiled.stripQueryString) {
+                    const qIdx = url.indexOf('?');
+                    if (qIdx > -1) url = url.substring(0, qIdx);
+                }
+                if (compiled.stripTrailingSlash && url.endsWith('/')) {
+                    url = url.slice(0, -1);
+                }
+                url = url.trim();
+                if (url && !seen.has(url)) {
+                    seen.add(url);
+                    out.push(url);
+                }
+            }
+            return out;
+        };
+
+        return {
+            /**
+       * @param postContent
+       * @returns {(*&{id: number, enabled: boolean})[]}
+       */
+            parseHosts: postContent => {
+                if (!postContent) return [];
+                const parsed = [];
+                const compiledList = getCompiledHosts();
+
+                for (let i = 0; i < compiledList.length; i++) {
+                    const entry = compiledList[i];
+                    if (entry.singleMatcher) {
+                        const resources = execCompiledMatcher(entry.singleMatcher, postContent);
+                        if (resources.length) {
+                            parsed.push({
+                                name: entry.name,
+                                type: 'single',
+                                category: entry.singleCategory,
+                                resources,
+                                enabled: true,
+                                id: nextHostId++,
+                            });
+                        }
+                    }
+                    if (entry.albumMatcher) {
+                        const resources = execCompiledMatcher(entry.albumMatcher, postContent);
+                        if (resources.length) {
+                            parsed.push({
+                                name: entry.name,
+                                type: 'album',
+                                category: entry.albumCategory,
+                                resources,
+                                enabled: true,
+                                id: nextHostId++,
+                            });
+                        }
+                    }
+                }
+
+                return parsed;
+            },
+        };
+    })(),
 };
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:1 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
     },
 };
 
@@ -2990,10 +3034,12 @@ const ui = {
 
                     const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
 
-                    let hostsHtml = '<div>';
+                    let hostsHtml = '<div style="max-height: 200px; overflow-y: auto; overflow-x: hidden;">';
                     parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
                     hostsHtml += '</div>';
 
+                    const totalResourcesCount = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+                    const initialFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
                     const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB, postId);
                     const idPrefix = `settings-${postId}`;
 
@@ -3002,7 +3048,10 @@ const ui = {
                         ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
                         ui.forms.config.post.createHostCheckboxes(postId, filterLabel, hostsHtml, parsedHosts.length > 1),
                         ui.forms.createRow(
-                            '<a href="#download-page" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
+                            `<button type="button" id="xfpd-start-post-${postId}" class="xfpd-action-btn">🡳 Download Post (${initialFilteredCount}/${totalResourcesCount})</button>`,
+                        ),
+                        ui.forms.createRow(
+                            '<a href="#download-page" data-xfpd-jump-page="1" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
                         ),
                     ].filter(c => c !== null);
 
@@ -3048,7 +3097,7 @@ const ui = {
                             }
                         });
 
-                        // Sync host checkboxes & filtered count on every open.
+                        // Sync host checkboxes, filtered count, and action button on every open.
                         let enabledHostCount = 0;
                         parsedHosts.forEach(host => {
                             const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
@@ -3057,9 +3106,15 @@ const ui = {
                                 if (host.enabled) enabledHostCount++;
                             }
                         });
+                        const liveFilteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
                         const countSpan = formEl.querySelector('[data-xfpd-filtered-count]') || formEl.querySelector('#filtered-count');
                         if (countSpan) {
-                            countSpan.textContent = `(${totalDownloadableResourcesForPostCB(parsedHosts)})`;
+                            countSpan.textContent = `(${liveFilteredCount})`;
+                        }
+                        const startBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
+                        if (startBtn) {
+                            startBtn.disabled = liveFilteredCount === 0;
+                            startBtn.textContent = `🡳 Download Post (${liveFilteredCount}/${totalResourcesCount})`;
                         }
                         if (parsedHosts.length > 1) {
                             const toggleAllCb = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -3081,6 +3136,26 @@ const ui = {
                             e.preventDefault();
                             onSubmitFormCB({ tippyInstance: activeInstance });
                         });
+
+                        if (startBtn) {
+                            startBtn.addEventListener('click', e => {
+                                e.preventDefault();
+                                onSubmitFormCB({ tippyInstance: activeInstance, startDownload: true });
+                            });
+                        }
+
+                        const jumpPageLink = formEl.querySelector('[data-xfpd-jump-page="1"]');
+                        if (jumpPageLink) {
+                            jumpPageLink.addEventListener('click', e => {
+                                if (typeof window.__xfpdFocusDownloadPage === 'function') {
+                                    e.preventDefault();
+                                    if (activeInstance && typeof activeInstance.hide === 'function') {
+                                        activeInstance.hide();
+                                    }
+                                    window.__xfpdFocusDownloadPage();
+                                }
+                            });
+                        }
 
                         if (parsedHosts.length > 1) {
                             const toggleAllEl = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -3127,7 +3202,15 @@ const ui = {
                                         .filter(hItem => hItem.enabled && hItem.resources.length)
                                         .reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
-                                    btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                    if (btnDownloadPost.dataset.xfpdState !== 'running') {
+                                        btnDownloadPost.style.color = '';
+                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                    }
+                                    const startActionBtn = formEl.querySelector(`#xfpd-start-post-${postId}`);
+                                    if (startActionBtn) {
+                                        startActionBtn.disabled = totalDownloadableResources === 0;
+                                        startActionBtn.textContent = `🡳 Download Post (${totalDownloadableResources}/${totalResources})`;
+                                    }
 
                                     if (parsedHosts.length > 1) {
                                         const toggleAllHostsCheckbox = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
@@ -5468,7 +5551,12 @@ if (page === 1) {
 
             const fetchTempToken = async () => {
                 try {
-                    const { source, status } = await http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
+                    const { source, status } = await http.get(
+                        'https://api.redgifs.com/v2/auth/temporary',
+                        {},
+                        { __xfpd_timeout: 8000 },
+                        'text',
+                    );
                     if (status === 200 && source && h.contains('token', source)) {
                         const token = JSON.parse(source).token;
                         if (token) {
@@ -5617,7 +5705,12 @@ if (page === 1) {
 
             const fetchTempToken = async () => {
                 try {
-                    const { source, status } = await http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
+                    const { source, status } = await http.get(
+                        'https://api.redgifs.com/v2/auth/temporary',
+                        {},
+                        { __xfpd_timeout: 8000 },
+                        'text',
+                    );
                     if (status === 200 && source && h.contains('token', source)) {
                         const token = JSON.parse(source).token;
                         if (token) {
@@ -7426,14 +7519,100 @@ const setProcessing = (isProcessing, postId) => {
     }
 };
 
+const isPostProcessing = postId => !!processing.find(p => p.postId === postId && p.processing);
+
+const activePostControllers = new Map();
+const postLastLogs = new Map();
+let compiledResolversCache = null;
+
+const getCompiledResolvers = resolversList => {
+    if (compiledResolversCache && compiledResolversCache.source === resolversList) {
+        return compiledResolversCache.items;
+    }
+    const items = (resolversList || []).map(resolver => ({
+        checks: (resolver[0] || []).map(pattern => {
+            let strPattern = pattern.toString();
+            const shouldMatch = !h.contains(':!', strPattern);
+            strPattern = strPattern.replace(':!', '');
+            return {
+                shouldMatch,
+                regex: h.re.toRegExp(h.re.toString(strPattern), 'is'),
+            };
+        }),
+        resolverCB: resolver[1],
+    }));
+    compiledResolversCache = { source: resolversList, items };
+    return items;
+};
+
+const copyTextToClipboard = async text => {
+    try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) {}
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return !!ok;
+    } catch (e) {
+        return false;
+    }
+};
+
+const appendCopyLogButton = (statusLabel, postId) => {
+    const savedLog = postLastLogs.get(postId);
+    if (!statusLabel || !savedLog) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'xfpd-copy-log-btn';
+    btn.textContent = 'Copy Log';
+    btn.addEventListener('click', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const ok = await copyTextToClipboard(savedLog);
+        btn.textContent = ok ? 'Copied!' : 'Failed';
+        setTimeout(() => {
+            if (btn.isConnected) btn.textContent = 'Copy Log';
+        }, 1600);
+    });
+    statusLabel.appendChild(btn);
+};
+
 const downloadPost = async (parsedPost, parsedHosts, enabledHostsCB, resolvers, getSettingsCB, statusUI, callbacks = {}) => {
     const { postId, postNumber } = parsedPost;
+    if (isPostProcessing(postId)) {
+        return;
+    }
+
+    const cancelController = callbacks.cancelController || {
+        cancelled: false,
+        abortHandlers: new Set(),
+        cancel() {
+            this.cancelled = true;
+            this.abortHandlers.forEach(fn => {
+                try { fn(); } catch (e) {}
+            });
+            this.abortHandlers.clear();
+        },
+    };
+    const isCancelled = () => !!cancelController.cancelled;
+
+    activePostControllers.set(postId, cancelController);
+    setProcessing(true, postId);
 
     const postSettings = getSettingsCB();
 
     const enabledHosts = enabledHostsCB(parsedHosts);
 
-    // TODO: Fix this filth.
     window.logs = window.logs.filter(l => l.postId !== postId);
 
     log.separator(postId);
@@ -7444,6 +7623,8 @@ const downloadPost = async (parsedPost, parsedHosts, enabledHostsCB, resolvers, 
     log.post.info(postId, `::Preparing download::`, postNumber);
 
     let completed = 0;
+    let succeededCount = 0;
+    let failedCount = 0;
     const zip = new JSZip();
     let zipFileCount = 0;
     let resolved = [];
@@ -7533,37 +7714,51 @@ try {
     }
 } catch (e) {}
 
-log.post.info(postId, '::Url resolution started::', postNumber);
+    try {
+    log.post.info(postId, '::Url resolution started::', postNumber);
 
     const totalResourcesToResolve = enabledHosts.reduce((acc, host) => acc + host.resources.length, 0);
     let resolvingIndex = 0;
+    const compiledResolvers = getCompiledResolvers(resolvers);
+    const passwords = parsedPost.spoilers.concat(parsedPost.spoilers.map(s => s.toLowerCase()));
+    let lastResolveUiUpdate = 0;
+
+    if (callbacks && typeof callbacks.onProgress === 'function') {
+        callbacks.onProgress({ phase: 'resolving', completed: 0, total: totalResourcesToResolve, succeeded: 0, failed: 0 });
+    }
 
     for (const host of enabledHosts.filter(host => host.resources.length)) {
+        if (isCancelled()) break;
         const resources = host.resources;
 
         for (const resource of resources) {
+            if (isCancelled()) break;
             resolvingIndex++;
-            h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
-            h.ui.setText(statusLabel, `Resolving: ${resolvingIndex} / ${totalResourcesToResolve} 🢒 ${h.limit(resource, 80)}`);
+            const nowMs = Date.now();
+            if (nowMs - lastResolveUiUpdate >= 50 || resolvingIndex === 1 || resolvingIndex === totalResourcesToResolve) {
+                lastResolveUiUpdate = nowMs;
+                h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+                h.ui.setText(statusLabel, `Resolving: ${resolvingIndex} / ${totalResourcesToResolve} 🢒 ${h.limit(resource, 80)}`);
+                if (callbacks && typeof callbacks.onProgress === 'function') {
+                    callbacks.onProgress({
+                        phase: 'resolving',
+                        completed: resolvingIndex,
+                        total: totalResourcesToResolve,
+                        succeeded: resolved.length,
+                        failed: 0,
+                    });
+                }
+            }
 
-            for (const resolver of resolvers) {
-                const patterns = resolver[0];
-                const resolverCB = resolver[1];
+            for (let ri = 0; ri < compiledResolvers.length; ri++) {
+                if (isCancelled()) break;
+                const { checks, resolverCB } = compiledResolvers[ri];
 
                 let matched = true;
-
-                for (const pattern of patterns) {
-                    let strPattern = pattern.toString();
-
-                    let shouldMatch = !h.contains(':!', strPattern);
-
-                    strPattern = strPattern.replace(':!', '');
-                    strPattern = h.re.toRegExp(h.re.toString(strPattern), 'is');
-
-                    if (shouldMatch && !strPattern.test(resource)) {
-                        matched = false;
-                        break;
-                    } else if (!shouldMatch && strPattern.test(resource)) {
+                for (let ci = 0; ci < checks.length; ci++) {
+                    const chk = checks[ci];
+                    const hit = chk.regex.test(resource);
+                    if ((chk.shouldMatch && !hit) || (!chk.shouldMatch && hit)) {
                         matched = false;
                         break;
                     }
@@ -7573,19 +7768,17 @@ log.post.info(postId, '::Url resolution started::', postNumber);
                     continue;
                 }
 
-                const passwords = parsedPost.spoilers.concat(parsedPost.spoilers.map(s => s.toLowerCase()));
-
                 let r = null;
 
                 try {
-                    const progressCB = (t) => {
-    try {
-        h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
-        h.ui.setText(statusLabel, t);
-    } catch (e) {}
-};
+                    const progressCB = t => {
+                        try {
+                            h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+                            h.ui.setText(statusLabel, t);
+                        } catch (e) {}
+                    };
 
-r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, postId, postSettings, progressCB)));
+                    r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, postId, postSettings, progressCB)));
                 } catch (e) {
                     if (host.name === 'Cyberdrop' && /cyberdrop\.[a-z]{2,}\/a\//i.test(String(resource))) {
                         continue;
@@ -7594,13 +7787,12 @@ r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, p
                     continue;
                 }
 
+                if (isCancelled()) break;
+
                 if (h.isNullOrUndef(r)) {
                     log.post.error(postId, `::Could not resolve::: ${resource}`, postNumber);
                     continue;
                 }
-
-                h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
-                h.ui.setText(statusLabel, `Resolved: ${resolved.length}`);
 
                 const addResolved = (url, folderName) => {
                     if (!resolved.length) {
@@ -7613,7 +7805,7 @@ r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, p
                             host,
                             original: resource,
                             folderName: url.folderName,
-                            forceUnzipped: false, // Filester can be zipped when using blob; DIRECT always saves outside ZIP
+                            forceUnzipped: false,
                             forceDirect: false,
                         });
                         log.post.info(postId, `::Resolved::: ${url.url}`, postNumber);
@@ -7623,7 +7815,7 @@ r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, p
                             host,
                             original: resource,
                             folderName,
-                            forceUnzipped: false, // Filester can be zipped when using blob; DIRECT always saves outside ZIP
+                            forceUnzipped: false,
                             forceDirect: false,
                         });
                         log.post.info(postId, `::Resolved::: ${url}`, postNumber);
@@ -7632,16 +7824,35 @@ r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, p
 
                 if (h.isArray(r.resolved)) {
                     r.resolved.forEach(url => {
-                    try {
-                        addResolved(url, r.folderName);
-                    } catch (e) {
-                    }
-                });
+                        try {
+                            addResolved(url, r.folderName);
+                        } catch (e) {}
+                    });
                 } else {
                     addResolved(r, null);
                 }
+
+                const nowResolvedMs = Date.now();
+                if (nowResolvedMs - lastResolveUiUpdate >= 50) {
+                    lastResolveUiUpdate = nowResolvedMs;
+                    h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+                    h.ui.setText(statusLabel, `Resolved: ${resolved.length}`);
+                }
             }
         }
+    }
+
+    if (isCancelled()) {
+        log.post.info(postId, '::Download cancelled during resolution::', postNumber);
+        h.hide(filePB);
+        h.hide(totalPB);
+        h.ui.setElProps(statusLabel, { color: '#e8a838', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, 'Cancelled');
+        h.show(statusLabel);
+        if (callbacks && typeof callbacks.onCancel === 'function') {
+            callbacks.onCancel(0, 0);
+        }
+        return;
     }
 
     if (resolved.length) {
@@ -7763,8 +7974,6 @@ r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, p
         }
     };
 
-    setProcessing(true, postId);
-
     log.separator(postId);
     log.post.info(postId, `::Found ${totalDownloadable} resource(s)::`, postNumber);
     log.separator(postId);
@@ -7848,12 +8057,64 @@ if (tmp.length) {
 
         let completedBatchedDownloads = 0;
 
+        let batchWakeResolver = null;
+        const notifyBatchStep = () => {
+            if (batchWakeResolver) {
+                const fn = batchWakeResolver;
+                batchWakeResolver = null;
+                fn();
+            }
+        };
+        const waitBatchTurn = ms =>
+            new Promise(resolve => {
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    if (batchWakeResolver === finish) batchWakeResolver = null;
+                    resolve();
+                };
+                batchWakeResolver = finish;
+                setTimeout(finish, ms);
+            });
+
+        const finishBatchItem = didSucceed => {
+            if (completed < totalDownloadable) {
+                completed++;
+            }
+            if (didSucceed) {
+                succeededCount++;
+            } else {
+                failedCount++;
+            }
+            completedBatchedDownloads++;
+            if (callbacks && typeof callbacks.onProgress === 'function') {
+                try {
+                    callbacks.onProgress({
+                        phase: 'downloading',
+                        completed,
+                        total: totalDownloadable,
+                        succeeded: succeededCount,
+                        failed: failedCount,
+                    });
+                } catch (e) {}
+            }
+            notifyBatchStep();
+        };
+
+        cancelController.abortHandlers.add(() => {
+            for (const p of requestProgress) {
+                try { clearInterval(p.intervalId); } catch (e) {}
+            }
+            for (const r of requests) {
+                try { r.request && r.request.abort(); } catch (e) {}
+            }
+            notifyBatchStep();
+        });
+
         let cyberdropDirectWarmupDone = false;
 
-        let batch = getNextBatch();
-
-        while (batch.length) {
-
+        {
             const GOFILE_WARMUP_MS = 3000;
 
             // Turbo: if a signed turbocdn URL stalls (no progress), re-sign and retry quickly before falling back.
@@ -8296,6 +8557,10 @@ if (tmp.length) {
             let filesterNoTabTokenLogged = false;
 
             const startDownload = async (resource, pass = 1) => {
+                if (isCancelled()) {
+                    notifyBatchStep();
+                    return;
+                }
                 let { url, host, original, folderName } = resource;
                 const zippedForThis = !!(postSettings.zipped && !(resource && (resource.forceDirect || resource.forceUnzipped)) );
                 const isGoFile = isGoFileUrl(url);
@@ -8705,12 +8970,17 @@ if (tmp.length) {
 
 const isEromeCdnUrl = u => /https?:\/\/(?:[sv]\d+\.)?erome\.com\//i.test(String(u || ''));
 const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn(url) } : (isEromeCdnUrl(url) ? { Referer: 'https://www.erome.com/' } : null);
+                        let lastDirectUiAt = 0;
                         const dlOpts = {
                             url: directUrl,
                             name: saveAsName,
-                                                        onprogress: e => {
-                                const loadedMB = Number((e.loaded || 0) / 1024 / 1024).toFixed(2);
+                            onprogress: e => {
+                                if (isCancelled()) return;
+                                const nowMs = Date.now();
                                 const totalBytes = (e.total && e.total > 0) ? e.total : (sizeBytes || 0);
+                                if (nowMs - lastDirectUiAt < 80 && (!totalBytes || e.loaded < totalBytes)) return;
+                                lastDirectUiAt = nowMs;
+                                const loadedMB = Number((e.loaded || 0) / 1024 / 1024).toFixed(2);
                                 const totalMB = totalBytes ? Number(totalBytes / 1024 / 1024).toFixed(2) : '??';
                                 if (!totalBytes) {
                                     h.ui.setElProps(filePB, { width: '0%' });
@@ -8723,8 +8993,7 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                                 }
                             },
                             onload: () => {
-                                completed++;
-                                completedBatchedDownloads++;
+                                finishBatchItem(true);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#2d9053' });
@@ -8733,23 +9002,20 @@ const imagebamHeaders = isImagebamCdnUrl(url) ? { Referer: imagebamRefererForCdn
                                 });
                             },
                             onerror: err => {
-                                completed++;
-                                completedBatchedDownloads++;
+                                log.post.error(postId, `::DIRECT download failed::: ${url}`, postNumber);
+                                console.log(err);
+                                finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                 h.ui.setElProps(totalPB, {
                                     width: `${(completed / totalDownloadable) * 100}%`,
                                 });
-
-                                log.post.error(postId, `::DIRECT download failed::: ${url}`, postNumber);
-                                console.log(err);
                             },
                             ontimeout: err => {
-                                completed++;
-                                completedBatchedDownloads++;
                                 log.post.error(postId, `::DIRECT download timed out::: ${url}`, postNumber);
                                 console.log(err);
+                                finishBatchItem(false);
                             },
                         };
 if (imagebamHeaders && isFF) {
@@ -8830,10 +9096,9 @@ GM_download(dlOpts);
 
                     } catch (e) {
                         // Safety: never hang the batch loop.
-                        completed++;
-                        completedBatchedDownloads++;
                         log.post.error(postId, `::DIRECT download error::: ${url}`, postNumber);
                         console.log(e);
+                        finishBatchItem(false);
                     }
                 };
 
@@ -8871,6 +9136,9 @@ if (isGoFile || isPixeldrain || isFilester) {
                 const filesterRef = isFilester ? String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/') : '';
                 const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
 
+                let lastBlobProgressUiAt = 0;
+                const progressEntry = { url: progressKey, intervalId: null, old: 0, new: 0 };
+
                 const request = GM_xmlhttpRequest({
                     url,
                     headers: reqHeaders,
@@ -8878,6 +9146,7 @@ if (isGoFile || isPixeldrain || isFilester) {
                     anonymous: false,
                     ...((isFilester || isForumAttachment) ? { withCredentials: true } : {}),
                     onreadystatechange: response => {
+                        if (isCancelled()) return;
                         if (response.readyState === 2) {
                             let matches = h.re.matchAll(/(?<=attachment;filename=").*?(?=")/gis, response.responseHeaders);
                             if (matches.length && !filenames.find(f => f.url === url)) {
@@ -8906,9 +9175,8 @@ if (isGoFile || isPixeldrain || isFilester) {
                         }
                     },
                     onprogress: response => {
-                        h.ui.setElProps(statusLabel, {
-                            color: '#469cf3',
-                        });
+                        if (isCancelled()) return;
+                        progressEntry.new = response.loaded;
 
                         // Pixeldrain/GoFile: if size only becomes known mid-download and it's > ~1.6GB, switch to direct download.
                         if (!switchedToDirect && (isGoFile || isPixeldrain || isFilester) && response && response.total && response.total > BLOB_MAX_BYTES) {
@@ -8927,12 +9195,23 @@ if (isGoFile || isPixeldrain || isFilester) {
                             return;
                         }
 
+                        const nowMs = Date.now();
+                        const hasTotal = response.total !== -1 && response.totalSize !== -1 && response.total > 0;
+                        if (nowMs - lastBlobProgressUiAt < 80 && (!hasTotal || response.loaded < response.total)) {
+                            return;
+                        }
+                        lastBlobProgressUiAt = nowMs;
+
+                        h.ui.setElProps(statusLabel, {
+                            color: '#469cf3',
+                        });
+
                         const downloadedSizeInMB = Number(response.loaded / 1024 / 1024).toFixed(2);
-                        const totalSizeInMB = Number(response.total / 1024 / 1024).toFixed(2);
-                        if (response.total === -1 || response.totalSize === -1) {
+                        if (!hasTotal) {
                             h.ui.setElProps(filePB, { width: '0%' });
                             h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${host.name} 🢒 ${downloadedSizeInMB} MB 🢒 ${ellipsedUrl}`);
                         } else {
+                            const totalSizeInMB = Number(response.total / 1024 / 1024).toFixed(2);
                             h.show(filePB);
                             h.ui.setText(
                                 statusLabel,
@@ -8942,12 +9221,13 @@ if (isGoFile || isPixeldrain || isFilester) {
                                 width: `${(response.loaded / response.total) * 100}%`,
                             });
                         }
-                        const p = requestProgress.find(r => r.url === progressKey);
-                        if (p) p.new = response.loaded;
                     },
                     onload: async response => {
-                        const p = requestProgress.find(r => r.url === progressKey);
-                        if (p) clearInterval(p.intervalId);
+                        if (progressEntry.intervalId) clearInterval(progressEntry.intervalId);
+                        if (isCancelled()) {
+                            notifyBatchStep();
+                            return;
+                        }
 
 
 
@@ -8973,16 +9253,14 @@ if (isGoFile || isPixeldrain || isFilester) {
                                 }
 
                                 // Retry failed -> mark as unsuccessful and continue.
-                        completed++;
-                        completedBatchedDownloads++;
+                                log.post.error(postId, `::GoFile failed (after retry)::: ${url}`, postNumber);
+                                finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                 h.ui.setElProps(totalPB, {
                                     width: `${(completed / totalDownloadable) * 100}%`,
                                 });
-
-                                log.post.error(postId, `::GoFile failed (after retry)::: ${url}`, postNumber);
                                 return;
                             }
                         }
@@ -9007,16 +9285,14 @@ if (isGoFile || isPixeldrain || isFilester) {
                                 }
 
                                 // Retry failed -> mark as unsuccessful and continue.
-                                completed++;
-                                completedBatchedDownloads++;
+                                log.post.error(postId, `::Cyberdrop failed (gate/tiny response)::: ${url}`, postNumber);
+                                finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                 h.ui.setElProps(totalPB, {
                                     width: `${(completed / totalDownloadable) * 100}%`,
                                 });
-
-                                log.post.error(postId, `::Cyberdrop failed (gate/tiny response)::: ${url}`, postNumber);
                                 return;
                             }
                         }
@@ -9176,30 +9452,26 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                     }
 
                                     // If we only have a /d/ view URL, DIRECT would just save HTML.
-                                    completed++;
-                                    completedBatchedDownloads++;
+                                    log.post.error(postId, `::Filester failed (resolved to /d/ HTML view)::: ${url}`, postNumber);
+                                    finishBatchItem(false);
 
                                     h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                     h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                     h.ui.setElProps(totalPB, {
                                         width: `${(completed / totalDownloadable) * 100}%`,
                                     });
-
-                                    log.post.error(postId, `::Filester failed (resolved to /d/ HTML view)::: ${url}`, postNumber);
                                     return;
                                 }
 
-                                completed++;
-                                completedBatchedDownloads++;
+                                const reason = badStatus ? `HTTP ${response.status || 0}` : (isGate ? 'HTML/JSON gate' : 'tiny/blocked response');
+                                log.post.error(postId, `::Filester failed (${reason})::: ${url}`, postNumber);
+                                finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                 h.ui.setElProps(totalPB, {
                                     width: `${(completed / totalDownloadable) * 100}%`,
                                 });
-
-                                const reason = badStatus ? `HTTP ${response.status || 0}` : (isGate ? 'HTML/JSON gate' : 'tiny/blocked response');
-                                log.post.error(postId, `::Filester failed (${reason})::: ${url}`, postNumber);
                                 return;
                             }
                         }
@@ -9239,30 +9511,20 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                             if (badStatus || isHtml || tinyLooksLikeHtml || isMaint) {
                                 if (isMaint) bunkrMaintenanceHandled = true;
-                                completed++;
-                                completedBatchedDownloads++;
+                                const reason = isMaint ? 'maintenance redirect (maint.mp4)' : (badStatus ? `HTTP ${response.status || 0}` : (isHtml ? 'HTML/maintenance response' : 'tiny HTML placeholder'));
+                                log.post.error(postId, `::Bunkr skipped (${reason})::: ${url}`, postNumber);
+                                finishBatchItem(false);
 
                                 h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                                 h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                                 h.ui.setElProps(totalPB, {
                                     width: `${(completed / totalDownloadable) * 100}%`,
                                 });
-
-                                const reason = isMaint ? 'maintenance redirect (maint.mp4)' : (badStatus ? `HTTP ${response.status || 0}` : (isHtml ? 'HTML/maintenance response' : 'tiny HTML placeholder'));
-                                log.post.error(postId, `::Bunkr skipped (${reason})::: ${url}`, postNumber);
                                 return;
                             }
                         }
 
-// Success path (unchanged)
-                        completed++;
-                        completedBatchedDownloads++;
-
-                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
-                        h.ui.setElProps(statusLabel, { color: '#2d9053' });
-                        h.ui.setElProps(totalPB, {
-                            width: `${(completed / totalDownloadable) * 100}%`,
-                        });
+                        // Success path (finishBatchItem(true) and status update run after saving/zipping below)
 
                         // TODO: Extract to method.
                         let filename = filenames.find(f => f.url === url);
@@ -9538,35 +9800,44 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             });
                         }
 
-                                                if (zippedForThis) {
+                        if (zippedForThis) {
                             zip.file(fn, fileBlob);
                             zipFileCount++;
                         }
 
+                        finishBatchItem(true);
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                        h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                        h.ui.setElProps(totalPB, {
+                            width: `${(completed / totalDownloadable) * 100}%`,
+                        });
                     },
 
                     onabort: () => {
+                        if (progressEntry.intervalId) clearInterval(progressEntry.intervalId);
+                        if (isCancelled()) {
+                            notifyBatchStep();
+                            return;
+                        }
                         if (abortReason !== 'bunkr_maint' || bunkrMaintenanceHandled) return;
                         bunkrMaintenanceHandled = true;
 
-                        const p = requestProgress.find(r => r.url === progressKey);
-                        if (p) clearInterval(p.intervalId);
-
-                        completed++;
-                        completedBatchedDownloads++;
+                        log.post.error(postId, `::Bunkr skipped (maintenance redirect: maint.mp4)::: ${url}`, postNumber);
+                        finishBatchItem(false);
 
                         h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                         h.ui.setElProps(statusLabel, { color: '#b23b3b' });
                         h.ui.setElProps(totalPB, {
                             width: `${(completed / totalDownloadable) * 100}%`,
                         });
-
-                        log.post.error(postId, `::Bunkr skipped (maintenance redirect: maint.mp4)::: ${url}`, postNumber);
                     },
 
                     onerror: () => {
-                        const p = requestProgress.find(r => r.url === progressKey);
-                        if (p) clearInterval(p.intervalId);
+                        if (progressEntry.intervalId) clearInterval(progressEntry.intervalId);
+                        if (isCancelled()) {
+                            notifyBatchStep();
+                            return;
+                        }
 
                         if (switchedToDirect) return;
 
@@ -9578,18 +9849,22 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             return;
                         }
 
-                        completed++;
-                        completedBatchedDownloads++;
+                        log.post.error(postId, `::Network error downloading::: ${url}`, postNumber);
+                        finishBatchItem(false);
                     },
                 });
 
                 requests.push({ url: progressKey, request });
 
-                                const stallMs = isTurbo ? TURBO_STALL_MS : 30000;
+                const stallMs = isTurbo ? TURBO_STALL_MS : 30000;
 
                 const intervalId = setInterval(async () => {
-                    const p = requestProgress.find(r => r.url === progressKey);
-                    if (!p) return;
+                    if (isCancelled()) {
+                        clearInterval(intervalId);
+                        notifyBatchStep();
+                        return;
+                    }
+                    const p = progressEntry;
 
                     // Large files switch to DIRECT mid-download: that aborts this request and hands
                     // off to GM_download. request.abort() does not reliably fire onload/onerror once
@@ -9603,8 +9878,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                     }
 
                     if (p.old === p.new) {
-                        const rr = requests.find(r => r.url === progressKey);
-                        if (rr && rr.request) rr.request.abort();
+                        try { if (request) request.abort(); } catch (e) {}
                         clearInterval(p.intervalId);
 
                         // Turbo: fast re-sign + retry, then (optional) direct fallback.
@@ -9626,7 +9900,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                                 // Retry once (even if we couldn't re-sign, a plain retry sometimes works).
                                 setTimeout(() => startDownload(resource, pass + 1), st.resign >= 3 ? TURBO_RETRY_DELAY_MS * 2 : TURBO_RETRY_DELAY_MS);
-return;
+                                return;
                             }
 
                             if (st.direct < TURBO_DIRECT_FALLBACKS) {
@@ -9639,15 +9913,7 @@ return;
                             }
 
                             log.post.error(postId, `::Turbo failed (stalled after retries)::: ${url}`, postNumber);
-
-                            if (completed < totalDownloadable) {
-                                completed++;
-                            }
-                            completedBatchedDownloads++;
-
-                            if (completedBatchedDownloads >= batch.length) {
-                                completedBatchedDownloads = 0;
-                            }
+                            finishBatchItem(false);
                             return;
                         }
 
@@ -9659,77 +9925,79 @@ return;
                         if (isGoFile && pass === 1 && !gofileWarmupAttempted.has(url)) {
                             gofileWarmupAttempted.add(url);
                             log.post.info(postId, `::GoFile stalled -> warm-up tab (${GOFILE_WARMUP_MS}ms) then retry [1/2]::: ${url}`, postNumber);
-                            // request.abort() above isn't always reliable once a blob response is
-                            // substantially buffered -- mark pass 2 as authoritative so a zombie
-                            // pass-1 onload (see the isGoFile guard at the top of onload) can't
-                            // also save the file.
                             gofileActivePass.set(url, 2);
                             gofileWarmupOpenTab(url);
                             setTimeout(() => startDownload(resource, 2), GOFILE_WARMUP_MS);
                             return;
                         }
 
-                        if (completed < totalDownloadable) {
-                            completed++;
-                        }
-                        completedBatchedDownloads++;
-
-                        if (completedBatchedDownloads >= batch.length) {
-                            completedBatchedDownloads = 0;
-                        }
+                        finishBatchItem(false);
                     } else {
                         p.old = p.new;
                     }
                 }, stallMs);
 
-                requestProgress.push({ url: progressKey, intervalId, old: 0, new: 0 });
+                progressEntry.intervalId = intervalId;
+                requestProgress.push(progressEntry);
             };
 
-            for (const item of batch) {
-                startDownload(item, 1);
-            }
+            let batch = getNextBatch();
 
-            while (completedBatchedDownloads < batch.length) {
-                await h.delayedResolve(1000);
-            }
-
-            if (completedBatchedDownloads >= batch.length) {
+            while (batch.length && !isCancelled()) {
                 completedBatchedDownloads = 0;
-            }
 
-            batch = getNextBatch();
+                for (const item of batch) {
+                    if (isCancelled()) break;
+                    startDownload(item, 1);
+                }
+
+                while (completedBatchedDownloads < batch.length && !isCancelled()) {
+                    await waitBatchTurn(100);
+                }
+
+                completedBatchedDownloads = 0;
+                batch = getNextBatch();
+            }
         }
     } else {
         log.post.info(postId, '::Skipping download::', postNumber);
     }
 
+    if (isCancelled()) {
+        log.post.info(postId, `::Download cancelled (${succeededCount}/${totalDownloadable} completed)::`, postNumber);
+        h.hide(filePB);
+        h.hide(totalPB);
+        h.ui.setElProps(statusLabel, { color: '#e8a838', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `Cancelled (${succeededCount} / ${totalDownloadable} downloaded)`);
+        h.show(statusLabel);
+        if (callbacks && typeof callbacks.onCancel === 'function') {
+            callbacks.onCancel(totalDownloadable, succeededCount);
+        }
+        return;
+    }
+
     h.hide(filePB);
     h.hide(totalPB);
-    if (completed < totalResources) {
-        h.ui.setElProps(statusLabel, { color: '#e8a838', fontWeight: 'bold' });
-        h.ui.setText(statusLabel, `${completed} / ${totalResources} downloaded`);
-        h.show(statusLabel);
-    } else {
-        h.hide(statusLabel);
-    }
 
     if (totalDownloadable > 0) {
         let title = sanitizeWinSegment(threadTitle);
 
         const mainZipName = customFilename || `${title} #${postNumber}.zip`;
         const generatedZipName = `${title} #${postNumber} generated.zip`;
-        // Original (single ZIP) behavior.
         const needZipBlob = (postSettings.generateLog || postSettings.generateLinks || (postSettings.zipped && zipFileCount > 0));
 
+        // If "Zipped" is enabled but nothing was added to the ZIP (e.g. everything was saved via DIRECT),
+        // skip creating an empty ZIP file.
+        if (postSettings.zipped && zipFileCount === 0 && !postSettings.generateLog && !postSettings.generateLinks) {
+            log.post.info(postId, `::Zipped ON but nothing to zip (all DIRECT downloads) -> skipping ZIP::`, postNumber);
+        }
 
-                // If "Zipped" is enabled but nothing was added to the ZIP (e.g. everything was saved via DIRECT),
-                // skip creating an empty ZIP file.
-                if (postSettings.zipped && zipFileCount === 0 && !postSettings.generateLog && !postSettings.generateLinks) {
-                    log.post.info(postId, `::Zipped ON but nothing to zip (all DIRECT downloads) -> skipping ZIP::`, postNumber);
-                }
-if (needZipBlob) {
+        if (needZipBlob) {
             log.separator(postId);
             log.post.info(postId, postSettings.zipped ? `::Preparing zip::` : `::Preparing generated.zip::`, postNumber);
+            h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+            h.ui.setText(statusLabel, postSettings.zipped ? 'Packaging ZIP archive...' : 'Packaging generated.zip...');
+            h.show(statusLabel);
 
             if (postSettings.generateLog) {
                 log.post.info(postId, `::Generating log file::`, postNumber);
@@ -9818,27 +10086,66 @@ if (needZipBlob) {
                 }
             }
         }
-
-    }
-
-    setProcessing(false, postId);
-
-    if (!processing.some(p => p.processing)) {
-        gofileRestoreCookie();
     }
 
     if (totalDownloadable > 0) {
-        // For logging in console since post logs are already written.
         if (!postSettings.skipDownload) {
-            log.post.info(postId, `::Download completed::`, postNumber);
+            log.post.info(postId, `::Download completed (${succeededCount}/${totalDownloadable} succeeded)::`, postNumber);
         } else {
             log.post.info(postId, `::Links generation completed::`, postNumber);
         }
-
-        callbacks && callbacks.onComplete && callbacks.onComplete(totalDownloadable, completed);
     }
 
-    window.logs = window.logs.filter(l => l.postId !== postId);
+    // Snapshot post logs for one-click Copy Log before clearing window.logs.
+    try {
+        const postLogsText = window.logs
+            .filter(l => l.postId === postId)
+            .map(l => l.message)
+            .join('\n');
+        if (postLogsText) {
+            // Keep at most 30 recent post logs in memory so long browsing sessions stay lean.
+            if (postLastLogs.size >= 30 && !postLastLogs.has(postId)) {
+                const oldestKey = postLastLogs.keys().next().value;
+                if (oldestKey !== undefined) postLastLogs.delete(oldestKey);
+            }
+            postLastLogs.set(postId, postLogsText);
+        }
+    } catch (e) {}
+
+    if (postSettings.skipDownload) {
+        h.hide(statusLabel);
+    } else if (totalDownloadable === 0 && totalResources > 0) {
+        h.ui.setElProps(statusLabel, { color: '#d9534f', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `0 / ${totalResources} resolved`);
+        appendCopyLogButton(statusLabel, postId);
+        h.show(statusLabel);
+    } else if (failedCount > 0 || succeededCount < totalDownloadable) {
+        h.ui.setElProps(statusLabel, { color: succeededCount > 0 ? '#e8a838' : '#d9534f', fontWeight: 'bold' });
+        h.ui.setText(
+            statusLabel,
+            `${succeededCount} / ${totalDownloadable} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}`,
+        );
+        appendCopyLogButton(statusLabel, postId);
+        h.show(statusLabel);
+    } else {
+        h.hide(statusLabel);
+    }
+
+    if (totalDownloadable > 0 || totalResources > 0) {
+        callbacks &&
+            callbacks.onComplete &&
+            callbacks.onComplete(totalDownloadable, postSettings.skipDownload ? totalDownloadable : succeededCount, failedCount);
+    }
+    } finally {
+        activePostControllers.delete(postId);
+        setProcessing(false, postId);
+
+        if (!processing.some(p => p.processing)) {
+            gofileRestoreCookie();
+        }
+
+        window.logs = window.logs.filter(l => l.postId !== postId);
+    }
 };
 
 /**
@@ -9891,6 +10198,12 @@ const addShowDownloadPageBtnLink = post => {
     anchor.querySelector('time')?.remove();
     if (anchor.parentNode) anchor.parentNode.style.marginLeft = '10px';
     anchor.append(span);
+    anchor.addEventListener('click', e => {
+        if (typeof window.__xfpdFocusDownloadPage === 'function') {
+            e.preventDefault();
+            window.__xfpdFocusDownloadPage();
+        }
+    });
 
     attrMain.append(dupTabLI);
 };
@@ -10089,23 +10402,183 @@ const selectedPosts = [];
         }
     };
 
-    onReady(async () => {
-        try {
-            const { source, status } = await h.http.get('https://api.redgifs.com/v2/auth/temporary', {}, {}, 'text');
-            if (status !== 200) { throw new Error(`HTTP ${status}`); }
-            if (h.contains('token', source)) {
-                const token = JSON.parse(source).token;
-                GM_setValue('redgifs_token', token);
-            }
-        } catch (e) {
-            console.error('Error getting temporary redgifs auth token:');
-            console.error(e);
-        }
-
+    onReady(() => {
         init.injectCustomStyles();
 
+        const XFPD_PAGE_CONCURRENCY = 2;
         let downloadPageTippy = null;
         const pageSettings = xfpdCreatePostSettings();
+        const pageBatchState = {
+            running: false,
+            cancelled: false,
+            finished: 0,
+            total: 0,
+            activePostIds: new Set(),
+        };
+
+        const getPostEnabledResourceCount = postEntry => {
+            if (!postEntry || !Array.isArray(postEntry.parsedHosts)) return 0;
+            return postEntry.parsedHosts
+                .filter(host => host.enabled && host.resources.length)
+                .reduce((acc, host) => acc + host.resources.length, 0);
+        };
+
+        const getPageSelectionStats = () => {
+            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
+            let enabledPostsCount = 0;
+            let selectedResourcesCount = 0;
+            downloadablePosts.forEach(p => {
+                const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
+                if (sp && sp.enabled) {
+                    enabledPostsCount++;
+                    selectedResourcesCount += getPostEnabledResourceCount(p);
+                }
+            });
+            return {
+                totalPosts: downloadablePosts.length,
+                enabledPosts: enabledPostsCount,
+                selectedResources: selectedResourcesCount,
+            };
+        };
+
+        const updateDownloadPageButtonLabel = customState => {
+            const btn = h.element('#download-page');
+            if (!btn) return;
+            const span = btn.querySelector('.download-page-btn') || btn;
+            if (pageBatchState.running) {
+                btn.style.color = '#e8a838';
+                span.textContent = `✕ Cancel Page (${pageBatchState.finished}/${pageBatchState.total})`;
+                return;
+            }
+            if (customState === 'completed') {
+                btn.style.color = '#47ba24';
+                span.textContent = `✓ Page Downloaded (${pageBatchState.finished}/${pageBatchState.total})`;
+                return;
+            }
+            btn.style.color = '';
+            const { totalPosts, enabledPosts, selectedResources } = getPageSelectionStats();
+            if (!totalPosts) {
+                span.textContent = '🡳 Download Page';
+            } else if (enabledPosts > 0) {
+                span.textContent = `🡳 Download Page (${enabledPosts}/${totalPosts} · ${selectedResources})`;
+            } else {
+                span.textContent = `🡳 Download Page (0/${totalPosts})`;
+            }
+        };
+
+        const updatePageFormActionBtn = formEl => {
+            if (!formEl) return;
+            const actionBtn = formEl.querySelector('#xfpd-start-page-download');
+            if (!actionBtn) return;
+            if (pageBatchState.running) {
+                actionBtn.disabled = false;
+                actionBtn.textContent = `✕ Cancel Page (${pageBatchState.finished}/${pageBatchState.total})`;
+                return;
+            }
+            const { enabledPosts, selectedResources } = getPageSelectionStats();
+            if (enabledPosts === 0) {
+                actionBtn.disabled = true;
+                actionBtn.textContent = 'Select posts above (0 selected)';
+            } else {
+                actionBtn.disabled = false;
+                actionBtn.textContent = `🡳 Download Selected (${enabledPosts} ${enabledPosts === 1 ? 'post' : 'posts'} · ${selectedResources})`;
+            }
+        };
+
+        window.__xfpdFocusDownloadPage = () => {
+            const btn = h.element('#download-page');
+            if (!btn) return;
+            try {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch (e) {
+                btn.scrollIntoView();
+            }
+            if (downloadPageTippy && typeof downloadPageTippy.show === 'function') {
+                setTimeout(() => {
+                    try { downloadPageTippy.show(); } catch (e) {}
+                }, 180);
+            }
+        };
+
+        const pulsePostSelectionHeading = () => {
+            if (!downloadPageTippy || !downloadPageTippy.popper) return;
+            const heading = downloadPageTippy.popper.querySelector('[data-xfpd-post-selection-heading="1"]');
+            if (!heading) return;
+            heading.classList.remove('xfpd-pulse-highlight');
+            void heading.offsetWidth;
+            heading.classList.add('xfpd-pulse-highlight');
+        };
+
+        const runDownloadPageQueue = async () => {
+            if (pageBatchState.running) {
+                pageBatchState.cancelled = true;
+                pageBatchState.activePostIds.forEach(pid => {
+                    const ctrl = activePostControllers.get(pid);
+                    if (ctrl) ctrl.cancel();
+                });
+                updateDownloadPageButtonLabel();
+                if (downloadPageTippy && downloadPageTippy.popper) {
+                    updatePageFormActionBtn(downloadPageTippy.popper);
+                }
+                return;
+            }
+
+            const queue = selectedPosts.filter(s => s.enabled && s.post);
+            if (!queue.length) {
+                if (downloadPageTippy && typeof downloadPageTippy.show === 'function') {
+                    downloadPageTippy.show();
+                    pulsePostSelectionHeading();
+                }
+                return;
+            }
+
+            if (downloadPageTippy && typeof downloadPageTippy.hide === 'function') {
+                downloadPageTippy.hide();
+            }
+
+            pageBatchState.running = true;
+            pageBatchState.cancelled = false;
+            pageBatchState.finished = 0;
+            pageBatchState.total = queue.length;
+            pageBatchState.activePostIds.clear();
+            updateDownloadPageButtonLabel();
+
+            let cursor = 0;
+            const worker = async () => {
+                while (!pageBatchState.cancelled && cursor < queue.length) {
+                    const item = queue[cursor++];
+                    if (!item || !item.post) continue;
+                    const pid = item.post.parsedPost.postId;
+                    pageBatchState.activePostIds.add(pid);
+                    try {
+                        await item.post.startPostDownload();
+                    } catch (e) {
+                        console.error('[XFPD] Error in Download Page worker:', e);
+                    } finally {
+                        pageBatchState.activePostIds.delete(pid);
+                        if (!pageBatchState.cancelled) {
+                            pageBatchState.finished++;
+                            updateDownloadPageButtonLabel();
+                        }
+                    }
+                }
+            };
+
+            const workerCount = Math.min(XFPD_PAGE_CONCURRENCY, queue.length);
+            const workers = [];
+            for (let i = 0; i < workerCount; i++) {
+                workers.push(worker());
+            }
+            await Promise.all(workers);
+
+            const wasCancelled = pageBatchState.cancelled;
+            pageBatchState.running = false;
+            pageBatchState.activePostIds.clear();
+            updateDownloadPageButtonLabel(wasCancelled ? null : 'completed');
+            if (downloadPageTippy && downloadPageTippy.popper) {
+                updatePageFormActionBtn(downloadPageTippy.popper);
+            }
+        };
 
         xfpdOnUserPrefsChange((prefs, changedKeys, source) => {
             const keys = Array.isArray(changedKeys) && changedKeys.length ? changedKeys : XFPD_USER_PREF_KEYS;
@@ -10155,12 +10628,13 @@ const selectedPosts = [];
                     selected.post = post;
                 }
 
+                const resCount = getPostEnabledResourceCount(post);
                 const defaultPostContent = (textContent || '').trim().replace('​', '');
-                const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
+                const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 18);
                 const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
                 postsHtml += ui.forms.createCheckbox(
                     `config-download-post-${postId}`,
-                    `Post #${postNumber} ${summary}`,
+                    `Post #${postNumber} <span style="opacity:0.7;font-size:11.5px;">(${resCount})</span> ${summary}`,
                     !!selected.enabled,
                 );
             });
@@ -10174,9 +10648,12 @@ const selectedPosts = [];
 
             const settingsHtml = ui.forms.config.createSettingsCheckboxesHtml('page-settings', pageSettings);
             const postSelectionHtml = [
-                ui.forms.createRow(ui.forms.createLabel('Post Selection')),
+                ui.forms.createRow(
+                    `<div data-xfpd-post-selection-heading="1" style="font-weight: bold; margin-top:5px; margin-bottom: 8px; color: #3DB7C7;">Post Selection (${downloadablePosts.length})</div>`,
+                ),
                 ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, allSelected),
-                `<div id="downloader-page-posts-list" style="max-height: 260px; overflow-y: auto; overflow-x: hidden;">${postsHtml}</div>`,
+                `<div id="downloader-page-posts-list" style="max-height: 240px; overflow-y: auto; overflow-x: hidden;">${postsHtml}</div>`,
+                ui.forms.createRow('<button type="button" id="xfpd-start-page-download" class="xfpd-action-btn" disabled>Select posts above (0 selected)</button>'),
             ].join('');
 
             return ui.forms.config.page.createForm(color, `${settingsHtml}${postSelectionHtml}`);
@@ -10201,6 +10678,15 @@ const selectedPosts = [];
                     if (instance && typeof instance.hide === 'function') {
                         instance.hide();
                     }
+                });
+            }
+
+            const startPageBtn = formEl.querySelector('#xfpd-start-page-download');
+            if (startPageBtn && startPageBtn.dataset.xfpdBound !== '1') {
+                startPageBtn.dataset.xfpdBound = '1';
+                startPageBtn.addEventListener('click', e => {
+                    e.preventDefault();
+                    runDownloadPageQueue();
                 });
             }
 
@@ -10239,6 +10725,8 @@ const selectedPosts = [];
                                 }).length;
                                 checkAllCB.checked = currentDownloadable.length > 0 && enabledCount === currentDownloadable.length;
                             }
+                            updateDownloadPageButtonLabel();
+                            updatePageFormActionBtn(formEl);
                         });
                     }
                 }
@@ -10271,9 +10759,13 @@ const selectedPosts = [];
                         } else {
                             checkedPostCheckboxes.forEach(c => c.click());
                         }
+                        updateDownloadPageButtonLabel();
+                        updatePageFormActionBtn(formEl);
                     });
                 }
             }
+
+            updatePageFormActionBtn(formEl);
         };
 
         const syncDownloadPageUI = () => {
@@ -10287,24 +10779,12 @@ const selectedPosts = [];
                 btnDownloadPage.dataset.xfpdClickBound = '1';
                 btnDownloadPage.addEventListener('click', e => {
                     e.preventDefault();
-
-                    selectedPosts
-                        .filter(s => s.enabled)
-                        .forEach(s => {
-                            downloadPost(
-                                s.post.parsedPost,
-                                s.post.parsedHosts,
-                                s.post.enabledHostsCB,
-                                s.post.resolvers,
-                                s.post.getSettingsCB,
-                                s.post.statusUI,
-                                s.post.postDownloadCallbacks,
-                            );
-                        });
+                    runDownloadPageQueue();
                 });
             }
 
             const formContent = buildDownloadPageFormHtml();
+            updateDownloadPageButtonLabel();
 
             if (downloadPageTippy && typeof downloadPageTippy.setContent === 'function') {
                 downloadPageTippy.setContent(formContent);
@@ -10368,10 +10848,80 @@ const selectedPosts = [];
             h.hide(filePBar);
             h.hide(totalPBar);
 
+            const statusUI = {
+                status: statusText,
+                filePB: filePBar,
+                totalPB: totalPBar,
+            };
+
+            const getSettingsCB = () => postSettings;
+
+            const postDownloadCallbacks = {
+                onProgress: ({ phase, completed: doneCount, total: totalCount }) => {
+                    btnDownloadPost.dataset.xfpdState = 'running';
+                    btnDownloadPost.style.color = '#e8a838';
+                    if (phase === 'resolving') {
+                        btnDownloadPost.innerHTML = `✕ Cancel (Resolving ${doneCount}/${totalCount})`;
+                    } else {
+                        btnDownloadPost.innerHTML = `✕ Cancel (${doneCount}/${totalCount})`;
+                    }
+                },
+                onCancel: () => {
+                    btnDownloadPost.dataset.xfpdState = 'idle';
+                    btnDownloadPost.style.color = '';
+                    const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
+                    btnDownloadPost.innerHTML = `🡳 Download (${enabledLen}/${totalResources})`;
+                },
+                onComplete: (total, succeeded, failed = 0) => {
+                    btnDownloadPost.dataset.xfpdState = 'done';
+                    if (total > 0 && succeeded > 0) {
+                        registerPostReaction(parsedPost.footer);
+                    }
+                    if (postSettings.skipDownload && total > 0) {
+                        btnDownloadPost.style.color = '#47ba24';
+                        btnDownloadPost.innerHTML = `✓ Links Ready (${total})`;
+                    } else if (total > 0 && succeeded >= total && failed === 0) {
+                        btnDownloadPost.style.color = '#47ba24';
+                        btnDownloadPost.innerHTML = `✓ Downloaded (${succeeded}/${total})`;
+                    } else if (succeeded > 0) {
+                        btnDownloadPost.style.color = '#e8a838';
+                        btnDownloadPost.innerHTML = `⚠ Downloaded (${succeeded}/${total})`;
+                    } else {
+                        btnDownloadPost.style.color = '#d9534f';
+                        const denom = total || getTotalDownloadableResourcesForPostCB(parsedHosts);
+                        btnDownloadPost.innerHTML = `✕ Retry (0/${denom})`;
+                    }
+                },
+            };
+
+            const startPostDownload = () => {
+                if (isPostProcessing(postId)) {
+                    const ctrl = activePostControllers.get(postId);
+                    if (ctrl) ctrl.cancel();
+                    return Promise.resolve();
+                }
+                btnDownloadPost.dataset.xfpdState = 'running';
+                btnDownloadPost.style.color = '#e8a838';
+                const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
+                btnDownloadPost.innerHTML = `✕ Cancel (0/${enabledLen})`;
+                return downloadPost(
+                    parsedPost,
+                    parsedHosts,
+                    getEnabledHostsCB,
+                    resolvers,
+                    getSettingsCB,
+                    statusUI,
+                    postDownloadCallbacks,
+                );
+            };
+
             const onFormSubmitCB = data => {
-                const { tippyInstance } = data;
+                const { tippyInstance, startDownload: shouldStart } = data || {};
                 if (tippyInstance && typeof tippyInstance.hide === 'function') {
                     tippyInstance.hide();
+                }
+                if (shouldStart) {
+                    startPostDownload();
                 }
             };
 
@@ -10385,22 +10935,6 @@ const selectedPosts = [];
                 btnDownloadPost,
             );
 
-            const statusUI = {
-                status: statusText,
-                filePB: filePBar,
-                totalPB: totalPBar,
-            };
-
-            const postDownloadCallbacks = {
-                onComplete: (total, completed) => {
-                    if (total > 0 && completed > 0) {
-                        registerPostReaction(parsedPost.footer);
-                    }
-                },
-            };
-
-            const getSettingsCB = () => postSettings;
-
             // Replace any stale entry if a post was re-rendered dynamically (e.g. XenSoluce [HIDEREACT] unlock on SMG).
             const postEntry = {
                 parsedPost,
@@ -10410,6 +10944,7 @@ const selectedPosts = [];
                 getSettingsCB,
                 statusUI,
                 postDownloadCallbacks,
+                startPostDownload,
                 tippyInstance: postTippyInstance,
             };
             if (existingIdx > -1) {
@@ -10420,7 +10955,7 @@ const selectedPosts = [];
 
             btnDownloadPost.addEventListener('click', e => {
                 e.preventDefault();
-                downloadPost(parsedPost, parsedHosts, getEnabledHostsCB, resolvers, getSettingsCB, statusUI, postDownloadCallbacks);
+                startPostDownload();
             });
 
             return true;

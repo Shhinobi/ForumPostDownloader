@@ -18,16 +18,20 @@ const h = {
    * @param path
    * @returns {unknown}
    */
-    basename: path =>
-    path
-    .replace(/\/(\s+)?$/, '')
-    .split('/')
-    .reverse()[0],
+    basename: path => {
+        const cleaned = String(path || '').replace(/\/(\s+)?$/, '');
+        const idx = cleaned.lastIndexOf('/');
+        return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+    },
     /**
    * @param path
    * @returns {string}
    */
-    fnNoExt: path => path.trim().split('.').reverse().slice(1).reverse().join('.'),
+    fnNoExt: path => {
+        const trimmed = String(path || '').trim();
+        const dotIdx = trimmed.lastIndexOf('.');
+        return dotIdx > 0 ? trimmed.slice(0, dotIdx) : (dotIdx === 0 ? '' : trimmed);
+    },
     /**
    * Extension without the dot, or '' if there isn't one. Counterpart to fnNoExt.
    * This was referenced by the duplicate-filename path but never actually defined, so any post with
@@ -45,7 +49,10 @@ const h = {
    * @returns {unknown}
    */
     ext: path => {
-        return !path || path.indexOf('.') < 0 ? null : path.split('.').reverse()[0];
+        if (!path) return null;
+        const s = String(path);
+        const dotIdx = s.lastIndexOf('.');
+        return dotIdx < 0 ? null : s.slice(dotIdx + 1);
     },
     /**
    * @param element
@@ -116,11 +123,23 @@ const h = {
    * @returns {*}
    */
     unique: (items, cb) => {
+        if (!Array.isArray(items) || items.length === 0) return [];
         if (cb) {
-            return items.reduce((acc, item) => (!acc.find(i => i[byKey] === item[byKey]) ? acc.concat(item) : acc), []);
+            const seen = new Set();
+            const out = [];
+            const getKey = typeof cb === 'function' ? cb : item => (item && typeof item === 'object' ? item[cb] : item);
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                const key = getKey(item);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    out.push(item);
+                }
+            }
+            return out;
         }
 
-        return items.reduce((acc, item) => (acc.indexOf(item) < 0 ? acc.concat(item) : acc), []);
+        return Array.from(new Set(items));
     },
     /**
    * https://github.com/sindresorhus/pretty-bytes
@@ -329,15 +348,9 @@ const h = {
      * @returns {string|*}
      */
         stripFlags: pattern => {
-            if (!h.contains('/', pattern)) {
-                return pattern;
-            }
-
-            const s = pattern.split('').reverse().join('');
-
-            const index = s.indexOf('/');
-
-            return s.substring(index).split('').reverse().join('');
+            const str = String(pattern || '');
+            const lastSlash = str.lastIndexOf('/');
+            return lastSlash < 0 ? str : str.slice(0, lastSlash + 1);
         },
         /**
      * @param pattern
@@ -370,7 +383,9 @@ const h = {
      * @returns {*|null}
      */
         match: (pattern, subject) => {
+            if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
             const matches = pattern.exec(subject);
+            if (pattern.global || pattern.sticky) pattern.lastIndex = 0;
             return matches && matches.length ? matches[0] : null;
         },
         /**
@@ -381,6 +396,7 @@ const h = {
      */
         matchAll: (pattern, subject) => {
             const matches = [];
+            pattern.lastIndex = 0;
 
             let m;
 
@@ -393,6 +409,7 @@ const h = {
                 matches.push(m[0]);
             }
 
+            pattern.lastIndex = 0;
             return matches;
         },
     },
