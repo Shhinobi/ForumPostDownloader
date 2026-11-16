@@ -47,6 +47,7 @@ const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
 
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
+    organizeMedia: true,
     flatten: false,
     generateLinks: false,
     generateLog: false,
@@ -69,6 +70,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
     }
     const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
     normalized.preSkipDownload = {
+        organizeMedia:
+            pre && typeof pre.organizeMedia === 'boolean'
+                ? pre.organizeMedia
+                : (normalized.skipDownload ? true : normalized.organizeMedia),
         flatten: pre && typeof pre.flatten === 'boolean' ? pre.flatten : (normalized.skipDownload ? false : normalized.flatten),
         skipDuplicates:
             pre && typeof pre.skipDuplicates === 'boolean'
@@ -80,6 +85,7 @@ function xfpdNormalizeUserPrefs(rawObj) {
                 : (normalized.skipDownload ? false : normalized.generateLinks),
     };
     if (normalized.skipDownload) {
+        normalized.organizeMedia = false;
         normalized.flatten = false;
         normalized.skipDuplicates = false;
         normalized.generateLinks = true;
@@ -220,6 +226,7 @@ function xfpdCreatePostSettings() {
     const prefs = xfpdLoadUserPrefs();
     const postSettings = {
         zipped: prefs.zipped,
+        organizeMedia: prefs.organizeMedia,
         flatten: prefs.flatten,
         generateLinks: prefs.generateLinks,
         generateLog: prefs.generateLog,

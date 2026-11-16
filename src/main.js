@@ -4598,15 +4598,177 @@ try {
 
     log.post.info(postId, '::Url resolution completed::', postNumber);
 
+    const canonicalizeMediaUrl = rawUrl => {
+        const clean = String(rawUrl || '').trim().split('#')[0];
+        if (!clean) return '';
+        try {
+            const u = new URL(clean, typeof location !== 'undefined' ? location.origin : 'https://simpcity.su');
+            let host = (u.hostname || '').toLowerCase().replace(/^www\./, '');
+            // Normalize Goonbox / JPGX CDN shard mirrors (simp1..simp6.cuckcapital.cr, jpg1..jpg7.*)
+            host = host.replace(/^simp\d+\.(cuckcapital\.cr)$/i, '$1');
+            host = host.replace(/^jpe?g\d+\.(church|fish|fishing|pet|su|cr)$/i, 'jpg.$1');
+
+            const path = u.pathname || '';
+            // For Pixeldrain API URLs, file ID is in pathname; for GoFile/Coomer/Kemono/Bunkr/Turbo/ImagePond/Goonbox/Ibb/Pixhost,
+            // pathname uniquely identifies the underlying file while query params hold transient tokens/signatures.
+            if (
+                /(?:cuckcapital\.cr|jpg\.(?:church|fish|fishing|pet|su|cr)|imagepond\.net|ibb\.co|pixhost\.|pixho\.st|postimg\.cc|pixxxels\.cc|imgbox\.com|putmega\.com|twimg\.com|redd\.it|coomer\.|kemono\.|cdn\.cr|bunkr|scdn\.st|turbocdn\.st|erome\.com|pixeldrain\.|pixeldra\.in|gofile\.io)$/i.test(
+                    host,
+                )
+            ) {
+                return `${host}${path}`;
+            }
+            return `${host}${path}${u.search || ''}`;
+        } catch (e) {
+            return clean;
+        }
+    };
+
+    // Smart deduplication:
+    // 1) If a post includes both single preview links AND an album link resolving to the exact same media,
+    //    prefer the album entry (preserving album sequence & album metadata) and drop the duplicate preview.
+    // 2) Deduplicate identical canonical URLs within the post and (when running Download Page) across selected posts.
+    let dedupedCount = 0;
+    {
+        const validResolved = resolved.filter(r => r && r.url);
+        const albumKeys = new Set();
+        for (const item of validResolved) {
+            if (item.folderName && String(item.folderName).trim() !== '') {
+                const k = canonicalizeMediaUrl(item.url);
+                if (k) albumKeys.add(k);
+            }
+        }
+
+        const sharedSeen = callbacks && callbacks.sharedSeenKeys instanceof Set ? callbacks.sharedSeenKeys : null;
+        const postSeen = new Set();
+        const deduped = [];
+
+        for (const item of validResolved) {
+            const hasFolder = !!(item.folderName && String(item.folderName).trim() !== '');
+            const key = canonicalizeMediaUrl(item.url);
+            if (!hasFolder && key && albumKeys.has(key)) {
+                dedupedCount++;
+                log.post.info(postId, `::Skipped single preview (already in album)::: ${item.url}`, postNumber);
+                continue;
+            }
+            if (key && (postSeen.has(key) || (sharedSeen && sharedSeen.has(key)))) {
+                dedupedCount++;
+                log.post.info(postId, `::Skipped duplicate media URL::: ${item.url}`, postNumber);
+                continue;
+            }
+            if (key) {
+                postSeen.add(key);
+                if (sharedSeen) sharedSeen.add(key);
+            }
+            deduped.push(item);
+        }
+        resolved = deduped;
+    }
+
     let totalDownloadable = resolved.filter(r => r.url).length;
 
     const totalResources = enabledHosts.reduce((acc, h) => h.resources.length + acc, 0);
 
     h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
-    h.ui.setText(statusLabel, `Resolved: ${resolved.length} / ${totalDownloadable} 🢒 ${totalResources} Total Links`);
+    h.ui.setText(
+        statusLabel,
+        `Resolved: ${totalDownloadable}${dedupedCount > 0 ? ` (${dedupedCount} dupes skipped)` : ''} 🢒 ${totalResources} Total Links`,
+    );
 
     const filenames = [];
     const mimeTypes = [];
+
+    const XFPD_PHOTO_EXTS = new Set([
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'heic', 'heif', 'jfif', 'jpe', 'svg', 'tif', 'tiff', 'jif', 'jxl',
+    ]);
+    const XFPD_VIDEO_EXTS = new Set([
+        'mp4', 'm4v', 'mkv', 'webm', 'mov', 'avi', 'wmv', 'flv', 'ts', 'm2ts', 'mpg', 'mpeg', '3gp', 'avchd', 'mpv', 'ogv', 'ogg', 'qt', 'mpe', 'm4p', 'swf',
+    ]);
+
+    const formatPostOrderTag = rawPostNum => {
+        const s = String(rawPostNum || '1').trim().replace(/^#/, '');
+        if (/^\d+$/.test(s)) {
+            return `P${s.padStart(4, '0')}`;
+        }
+        const mDisc = /^D(\d+)$/i.exec(s);
+        if (mDisc) {
+            return `PD${mDisc[1].padStart(3, '0')}`;
+        }
+        return `P${s.replace(/[^A-Za-z0-9_-]/g, '') || '0001'}`;
+    };
+
+    const cleanAlbumLabel = rawFolder => {
+        let f = String(rawFolder || '').trim();
+        if (!f) return '';
+        f = f.replace(/^(?:goonbox|bunkr|cyberdrop|filester|imagepond|pixhost|imgbox|ibb|putmega|erome)[_-]+/i, '');
+        f = f.replace(/\.[A-Za-z0-9]{5,8}$/, '');
+        f = f.trim();
+        // Ignore bare short random IDs (e.g. "aHSQr5") that carry no human-readable album name.
+        if (/^[A-Za-z0-9]{4,8}$/.test(f)) return '';
+        return f;
+    };
+
+    const classifyMediaBucket = (fileName, contentTypeHint, hostCategoryHint) => {
+        const extLower = String(h.extension(fileName) || h.ext(fileName) || '').toLowerCase();
+        if (extLower && XFPD_VIDEO_EXTS.has(extLower)) return 'Videos';
+        if (extLower && XFPD_PHOTO_EXTS.has(extLower)) return 'Photos';
+        const ct = String(contentTypeHint || '').toLowerCase();
+        if (ct.startsWith('video/')) return 'Videos';
+        if (ct.startsWith('image/')) return 'Photos';
+        const hc = String(hostCategoryHint || '').toLowerCase();
+        if (hc.includes('video')) return 'Videos';
+        if (hc.includes('image')) return 'Photos';
+        return 'Archives';
+    };
+
+    const buildTargetRelativePath = ({ basename, folderName, seqIndex, contentType, hostCategory, sanitizeSegFn, sanitizePathFn }) => {
+        if (postSettings.organizeMedia !== false) {
+            const bucket = classifyMediaBucket(basename, contentType, hostCategory);
+            const postTag = formatPostOrderTag(postNumber);
+            const seqWidth = Math.max(3, String(totalDownloadable || 1).length);
+            const seqTag = String(seqIndex || 1).padStart(seqWidth, '0');
+            const prefix = `${postTag}_${seqTag}`;
+
+            const ext = String(h.extension(basename) || h.ext(basename) || '').trim();
+            let stem = ext ? h.fnNoExt(basename) : String(basename || 'file');
+            try {
+                if (/%[0-9A-Fa-f]{2}/.test(stem)) {
+                    stem = decodeURIComponent(stem);
+                }
+            } catch (e) {}
+            // Strip common online converter watermark noise while preserving meaningful names.
+            stem = stem.replace(/\s*\(online-video-cutter\.com\)\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+
+            const albumLabel = cleanAlbumLabel(folderName);
+            // If file comes from a named album but its own filename is just a bare hex hash or plain counter,
+            // include the cleaned album title so context isn't lost inside Photos/ or Videos/.
+            const looksOpaqueStem =
+                /^[0-9a-f]{12,}$/i.test(stem) ||
+                /^[0-9a-f]{8}-[0-9a-f-]{13,}$/i.test(stem) ||
+                /^\d{1,6}$/.test(stem) ||
+                /^(?:image|img|photo|video|file)[_-]?\d*$/i.test(stem);
+            if (albumLabel && looksOpaqueStem) {
+                const shortAlbum = albumLabel.length > 70 ? albumLabel.slice(0, 70).trim() : albumLabel;
+                stem = `${shortAlbum} - ${stem}`;
+            }
+
+            stem = sanitizeSegFn(stem || 'file');
+            const maxStemLen = Math.max(24, 165 - prefix.length - (ext ? ext.length + 4 : 3));
+            if (stem.length > maxStemLen) {
+                stem = stem.slice(0, maxStemLen).trim().replace(/[. ]+$/g, '');
+            }
+
+            const finalFile = ext ? `${prefix} - ${stem}.${ext}` : `${prefix} - ${stem}`;
+            return sanitizePathFn(`${bucket}/${finalFile}`);
+        }
+
+        const folder = folderName || '';
+        let rel = basename;
+        if (!postSettings.flatten && folder && folder.trim() !== '') {
+            rel = `${folder}/${basename}`;
+        }
+        return sanitizePathFn(rel);
+    };
 
     // Windows-safe sanitizers (used for folder/zip names). Kept local to downloadPost so it has access to settings.
     const sanitizeWinSegment = (seg, fallback = 'file') => {
@@ -4749,6 +4911,9 @@ try {
     if (!postSettings.skipDownload) {
         const resources = resolved.filter(r => r.url);
         totalDownloadable = resources.length;
+        resources.forEach((item, idx) => {
+            item._seqIndex = idx + 1;
+        });
 
         // Limit bunkr links to a single concurrent download.
         let batchLength = resolved.some(file => /(turbocdn\.st|turbo\.cr|turbovid\.cr)/i.test(file.url)) ? 1 : (resolved.some(file => /(bunkrr?\.\w+)|(bunkr-cache)/.test(file.url)) ? 1 : 2);
@@ -5575,14 +5740,17 @@ if (tmp.length) {
 
                         const originalName = basename;
 
-                        // Handle duplicates within this run.
-                        const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
-                        if (same.length) {
-                            const ext2 = h.extension(basename);
-                            if (ext2) {
-                                basename = `${h.fnNoExt(basename)} (${same.length + 1}).${ext2}`;
-                            } else {
-                                basename = `${basename} (${same.length + 1})`;
+                        // In legacy mode (organizeMedia OFF), disambiguate same-named files before building path.
+                        // When organizeMedia is ON, each file already receives a unique P000X_00Y prefix.
+                        if (postSettings.organizeMedia === false) {
+                            const same = filenames.filter(f => f && (f.original === basename || f.name === basename));
+                            if (same.length) {
+                                const ext2 = h.extension(basename);
+                                if (ext2) {
+                                    basename = `${h.fnNoExt(basename)} (${same.length + 1}).${ext2}`;
+                                } else {
+                                    basename = `${basename} (${same.length + 1})`;
+                                }
                             }
                         }
 
@@ -5597,24 +5765,23 @@ if (tmp.length) {
                         }
 
                         const folder = folderName || '';
-                        let fn = basename;
-
-                        if (!postSettings.flatten && folder && folder.trim() !== '') {
-                            fn = `${folder}/${basename}`;
-                        }
+                        const directContentType = String((meta && (meta.contentType || meta.content_type)) || '');
+                        let fn = buildTargetRelativePath({
+                            basename,
+                            folderName: folder,
+                            seqIndex: resource && resource._seqIndex,
+                            contentType: directContentType,
+                            hostCategory: host && host.category,
+                            sanitizeSegFn: sanitizeWinSegment,
+                            sanitizePathFn: sanitizeWinPath,
+                        });
 
                         log.separator(postId);
                         log.post.info(postId, `::Handed off (direct)::: ${url}`, postNumber);
-
-                        if (folder && folder.trim() !== '') {
-                            log.post.info(postId, `::Saving as (direct)::: ${basename} ::to:: ${folder}`, postNumber);
-                        } else {
-                            log.post.info(postId, `::Saving as (direct)::: ${basename}`, postNumber);
-                        }
+                        log.post.info(postId, `::Saving as (direct)::: ${fn}`, postNumber);
 
                         let title = sanitizeWinSegment(threadTitle);
 
-                        fn = sanitizeWinPath(fn);
                         fn = ensureUniquePath(fn);
                         basename = h.basename(fn);
                         const saveAsFF = `${title} #${postNumber} - ${ensureUniqueFlatName(fn.replace(/\//g, ' - '))}`;
@@ -6451,12 +6618,22 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
 
 
+                        const fileBlob = response.response;
                         let ext = h.ext(basename);
 
                         const mimeType = mimeTypes.find(m => m.url === url);
+                        const rawMime = String(
+                            (mimeType && mimeType.type) ||
+                                headerValue(response.responseHeaders || '', 'content-type') ||
+                                (fileBlob && fileBlob.type) ||
+                                '',
+                        )
+                            .split(';')[0]
+                            .trim()
+                            .toLowerCase();
 
-                        if (!ext && mimeType) {
-                            switch (mimeType.type) {
+                        if (!ext && rawMime) {
+                            switch (rawMime) {
                                 case 'image/jpeg':
                                 case 'image/jpg':
                                     ext = 'jpg';
@@ -6464,14 +6641,44 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 case 'image/png':
                                     ext = 'png';
                                     break;
+                                case 'image/webp':
+                                    ext = 'webp';
+                                    break;
+                                case 'image/gif':
+                                    ext = 'gif';
+                                    break;
+                                case 'image/avif':
+                                    ext = 'avif';
+                                    break;
+                                case 'image/bmp':
+                                    ext = 'bmp';
+                                    break;
+                                case 'video/mp4':
+                                    ext = 'mp4';
+                                    break;
+                                case 'video/webm':
+                                    ext = 'webm';
+                                    break;
+                                case 'video/quicktime':
+                                    ext = 'mov';
+                                    break;
+                                case 'video/x-matroska':
+                                    ext = 'mkv';
+                                    break;
+                                case 'video/mp2t':
+                                    ext = 'ts';
+                                    break;
                                 default:
                                     ext = 'unknown';
+                            }
+                            if (ext && ext !== 'unknown') {
+                                basename = `${basename}.${ext}`;
                             }
                         }
 
                         const original = basename;
 
-                        if (filenames.find(f => f.original === basename)) {
+                        if (postSettings.organizeMedia === false && filenames.find(f => f.original === basename)) {
                             const count = filenames.filter(f => f.original === basename).length;
                             const baseNoExt = (ext && h.fnNoExt(basename)) ? h.fnNoExt(basename) : basename;
                             basename = ext ? `${baseNoExt} (${count + 1}).${ext}` : `${baseNoExt} (${count + 1})`;
@@ -6482,39 +6689,24 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                         }
 
                         const folder = folderName || '';
-
-                        let fn = basename;
-
-                        if (!postSettings.flatten && folder && folder.trim() !== '') {
-                            fn = `${folder}/${basename}`;
-                        }
-
-                        log.separator(postId);
-                        log.post.info(postId, `::Completed::: ${url}`, postNumber);
-
-                        if (folder && folder.trim() !== '') {
-                            log.post.info(postId, `::Saving as::: ${basename} ::to:: ${folder}`, postNumber);
-                        } else {
-                            log.post.info(postId, `::Saving as::: ${basename}`, postNumber);
-                        }
-
-                        const fileBlob = response.response;
-
-                        let title = sanitizeWinSegment(threadTitle);
-
-                        // https://stackoverflow.com/a/53681022
-                        fn = sanitizeWinPath(fn);
+                        let fn = buildTargetRelativePath({
+                            basename,
+                            folderName: folder,
+                            seqIndex: resource && resource._seqIndex,
+                            contentType: rawMime,
+                            hostCategory: host && host.category,
+                            sanitizeSegFn: sanitizeWinSegment,
+                            sanitizePathFn: sanitizeWinPath,
+                        });
 
                         fn = ensureUniquePath(fn);
                         basename = h.basename(fn);
 
-                        if (!isFF) {
-                            if (!postSettings.flatten && folder && folder.trim() !== '') {
-                                fn = `${folder}/${basename}`;
-                            }
-                        } else {
-                            fn = `${fn}`;
-                        }
+                        log.separator(postId);
+                        log.post.info(postId, `::Completed::: ${url}`, postNumber);
+                        log.post.info(postId, `::Saving as::: ${fn}`, postNumber);
+
+                        let title = sanitizeWinSegment(threadTitle);
 
                         const saveAsFF = `${title} #${postNumber} - ${ensureUniqueFlatName(fn.replace(/\//g, ' - '))}`;
                         const saveAsPath = `${title}/${fn}`;
@@ -6851,6 +7043,10 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
     if (postSettings.skipDownload) {
         h.hide(statusLabel);
+    } else if (totalDownloadable === 0 && dedupedCount > 0) {
+        h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
+        h.ui.setText(statusLabel, `All ${dedupedCount} item(s) already downloaded (duplicates skipped)`);
+        h.show(statusLabel);
     } else if (totalDownloadable === 0 && totalResources > 0) {
         h.ui.setElProps(statusLabel, { color: '#d9534f', fontWeight: 'bold' });
         h.ui.setText(statusLabel, `0 / ${totalResources} resolved`);
@@ -6871,7 +7067,12 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
     if (totalDownloadable > 0 || totalResources > 0) {
         callbacks &&
             callbacks.onComplete &&
-            callbacks.onComplete(totalDownloadable, postSettings.skipDownload ? totalDownloadable : succeededCount, failedCount);
+            callbacks.onComplete(
+                totalDownloadable,
+                postSettings.skipDownload ? totalDownloadable : succeededCount,
+                failedCount,
+                dedupedCount,
+            );
     }
     } finally {
         activePostControllers.delete(postId);
@@ -7142,7 +7343,9 @@ const selectedPosts = [];
     onReady(() => {
         init.injectCustomStyles();
 
-        const XFPD_PAGE_CONCURRENCY = 2;
+        // Process selected posts in strict chronological order (1 post at a time; each post already
+        // downloads files concurrently in batches) so earlier posts always own shared/reposted media first.
+        const XFPD_PAGE_CONCURRENCY = 1;
         let downloadPageTippy = null;
         const pageSettings = xfpdCreatePostSettings();
         const pageBatchState = {
@@ -7280,6 +7483,7 @@ const selectedPosts = [];
             pageBatchState.activePostIds.clear();
             updateDownloadPageButtonLabel();
 
+            const pageSeenMediaKeys = new Set();
             let cursor = 0;
             const worker = async () => {
                 while (!pageBatchState.cancelled && cursor < queue.length) {
@@ -7288,7 +7492,7 @@ const selectedPosts = [];
                     const pid = item.post.parsedPost.postId;
                     pageBatchState.activePostIds.add(pid);
                     try {
-                        await item.post.startPostDownload();
+                        await item.post.startPostDownload({ sharedSeenKeys: pageSeenMediaKeys });
                     } catch (e) {
                         console.error('[XFPD] Error in Download Page worker:', e);
                     } finally {
@@ -7609,12 +7813,15 @@ const selectedPosts = [];
                     const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
                     btnDownloadPost.innerHTML = `🡳 Download (${enabledLen}/${totalResources})`;
                 },
-                onComplete: (total, succeeded, failed = 0) => {
+                onComplete: (total, succeeded, failed = 0, deduped = 0) => {
                     btnDownloadPost.dataset.xfpdState = 'done';
                     if (total > 0 && succeeded > 0) {
                         registerPostReaction(parsedPost.footer);
                     }
-                    if (postSettings.skipDownload && total > 0) {
+                    if (total === 0 && deduped > 0) {
+                        btnDownloadPost.style.color = '#47ba24';
+                        btnDownloadPost.innerHTML = `✓ Deduplicated (${deduped})`;
+                    } else if (postSettings.skipDownload && total > 0) {
                         btnDownloadPost.style.color = '#47ba24';
                         btnDownloadPost.innerHTML = `✓ Links Ready (${total})`;
                     } else if (total > 0 && succeeded >= total && failed === 0) {
@@ -7631,7 +7838,7 @@ const selectedPosts = [];
                 },
             };
 
-            const startPostDownload = () => {
+            const startPostDownload = (extraCallbacks = null) => {
                 if (isPostProcessing(postId)) {
                     const ctrl = activePostControllers.get(postId);
                     if (ctrl) ctrl.cancel();
@@ -7641,6 +7848,7 @@ const selectedPosts = [];
                 btnDownloadPost.style.color = '#e8a838';
                 const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
                 btnDownloadPost.innerHTML = `✕ Cancel (0/${enabledLen})`;
+                const mergedCallbacks = extraCallbacks ? { ...postDownloadCallbacks, ...extraCallbacks } : postDownloadCallbacks;
                 return downloadPost(
                     parsedPost,
                     parsedHosts,
@@ -7648,7 +7856,7 @@ const selectedPosts = [];
                     resolvers,
                     getSettingsCB,
                     statusUI,
-                    postDownloadCallbacks,
+                    mergedCallbacks,
                 );
             };
 

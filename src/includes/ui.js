@@ -197,6 +197,7 @@ const ui = {
        */
             createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
                 const skipDl = !!currentSettings.skipDownload;
+                const orgMedia = skipDl ? false : currentSettings.organizeMedia !== false;
                 return [
                     `
           <div class="menu-row">
@@ -206,7 +207,18 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
-                    ui.forms.createCheckbox(`${idPrefix}-flatten`, 'Flatten', skipDl ? false : !!currentSettings.flatten, skipDl),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-organize-media`,
+                        'Organize Media (Photos/Videos)',
+                        orgMedia,
+                        skipDl,
+                    ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-flatten`,
+                        'Flatten',
+                        skipDl || orgMedia ? false : !!currentSettings.flatten,
+                        skipDl || orgMedia,
+                    ),
                     ui.forms.createCheckbox(
                         `${idPrefix}-skip-duplicates`,
                         'Skip Duplicates',
@@ -244,8 +256,10 @@ const ui = {
                     }
                 };
                 const skipDl = !!settingsObj.skipDownload;
+                const orgMedia = skipDl ? false : settingsObj.organizeMedia !== false;
                 setCb('zipped', settingsObj.zipped, false);
-                setCb('flatten', skipDl ? false : settingsObj.flatten, skipDl);
+                setCb('organize-media', orgMedia, skipDl);
+                setCb('flatten', skipDl || orgMedia ? false : settingsObj.flatten, skipDl || orgMedia);
                 setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
@@ -253,7 +267,7 @@ const ui = {
                 setCb('verify-bunkr-links', settingsObj.verifyBunkrLinks, false);
             },
             /**
-       * Binds change handlers once per form element for the 7 settings checkboxes.
+       * Binds change handlers once per form element for the settings checkboxes.
        * @param rootEl
        * @param idPrefix
        * @param settingsObj
@@ -272,6 +286,7 @@ const ui = {
                 const ensurePreSkip = () => {
                     if (!settingsObj.preSkipDownload || typeof settingsObj.preSkipDownload !== 'object') {
                         settingsObj.preSkipDownload = {
+                            organizeMedia: settingsObj.organizeMedia !== false,
                             flatten: !!settingsObj.flatten,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
@@ -290,6 +305,19 @@ const ui = {
                 bindOne('zipped', e => {
                     settingsObj.zipped = !!e.target.checked;
                     notify({ zipped: settingsObj.zipped }, ['zipped']);
+                });
+
+                bindOne('organize-media', e => {
+                    ensurePreSkip();
+                    settingsObj.organizeMedia = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.organizeMedia = settingsObj.organizeMedia;
+                    }
+                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                    notify(
+                        { organizeMedia: settingsObj.organizeMedia, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['organizeMedia'],
+                    );
                 });
 
                 bindOne('flatten', e => {
@@ -340,16 +368,19 @@ const ui = {
                     const checked = !!e.target.checked;
                     if (checked) {
                         settingsObj.preSkipDownload = {
+                            organizeMedia: settingsObj.organizeMedia !== false,
                             flatten: !!settingsObj.flatten,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
                         };
                         settingsObj.skipDownload = true;
+                        settingsObj.organizeMedia = false;
                         settingsObj.flatten = false;
                         settingsObj.skipDuplicates = false;
                         settingsObj.generateLinks = true;
                     } else {
                         settingsObj.skipDownload = false;
+                        settingsObj.organizeMedia = settingsObj.preSkipDownload.organizeMedia !== false;
                         settingsObj.flatten = !!settingsObj.preSkipDownload.flatten;
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
@@ -358,12 +389,13 @@ const ui = {
                     notify(
                         {
                             skipDownload: settingsObj.skipDownload,
+                            organizeMedia: settingsObj.organizeMedia,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'organizeMedia', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },
