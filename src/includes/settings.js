@@ -39,6 +39,202 @@ const settings = {
     },
 };
 
+// --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
+const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
+
+const XFPD_DEFAULT_USER_PREFS = Object.freeze({
+    zipped: true,
+    flatten: false,
+    generateLinks: false,
+    generateLog: false,
+    skipDuplicates: false,
+    skipDownload: false,
+    verifyBunkrLinks: false,
+});
+
+const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
+
+let xfpdPrefsMirror = null;
+let xfpdPrefsListenerBound = false;
+const xfpdPrefsSubscribers = new Set();
+
+function xfpdNormalizeUserPrefs(rawObj) {
+    const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
+    const normalized = {};
+    for (const key of XFPD_USER_PREF_KEYS) {
+        normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+    }
+    const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
+    normalized.preSkipDownload = {
+        flatten: pre && typeof pre.flatten === 'boolean' ? pre.flatten : (normalized.skipDownload ? false : normalized.flatten),
+        skipDuplicates:
+            pre && typeof pre.skipDuplicates === 'boolean'
+                ? pre.skipDuplicates
+                : (normalized.skipDownload ? false : normalized.skipDuplicates),
+        generateLinks:
+            pre && typeof pre.generateLinks === 'boolean'
+                ? pre.generateLinks
+                : (normalized.skipDownload ? false : normalized.generateLinks),
+    };
+    if (normalized.skipDownload) {
+        normalized.flatten = false;
+        normalized.skipDuplicates = false;
+        normalized.generateLinks = true;
+    }
+    normalized._updatedAt = Number(src._updatedAt || 0) || 0;
+    return normalized;
+}
+
+function xfpdParsePrefsJson(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    try {
+        const parsed = JSON.parse(String(raw));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdBindUserPrefsStorageListener() {
+    if (xfpdPrefsListenerBound) return;
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+    if (!addListener) return;
+    xfpdPrefsListenerBound = true;
+    try {
+        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed) return;
+            const prev = xfpdPrefsMirror;
+            xfpdPrefsMirror = xfpdNormalizeUserPrefs(parsed);
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdPrefsMirror));
+                }
+            } catch (e) {}
+            if (remote) {
+                const changed = prev
+                    ? XFPD_USER_PREF_KEYS.filter(k => prev[k] !== xfpdPrefsMirror[k])
+                    : XFPD_USER_PREF_KEYS.slice();
+                if (changed.length) {
+                    xfpdPrefsSubscribers.forEach(cb => {
+                        try {
+                            cb(xfpdNormalizeUserPrefs(xfpdPrefsMirror), changed, 'storage');
+                        } catch (e) {}
+                    });
+                }
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdLoadUserPrefs() {
+    xfpdBindUserPrefsStorageListener();
+    const candidates = [];
+    if (xfpdPrefsMirror) candidates.push(xfpdPrefsMirror);
+    try {
+        if (typeof GM_getValue === 'function') {
+            const gmParsed = xfpdParsePrefsJson(GM_getValue(XFPD_USER_PREFS_KEY, ''));
+            if (gmParsed) candidates.push(gmParsed);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(XFPD_USER_PREFS_KEY));
+            if (lsParsed) candidates.push(lsParsed);
+        }
+    } catch (e) {}
+
+    let chosen = null;
+    for (const c of candidates) {
+        if (!chosen) {
+            chosen = c;
+            continue;
+        }
+        const cTime = Number(c._updatedAt || 0) || 0;
+        const chosenTime = Number(chosen._updatedAt || 0) || 0;
+        if (cTime > chosenTime) {
+            chosen = c;
+        }
+    }
+
+    const normalized = xfpdNormalizeUserPrefs(chosen);
+    xfpdPrefsMirror = normalized;
+    return xfpdNormalizeUserPrefs(normalized);
+}
+
+function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
+    const current = xfpdLoadUserPrefs();
+    const merged = {
+        ...current,
+        ...(patch && typeof patch === 'object' ? patch : {}),
+        preSkipDownload: {
+            ...current.preSkipDownload,
+            ...(patch && patch.preSkipDownload && typeof patch.preSkipDownload === 'object' ? patch.preSkipDownload : {}),
+        },
+        _updatedAt: Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1),
+    };
+    const next = xfpdNormalizeUserPrefs(merged);
+    const changedKeys =
+        Array.isArray(explicitChangedKeys) && explicitChangedKeys.length
+            ? explicitChangedKeys.filter(k => XFPD_USER_PREF_KEYS.includes(k))
+            : XFPD_USER_PREF_KEYS.filter(k => current[k] !== next[k]);
+
+    xfpdPrefsMirror = next;
+    const serialized = JSON.stringify(next);
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(XFPD_USER_PREFS_KEY, serialized);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            localStorage.setItem(XFPD_USER_PREFS_KEY, serialized);
+        }
+    } catch (e) {}
+
+    xfpdPrefsSubscribers.forEach(cb => {
+        try {
+            cb(xfpdNormalizeUserPrefs(next), changedKeys, source);
+        } catch (e) {}
+    });
+
+    return xfpdNormalizeUserPrefs(next);
+}
+
+function xfpdOnUserPrefsChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindUserPrefsStorageListener();
+    xfpdPrefsSubscribers.add(cb);
+    return () => xfpdPrefsSubscribers.delete(cb);
+}
+
+function xfpdCreatePostSettings() {
+    const prefs = xfpdLoadUserPrefs();
+    const postSettings = {
+        zipped: prefs.zipped,
+        flatten: prefs.flatten,
+        generateLinks: prefs.generateLinks,
+        generateLog: prefs.generateLog,
+        skipDuplicates: prefs.skipDuplicates,
+        skipDownload: prefs.skipDownload,
+        verifyBunkrLinks: prefs.verifyBunkrLinks,
+        preSkipDownload: { ...prefs.preSkipDownload },
+        output: [],
+    };
+    Object.defineProperty(postSettings, '_overridden', {
+        value: new Set(),
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    });
+    return postSettings;
+}
+
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
 const gofileNameById = new Map();
 const gofileNameByUrl = new Map();

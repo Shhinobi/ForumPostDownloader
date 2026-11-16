@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.24
+// @version 3.25
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -327,6 +327,202 @@ const settings = {
         ],
     },
 };
+
+// --- Persistent User Preferences (Post & Download Page Settings) --------------------------------
+const XFPD_USER_PREFS_KEY = 'xfpd_user_prefs';
+
+const XFPD_DEFAULT_USER_PREFS = Object.freeze({
+    zipped: true,
+    flatten: false,
+    generateLinks: false,
+    generateLog: false,
+    skipDuplicates: false,
+    skipDownload: false,
+    verifyBunkrLinks: false,
+});
+
+const XFPD_USER_PREF_KEYS = Object.keys(XFPD_DEFAULT_USER_PREFS);
+
+let xfpdPrefsMirror = null;
+let xfpdPrefsListenerBound = false;
+const xfpdPrefsSubscribers = new Set();
+
+function xfpdNormalizeUserPrefs(rawObj) {
+    const src = rawObj && typeof rawObj === 'object' ? rawObj : {};
+    const normalized = {};
+    for (const key of XFPD_USER_PREF_KEYS) {
+        normalized[key] = typeof src[key] === 'boolean' ? src[key] : XFPD_DEFAULT_USER_PREFS[key];
+    }
+    const pre = src.preSkipDownload && typeof src.preSkipDownload === 'object' ? src.preSkipDownload : null;
+    normalized.preSkipDownload = {
+        flatten: pre && typeof pre.flatten === 'boolean' ? pre.flatten : (normalized.skipDownload ? false : normalized.flatten),
+        skipDuplicates:
+            pre && typeof pre.skipDuplicates === 'boolean'
+                ? pre.skipDuplicates
+                : (normalized.skipDownload ? false : normalized.skipDuplicates),
+        generateLinks:
+            pre && typeof pre.generateLinks === 'boolean'
+                ? pre.generateLinks
+                : (normalized.skipDownload ? false : normalized.generateLinks),
+    };
+    if (normalized.skipDownload) {
+        normalized.flatten = false;
+        normalized.skipDuplicates = false;
+        normalized.generateLinks = true;
+    }
+    normalized._updatedAt = Number(src._updatedAt || 0) || 0;
+    return normalized;
+}
+
+function xfpdParsePrefsJson(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    try {
+        const parsed = JSON.parse(String(raw));
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdBindUserPrefsStorageListener() {
+    if (xfpdPrefsListenerBound) return;
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+    if (!addListener) return;
+    xfpdPrefsListenerBound = true;
+    try {
+        addListener(XFPD_USER_PREFS_KEY, (_name, _oldVal, newVal, remote) => {
+            const parsed = xfpdParsePrefsJson(newVal);
+            if (!parsed) return;
+            const prev = xfpdPrefsMirror;
+            xfpdPrefsMirror = xfpdNormalizeUserPrefs(parsed);
+            try {
+                if (typeof localStorage !== 'undefined' && localStorage) {
+                    localStorage.setItem(XFPD_USER_PREFS_KEY, JSON.stringify(xfpdPrefsMirror));
+                }
+            } catch (e) {}
+            if (remote) {
+                const changed = prev
+                    ? XFPD_USER_PREF_KEYS.filter(k => prev[k] !== xfpdPrefsMirror[k])
+                    : XFPD_USER_PREF_KEYS.slice();
+                if (changed.length) {
+                    xfpdPrefsSubscribers.forEach(cb => {
+                        try {
+                            cb(xfpdNormalizeUserPrefs(xfpdPrefsMirror), changed, 'storage');
+                        } catch (e) {}
+                    });
+                }
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdLoadUserPrefs() {
+    xfpdBindUserPrefsStorageListener();
+    const candidates = [];
+    if (xfpdPrefsMirror) candidates.push(xfpdPrefsMirror);
+    try {
+        if (typeof GM_getValue === 'function') {
+            const gmParsed = xfpdParsePrefsJson(GM_getValue(XFPD_USER_PREFS_KEY, ''));
+            if (gmParsed) candidates.push(gmParsed);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            const lsParsed = xfpdParsePrefsJson(localStorage.getItem(XFPD_USER_PREFS_KEY));
+            if (lsParsed) candidates.push(lsParsed);
+        }
+    } catch (e) {}
+
+    let chosen = null;
+    for (const c of candidates) {
+        if (!chosen) {
+            chosen = c;
+            continue;
+        }
+        const cTime = Number(c._updatedAt || 0) || 0;
+        const chosenTime = Number(chosen._updatedAt || 0) || 0;
+        if (cTime > chosenTime) {
+            chosen = c;
+        }
+    }
+
+    const normalized = xfpdNormalizeUserPrefs(chosen);
+    xfpdPrefsMirror = normalized;
+    return xfpdNormalizeUserPrefs(normalized);
+}
+
+function xfpdSaveUserPrefs(patch, source = 'post', explicitChangedKeys = null) {
+    const current = xfpdLoadUserPrefs();
+    const merged = {
+        ...current,
+        ...(patch && typeof patch === 'object' ? patch : {}),
+        preSkipDownload: {
+            ...current.preSkipDownload,
+            ...(patch && patch.preSkipDownload && typeof patch.preSkipDownload === 'object' ? patch.preSkipDownload : {}),
+        },
+        _updatedAt: Math.max(Date.now(), (Number(current._updatedAt || 0) || 0) + 1),
+    };
+    const next = xfpdNormalizeUserPrefs(merged);
+    const changedKeys =
+        Array.isArray(explicitChangedKeys) && explicitChangedKeys.length
+            ? explicitChangedKeys.filter(k => XFPD_USER_PREF_KEYS.includes(k))
+            : XFPD_USER_PREF_KEYS.filter(k => current[k] !== next[k]);
+
+    xfpdPrefsMirror = next;
+    const serialized = JSON.stringify(next);
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(XFPD_USER_PREFS_KEY, serialized);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            localStorage.setItem(XFPD_USER_PREFS_KEY, serialized);
+        }
+    } catch (e) {}
+
+    xfpdPrefsSubscribers.forEach(cb => {
+        try {
+            cb(xfpdNormalizeUserPrefs(next), changedKeys, source);
+        } catch (e) {}
+    });
+
+    return xfpdNormalizeUserPrefs(next);
+}
+
+function xfpdOnUserPrefsChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindUserPrefsStorageListener();
+    xfpdPrefsSubscribers.add(cb);
+    return () => xfpdPrefsSubscribers.delete(cb);
+}
+
+function xfpdCreatePostSettings() {
+    const prefs = xfpdLoadUserPrefs();
+    const postSettings = {
+        zipped: prefs.zipped,
+        flatten: prefs.flatten,
+        generateLinks: prefs.generateLinks,
+        generateLog: prefs.generateLog,
+        skipDuplicates: prefs.skipDuplicates,
+        skipDownload: prefs.skipDownload,
+        verifyBunkrLinks: prefs.verifyBunkrLinks,
+        preSkipDownload: { ...prefs.preSkipDownload },
+        output: [],
+    };
+    Object.defineProperty(postSettings, '_overridden', {
+        value: new Set(),
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    });
+    return postSettings;
+}
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
 const gofileNameById = new Map();
@@ -2400,13 +2596,14 @@ const ui = {
      * @param id
      * @param label
      * @param checked
+     * @param disabled
      * @returns {string}
      */
-        createCheckbox: (id, label, checked) => {
+        createCheckbox: (id, label, checked, disabled = false) => {
             return `
           <div class="menu-row" style="margin-top: -5px;">
             <label class="iconic" style="user-select: none">
-              <input type="checkbox" ${checked ? 'checked="checked"' : ''} id="${id}" />
+              <input type="checkbox" ${checked ? 'checked="checked"' : ''} ${disabled ? 'disabled="disabled"' : ''} id="${id}" />
                 <i aria-hidden="true"></i>
                 <span
                   class="iconic-label"
@@ -2441,6 +2638,184 @@ const ui = {
       `;
         },
         config: {
+            /**
+       * Renders the Settings heading and the 7 download configuration checkboxes for any form prefix.
+       * @param idPrefix
+       * @param currentSettings
+       * @returns {string}
+       */
+            createSettingsCheckboxesHtml: (idPrefix, currentSettings) => {
+                const skipDl = !!currentSettings.skipDownload;
+                return [
+                    `
+          <div class="menu-row">
+            <div style="font-weight: bold; margin-top:3px; margin-bottom: 4px; color: #3DB7C7;">
+                Settings
+            </div>
+          </div>
+          `,
+                    ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
+                    ui.forms.createCheckbox(`${idPrefix}-flatten`, 'Flatten', skipDl ? false : !!currentSettings.flatten, skipDl),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-skip-duplicates`,
+                        'Skip Duplicates',
+                        skipDl ? false : !!currentSettings.skipDuplicates,
+                        skipDl,
+                    ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-generate-links`,
+                        'Generate Links',
+                        skipDl ? true : !!currentSettings.generateLinks,
+                        skipDl,
+                    ),
+                    ui.forms.createCheckbox(`${idPrefix}-generate-log`, 'Generate Log', !!currentSettings.generateLog),
+                    ui.forms.createCheckbox(`${idPrefix}-skip-download`, 'Skip Download', skipDl),
+                    ui.forms.createCheckbox(`${idPrefix}-verify-bunkr-links`, 'Verify Bunkr Links', !!currentSettings.verifyBunkrLinks),
+                ].join('');
+            },
+            /**
+       * Syncs checkbox .checked and .disabled states in rootEl from live settingsObj.
+       * @param rootEl
+       * @param idPrefix
+       * @param settingsObj
+       */
+            syncSettingsInputs: (rootEl, idPrefix, settingsObj) => {
+                if (!rootEl || !settingsObj) return;
+                const setCb = (suffix, checked, disabled = false) => {
+                    const el = rootEl.querySelector(`#${idPrefix}-${suffix}`);
+                    if (!el) return;
+                    el.checked = !!checked;
+                    el.disabled = !!disabled;
+                    if (checked) {
+                        el.setAttribute('checked', 'checked');
+                    } else {
+                        el.removeAttribute('checked');
+                    }
+                };
+                const skipDl = !!settingsObj.skipDownload;
+                setCb('zipped', settingsObj.zipped, false);
+                setCb('flatten', skipDl ? false : settingsObj.flatten, skipDl);
+                setCb('skip-duplicates', skipDl ? false : settingsObj.skipDuplicates, skipDl);
+                setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
+                setCb('generate-log', settingsObj.generateLog, false);
+                setCb('skip-download', skipDl, false);
+                setCb('verify-bunkr-links', settingsObj.verifyBunkrLinks, false);
+            },
+            /**
+       * Binds change handlers once per form element for the 7 settings checkboxes.
+       * @param rootEl
+       * @param idPrefix
+       * @param settingsObj
+       * @param onSettingChange
+       */
+            bindSettingsInputs: (rootEl, idPrefix, settingsObj, onSettingChange) => {
+                if (!rootEl || !settingsObj || rootEl.dataset.xfpdSettingsBound === '1') return;
+                rootEl.dataset.xfpdSettingsBound = '1';
+
+                const notify = (patch, keys) => {
+                    if (typeof onSettingChange === 'function') {
+                        onSettingChange(patch, keys);
+                    }
+                };
+
+                const ensurePreSkip = () => {
+                    if (!settingsObj.preSkipDownload || typeof settingsObj.preSkipDownload !== 'object') {
+                        settingsObj.preSkipDownload = {
+                            flatten: !!settingsObj.flatten,
+                            skipDuplicates: !!settingsObj.skipDuplicates,
+                            generateLinks: !!settingsObj.generateLinks,
+                        };
+                    }
+                };
+
+                const bindOne = (suffix, handler) => {
+                    const el = rootEl.querySelector(`#${idPrefix}-${suffix}`);
+                    if (el && el.dataset.xfpdBound !== '1') {
+                        el.dataset.xfpdBound = '1';
+                        el.addEventListener('change', handler);
+                    }
+                };
+
+                bindOne('zipped', e => {
+                    settingsObj.zipped = !!e.target.checked;
+                    notify({ zipped: settingsObj.zipped }, ['zipped']);
+                });
+
+                bindOne('flatten', e => {
+                    ensurePreSkip();
+                    settingsObj.flatten = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.flatten = settingsObj.flatten;
+                    }
+                    notify({ flatten: settingsObj.flatten, preSkipDownload: { ...settingsObj.preSkipDownload } }, ['flatten']);
+                });
+
+                bindOne('skip-duplicates', e => {
+                    ensurePreSkip();
+                    settingsObj.skipDuplicates = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.skipDuplicates = settingsObj.skipDuplicates;
+                    }
+                    notify(
+                        { skipDuplicates: settingsObj.skipDuplicates, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['skipDuplicates'],
+                    );
+                });
+
+                bindOne('generate-links', e => {
+                    ensurePreSkip();
+                    settingsObj.generateLinks = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.generateLinks = settingsObj.generateLinks;
+                    }
+                    notify(
+                        { generateLinks: settingsObj.generateLinks, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['generateLinks'],
+                    );
+                });
+
+                bindOne('generate-log', e => {
+                    settingsObj.generateLog = !!e.target.checked;
+                    notify({ generateLog: settingsObj.generateLog }, ['generateLog']);
+                });
+
+                bindOne('verify-bunkr-links', e => {
+                    settingsObj.verifyBunkrLinks = !!e.target.checked;
+                    notify({ verifyBunkrLinks: settingsObj.verifyBunkrLinks }, ['verifyBunkrLinks']);
+                });
+
+                bindOne('skip-download', e => {
+                    ensurePreSkip();
+                    const checked = !!e.target.checked;
+                    if (checked) {
+                        settingsObj.preSkipDownload = {
+                            flatten: !!settingsObj.flatten,
+                            skipDuplicates: !!settingsObj.skipDuplicates,
+                            generateLinks: !!settingsObj.generateLinks,
+                        };
+                        settingsObj.skipDownload = true;
+                        settingsObj.flatten = false;
+                        settingsObj.skipDuplicates = false;
+                        settingsObj.generateLinks = true;
+                    } else {
+                        settingsObj.skipDownload = false;
+                        settingsObj.flatten = !!settingsObj.preSkipDownload.flatten;
+                        settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
+                        settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
+                    }
+                    ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                    notify(
+                        {
+                            skipDownload: settingsObj.skipDownload,
+                            flatten: settingsObj.flatten,
+                            skipDuplicates: settingsObj.skipDuplicates,
+                            generateLinks: settingsObj.generateLinks,
+                            preSkipDownload: { ...settingsObj.preSkipDownload },
+                        },
+                        ['skipDownload', 'flatten', 'skipDuplicates', 'generateLinks'],
+                    );
+                });
+            },
             page: {
                 /**
          * @param backgroundColor
@@ -2452,7 +2827,7 @@ const ui = {
           <form
             id="downloader-page-config-form"
             class="menu-content"
-            style="padding: 5px 10px; background: ${backgroundColor};width:300px; min-width: 300px;"
+            style="user-select: none; padding: 5px 10px; background: ${backgroundColor};width:300px; min-width: 300px;"
           >
             ${innerHTML}
           </form>
@@ -2513,11 +2888,8 @@ const ui = {
                 /**
          * @returns {string}
          */
-                /**
-         * @returns {string}
-         */
-                createFlattenCheckbox: (postId, checked) => {
-                    return ui.forms.createCheckbox(`settings-${postId}-flatten`, 'Flatten', checked);
+                createFlattenCheckbox: (postId, checked, disabled = false) => {
+                    return ui.forms.createCheckbox(`settings-${postId}-flatten`, 'Flatten', checked, disabled);
                 },
                 /**
          * @returns {string}
@@ -2534,8 +2906,8 @@ const ui = {
                 /**
          * @returns {string}
          */
-                createGenerateLinksCheckbox: (postId, checked) => {
-                    return ui.forms.createCheckbox(`settings-${postId}-generate-links`, 'Generate Links', checked);
+                createGenerateLinksCheckbox: (postId, checked, disabled = false) => {
+                    return ui.forms.createCheckbox(`settings-${postId}-generate-links`, 'Generate Links', checked, disabled);
                 },
                 /**
          * @returns {string}
@@ -2546,17 +2918,19 @@ const ui = {
                 /**
          * @returns {string}
          */
-                createSkipDuplicatesCheckbox: (postId, checked) => {
-                    return ui.forms.createCheckbox(`settings-${postId}-skip-duplicates`, 'Skip Duplicates', checked);
+                createSkipDuplicatesCheckbox: (postId, checked, disabled = false) => {
+                    return ui.forms.createCheckbox(`settings-${postId}-skip-duplicates`, 'Skip Duplicates', checked, disabled);
                 },
                 /**
          * @param hosts
          * @param getTotalDownloadableResourcesCB
+         * @param postId
          * @returns {string}
          */
-                createFilterLabel: (hosts, getTotalDownloadableResourcesCB) => {
+                createFilterLabel: (hosts, getTotalDownloadableResourcesCB, postId = '') => {
+                    const countId = postId ? `filtered-count-${postId}` : 'filtered-count';
                     return `
-          <div style="font-weight: bold; margin-top:5px; margin-bottom: 8px; margin-left: 8px; color: #3DB7C7;">Filter <span id="filtered-count">(${getTotalDownloadableResourcesCB(
+          <div style="font-weight: bold; margin-top:5px; margin-bottom: 8px; margin-left: 8px; color: #3DB7C7;">Filter <span id="${countId}" data-xfpd-filtered-count="1">(${getTotalDownloadableResourcesCB(
                         hosts,
                     )})</span></div>
           `;
@@ -2597,7 +2971,7 @@ const ui = {
          * @param parsedPost
          * @param parsedHosts
          * @param defaultFilename
-         * @param settings
+         * @param postSettings
          * @param onSubmitFormCB
          * @param totalDownloadableResourcesForPostCB
          * @param btnDownloadPost
@@ -2606,7 +2980,7 @@ const ui = {
                     parsedPost,
                     parsedHosts,
                     defaultFilename,
-                    settings,
+                    postSettings,
                     onSubmitFormCB,
                     totalDownloadableResourcesForPostCB,
                     btnDownloadPost,
@@ -2614,31 +2988,18 @@ const ui = {
                     const { postId } = parsedPost;
                     const color = ui.getTooltipBackgroundColor();
 
-                    const customFilename = settings.output.find(o => o.postId === postId)?.value || '';
+                    const customFilename = postSettings.output.find(o => o.postId === postId)?.value || '';
 
                     let hostsHtml = '<div>';
                     parsedHosts.forEach(host => (hostsHtml += ui.forms.config.post.createHostCheckbox(postId, host)));
                     hostsHtml += '</div>';
 
-                    const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB);
+                    const filterLabel = ui.forms.config.post.createFilterLabel(parsedHosts, totalDownloadableResourcesForPostCB, postId);
+                    const idPrefix = `settings-${postId}`;
 
-                    const settingsHeading = `
-          <div class="menu-row">
-            <div style="font-weight: bold; margin-top:3px; margin-bottom: 4px; color: #3DB7C7;">
-                Settings
-            </div>
-          </div>
-          `;
-
-                    let formHtml = [
+                    const formHtml = [
                         window.isFF ? ui.forms.config.post.createFilenameInput(customFilename, postId, color, defaultFilename) : null,
-                        settingsHeading,
-                        ui.forms.config.post.createZippedCheckbox(postId, settings.zipped),                        ui.forms.config.post.createFlattenCheckbox(postId, settings.flatten),
-                        ui.forms.config.post.createSkipDuplicatesCheckbox(postId, settings.skipDuplicates),
-                        ui.forms.config.post.createGenerateLinksCheckbox(postId, settings.generateLinks),
-                        ui.forms.config.post.createGenerateLogCheckbox(postId, settings.generateLog),
-                        ui.forms.config.post.createSkipDownloadCheckbox(postId, settings.skipDownload),
-                        ui.forms.config.post.createVerifyBunkrLinksCheckbox(postId, settings.verifyBunkrLinks),
+                        ui.forms.config.createSettingsCheckboxesHtml(idPrefix, postSettings),
                         ui.forms.config.post.createHostCheckboxes(postId, filterLabel, hostsHtml, parsedHosts.length > 1),
                         ui.forms.createRow(
                             '<a href="#download-page" style="color: #3DB7C7; font-weight: bold"><i class="fa fa-arrow-up"></i> Show Download Page Button</a>',
@@ -2646,110 +3007,93 @@ const ui = {
                     ].filter(c => c !== null);
 
                     const configForm = ui.forms.config.post.createForm(postId, color, formHtml.join(''));
+                    let activeInstance = null;
 
-                    ui.tooltip(btnDownloadPost, configForm, {
-                        onShown: instance => {
-                            const inputEl = h.element(`#filename-input-${postId}`);
-                            if (inputEl) {
+                    const setupPostForm = instance => {
+                        activeInstance = instance || activeInstance;
+                        const root = instance && instance.popper ? instance.popper : document;
+                        const formEl = root.querySelector(`#download-config-form-${postId}`);
+                        if (!formEl) return;
+
+                        // Always sync DOM inputs to reflect live postSettings (handles re-hover, page-wide toggles, cross-tab sync).
+                        ui.forms.config.syncSettingsInputs(formEl, idPrefix, postSettings);
+
+                        const inputEl = formEl.querySelector(`#filename-input-${postId}`);
+                        if (inputEl) {
+                            const savedOut = postSettings.output.find(o => o.postId === postId)?.value || '';
+                            if (inputEl.value !== savedOut) inputEl.value = savedOut;
+                            if (inputEl.dataset.xfpdBound !== '1') {
+                                inputEl.dataset.xfpdBound = '1';
                                 inputEl.addEventListener('input', e => {
                                     const value = e.target.value;
-                                    const o = settings.output.find(o => o.postId === postId);
+                                    const o = postSettings.output.find(item => item.postId === postId);
                                     if (o) {
                                         o.value = value;
                                     } else {
-                                        settings.output.push({
+                                        postSettings.output.push({
                                             postId,
                                             value,
                                         });
                                     }
                                 });
                             }
+                        }
 
-                            let prevSettings = JSON.parse(JSON.stringify(settings));
+                        ui.forms.config.bindSettingsInputs(formEl, idPrefix, postSettings, (patch, changedKeys) => {
+                            if (postSettings._overridden && Array.isArray(changedKeys)) {
+                                changedKeys.forEach(k => postSettings._overridden.add(k));
+                            }
+                            if (typeof xfpdSaveUserPrefs === 'function') {
+                                xfpdSaveUserPrefs(patch, 'post', changedKeys);
+                            }
+                        });
 
-                            const setPrevSettings = settings => {
-                                prevSettings = JSON.parse(JSON.stringify(settings));
-                            };
-
-                            let updateSettings = true;
-
-                            h.element(`#settings-${postId}-skip-download`).addEventListener('change', e => {
-                                const checked = e.target.checked;
-
-                                settings.skipDownload = checked;
-
-                                settings.flatten = checked ? false : prevSettings.flatten;
-                                settings.skipDuplicates = checked ? false : prevSettings.skipDuplicates;
-                                settings.generateLinks = checked ? true : prevSettings.generateLinks;
-
-                                updateSettings = false;
-
-                                h.element(`#settings-${postId}-flatten`).checked = checked ? false : prevSettings.flatten;
-                                h.element(`#settings-${postId}-flatten`).disabled = checked;
-
-                                h.element(`#settings-${postId}-skip-duplicates`).checked = checked ? false : prevSettings.skipDuplicates;
-                                h.element(`#settings-${postId}-skip-duplicates`).disabled = checked;
-
-                                h.element(`#settings-${postId}-generate-links`).checked = checked ? true : prevSettings.generateLinks;
-                                h.element(`#settings-${postId}-generate-links`).disabled = checked;
-
-                                setTimeout(() => (updateSettings = true), 100);
-                            });
-
-                            h.element(`#settings-${postId}-verify-bunkr-links`).addEventListener('change', e => {
-                                settings.verifyBunkrLinks = e.target.checked;
-                            });
-                            h.element(`#settings-${postId}-zipped`).addEventListener('change', e => {
-                                settings.zipped = e.target.checked;                                if (updateSettings) {
-                                    setPrevSettings(settings);
+                        // Sync host checkboxes & filtered count on every open.
+                        let enabledHostCount = 0;
+                        parsedHosts.forEach(host => {
+                            const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
+                            if (hostCb) {
+                                hostCb.checked = !!host.enabled;
+                                if (host.enabled) enabledHostCount++;
+                            }
+                        });
+                        const countSpan = formEl.querySelector('[data-xfpd-filtered-count]') || formEl.querySelector('#filtered-count');
+                        if (countSpan) {
+                            countSpan.textContent = `(${totalDownloadableResourcesForPostCB(parsedHosts)})`;
+                        }
+                        if (parsedHosts.length > 1) {
+                            const toggleAllCb = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
+                            if (toggleAllCb) {
+                                const allChecked = enabledHostCount === parsedHosts.length;
+                                toggleAllCb.checked = allChecked;
+                                if (allChecked) {
+                                    toggleAllCb.setAttribute('checked', 'checked');
+                                } else {
+                                    toggleAllCb.removeAttribute('checked');
                                 }
-                            });
-h.element(`#settings-${postId}-generate-links`).addEventListener('change', e => {
-                                settings.generateLinks = e.target.checked;
+                            }
+                        }
 
-                                if (updateSettings) {
-                                    setPrevSettings(settings);
-                                }
-                            });
+                        if (formEl.dataset.xfpdPostFormBound === '1') return;
+                        formEl.dataset.xfpdPostFormBound = '1';
 
-                            h.element(`#settings-${postId}-generate-log`).addEventListener('change', e => {
-                                settings.generateLog = e.target.checked;
+                        formEl.addEventListener('submit', async e => {
+                            e.preventDefault();
+                            onSubmitFormCB({ tippyInstance: activeInstance });
+                        });
 
-                                if (updateSettings) {
-                                    setPrevSettings(settings);
-                                }
-                            });
-
-                            h.element(`#settings-${postId}-flatten`).addEventListener('change', e => {
-                                settings.flatten = e.target.checked;
-
-                                if (updateSettings) {
-                                    setPrevSettings(settings);
-                                }
-                            });
-
-                            h.element(`#settings-${postId}-skip-duplicates`).addEventListener('change', e => {
-                                settings.skipDuplicates = e.target.checked;
-
-                                if (updateSettings) {
-                                    setPrevSettings(settings);
-                                }
-                            });
-
-                            h.element(`#download-config-form-${postId}`).addEventListener('submit', async e => {
-                                e.preventDefault();
-                                onSubmitFormCB({ tippyInstance: instance });
-                            });
-
-                            if (parsedHosts.length > 1) {
-                                h.element(`#settings-toggle-all-hosts-${postId}`).addEventListener('change', async e => {
+                        if (parsedHosts.length > 1) {
+                            const toggleAllEl = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
+                            if (toggleAllEl) {
+                                toggleAllEl.addEventListener('change', async e => {
                                     e.preventDefault();
 
                                     const checked = e.target.checked;
-
-                                    const hostCheckboxes = parsedHosts.flatMap(host => h.element(`#downloader-host-${host.id}-${postId}`));
-                                    const checkedHostCheckboxes = hostCheckboxes.filter(e => e.checked);
-                                    const unCheckedHostCheckboxes = hostCheckboxes.filter(e => !e.checked);
+                                    const hostCheckboxes = parsedHosts
+                                        .map(host => formEl.querySelector(`#downloader-host-${host.id}-${postId}`))
+                                        .filter(Boolean);
+                                    const checkedHostCheckboxes = hostCheckboxes.filter(el => el.checked);
+                                    const unCheckedHostCheckboxes = hostCheckboxes.filter(el => !el.checked);
 
                                     if (checked) {
                                         unCheckedHostCheckboxes.forEach(c => c.click());
@@ -2758,29 +3102,36 @@ h.element(`#settings-${postId}-generate-links`).addEventListener('change', e => 
                                     }
                                 });
                             }
+                        }
 
-                            parsedHosts.forEach(host => {
-                                h.element(`#downloader-host-${host.id}-${postId}`).addEventListener('change', e => {
-                                    host.enabled = e.target.checked;
-                                    const filteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
-                                    h.element('#filtered-count').textContent = `(${filteredCount})`;
+                        parsedHosts.forEach(host => {
+                            const hostCb = formEl.querySelector(`#downloader-host-${host.id}-${postId}`);
+                            if (!hostCb) return;
+                            hostCb.addEventListener('change', e => {
+                                host.enabled = e.target.checked;
+                                const filteredCount = totalDownloadableResourcesForPostCB(parsedHosts);
+                                const filteredEl =
+                                    formEl.querySelector('[data-xfpd-filtered-count]') || formEl.querySelector('#filtered-count');
+                                if (filteredEl) {
+                                    filteredEl.textContent = `(${filteredCount})`;
+                                }
 
-                                    if (parsedHosts.length > 0) {
-                                        const checkedLength = parsedHosts
-                                        .flatMap(host => h.element(`#downloader-host-${host.id}-${postId}`))
-                                        .filter(h => h.checked).length;
+                                if (parsedHosts.length > 0) {
+                                    const checkedLength = parsedHosts
+                                        .map(hItem => formEl.querySelector(`#downloader-host-${hItem.id}-${postId}`))
+                                        .filter(el => el && el.checked).length;
 
-                                        const totalResources = parsedHosts.reduce((acc, host) => acc + host.resources.length, 0);
+                                    const totalResources = parsedHosts.reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
-                                        const totalDownloadableResources = parsedHosts
-                                        .filter(host => host.enabled && host.resources.length)
-                                        .reduce((acc, host) => acc + host.resources.length, 0);
+                                    const totalDownloadableResources = parsedHosts
+                                        .filter(hItem => hItem.enabled && hItem.resources.length)
+                                        .reduce((acc, hItem) => acc + hItem.resources.length, 0);
 
-                                        btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
+                                    btnDownloadPost.innerHTML = `🡳 Download (${totalDownloadableResources}/${totalResources})`;
 
-                                        if (parsedHosts.length > 1) {
-                                            const toggleAllHostsCheckbox = h.element(`#settings-toggle-all-hosts-${postId}`);
-
+                                    if (parsedHosts.length > 1) {
+                                        const toggleAllHostsCheckbox = formEl.querySelector(`#settings-toggle-all-hosts-${postId}`);
+                                        if (toggleAllHostsCheckbox) {
                                             if (checkedLength !== parsedHosts.length) {
                                                 toggleAllHostsCheckbox.removeAttribute('checked');
                                                 toggleAllHostsCheckbox.checked = false;
@@ -2790,9 +3141,16 @@ h.element(`#settings-${postId}-generate-links`).addEventListener('change', e => 
                                             }
                                         }
                                     }
-                                });
+                                }
                             });
-                        },
+                        });
+                    };
+
+                    return ui.tooltip(btnDownloadPost, configForm, {
+                        onCreate: instance => setupPostForm(instance),
+                        onShow: instance => setupPostForm(instance),
+                        onMount: instance => setupPostForm(instance),
+                        onShown: instance => setupPostForm(instance),
                     });
                 },
             },
@@ -9747,32 +10105,175 @@ const selectedPosts = [];
         init.injectCustomStyles();
 
         let downloadPageTippy = null;
+        const pageSettings = xfpdCreatePostSettings();
+
+        xfpdOnUserPrefsChange((prefs, changedKeys, source) => {
+            const keys = Array.isArray(changedKeys) && changedKeys.length ? changedKeys : XFPD_USER_PREF_KEYS;
+            keys.forEach(k => {
+                pageSettings[k] = prefs[k];
+            });
+            if (prefs.preSkipDownload) {
+                pageSettings.preSkipDownload = { ...prefs.preSkipDownload };
+            }
+            if (downloadPageTippy && downloadPageTippy.popper) {
+                ui.forms.config.syncSettingsInputs(downloadPageTippy.popper, 'page-settings', pageSettings);
+            }
+
+            parsedPosts.forEach(p => {
+                const ps = p.getSettingsCB();
+                if (!ps) return;
+                keys.forEach(k => {
+                    if (source === 'page') {
+                        ps[k] = prefs[k];
+                        if (ps._overridden) ps._overridden.delete(k);
+                    } else if (!ps._overridden || !ps._overridden.has(k)) {
+                        ps[k] = prefs[k];
+                    }
+                });
+                if (prefs.preSkipDownload && (source === 'page' || !ps._overridden || !ps._overridden.has('skipDownload'))) {
+                    ps.preSkipDownload = { ...prefs.preSkipDownload };
+                }
+                if (p.tippyInstance && p.tippyInstance.popper) {
+                    ui.forms.config.syncSettingsInputs(p.tippyInstance.popper, `settings-${p.parsedPost.postId}`, ps);
+                }
+            });
+        });
 
         const buildDownloadPageFormHtml = () => {
             const color = ui.getTooltipBackgroundColor();
             const threadTitle = parsers.thread.parseTitle();
-            let html = ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, false);
+            const downloadablePosts = parsedPosts.filter(p => p.parsedHosts.length);
 
-            parsedPosts
-                .filter(p => p.parsedHosts.length)
-                .forEach(post => {
-                    const { postId, postNumber, textContent } = post.parsedPost;
-                    let selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
-                    if (!selected) {
-                        selected = { post, enabled: false };
-                        selectedPosts.push(selected);
-                    } else {
-                        selected.post = post;
-                    }
+            let postsHtml = '';
+            downloadablePosts.forEach(post => {
+                const { postId, postNumber, textContent } = post.parsedPost;
+                let selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                if (!selected) {
+                    selected = { post, enabled: false };
+                    selectedPosts.push(selected);
+                } else {
+                    selected.post = post;
+                }
 
-                    const defaultPostContent = (textContent || '').trim().replace('​', '');
-                    const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
-                    const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
-                    html += ui.forms.createCheckbox(`config-download-post-${postId}`, `Post #${postNumber} ${summary}`, !!selected.enabled);
+                const defaultPostContent = (textContent || '').trim().replace('​', '');
+                const ellipsedText = h.limit(defaultPostContent === '' ? threadTitle : defaultPostContent, 20);
+                const summary = `<a id="post-content-${postId}" href="#post-${postId}" style="color: #3DB7C7"> ${ellipsedText} </a>`;
+                postsHtml += ui.forms.createCheckbox(
+                    `config-download-post-${postId}`,
+                    `Post #${postNumber} ${summary}`,
+                    !!selected.enabled,
+                );
+            });
+
+            const allSelected =
+                downloadablePosts.length > 0 &&
+                downloadablePosts.every(p => {
+                    const s = selectedPosts.find(item => item.post.parsedPost.postId === p.parsedPost.postId);
+                    return !!(s && s.enabled);
                 });
 
-            html = `${ui.forms.createRow(ui.forms.createLabel('Post Selection'))} ${html}`;
-            return ui.forms.config.page.createForm(color, html);
+            const settingsHtml = ui.forms.config.createSettingsCheckboxesHtml('page-settings', pageSettings);
+            const postSelectionHtml = [
+                ui.forms.createRow(ui.forms.createLabel('Post Selection')),
+                ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, allSelected),
+                `<div id="downloader-page-posts-list" style="max-height: 260px; overflow-y: auto; overflow-x: hidden;">${postsHtml}</div>`,
+            ].join('');
+
+            return ui.forms.config.page.createForm(color, `${settingsHtml}${postSelectionHtml}`);
+        };
+
+        const setupDownloadPageForm = instance => {
+            const root = instance && instance.popper ? instance.popper : document;
+            const formEl = root.querySelector('#downloader-page-config-form');
+            if (!formEl) return;
+
+            ui.forms.config.syncSettingsInputs(formEl, 'page-settings', pageSettings);
+            ui.forms.config.bindSettingsInputs(formEl, 'page-settings', pageSettings, (patch, changedKeys) => {
+                if (typeof xfpdSaveUserPrefs === 'function') {
+                    xfpdSaveUserPrefs(patch, 'page', changedKeys);
+                }
+            });
+
+            if (formEl.dataset.xfpdSubmitBound !== '1') {
+                formEl.dataset.xfpdSubmitBound = '1';
+                formEl.addEventListener('submit', e => {
+                    e.preventDefault();
+                    if (instance && typeof instance.hide === 'function') {
+                        instance.hide();
+                    }
+                });
+            }
+
+            const downloadableNow = parsedPosts.filter(p => p.parsedHosts.length);
+
+            downloadableNow.forEach(post => {
+                const { postId, contentContainer } = post.parsedPost;
+                const linkEl = formEl.querySelector(`#post-content-${postId}`);
+                if (linkEl && linkEl.dataset.xfpdTipBound !== '1') {
+                    linkEl.dataset.xfpdTipBound = '1';
+                    ui.tooltip(
+                        linkEl,
+                        `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
+                          ${contentContainer.innerHTML}
+                         </div>`,
+                        { placement: 'right', offset: [10, 15] },
+                    );
+                }
+
+                const selected = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                const postCheckbox = formEl.querySelector(`#config-download-post-${postId}`);
+                if (postCheckbox) {
+                    postCheckbox.checked = !!(selected && selected.enabled);
+                    if (postCheckbox.dataset.xfpdBound !== '1') {
+                        postCheckbox.dataset.xfpdBound = '1';
+                        postCheckbox.addEventListener('change', e => {
+                            const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
+                            if (selectedPost) selectedPost.enabled = e.target.checked;
+
+                            const currentDownloadable = parsedPosts.filter(p => p.parsedHosts.length);
+                            const checkAllCB = formEl.querySelector('#config-toggle-all-posts');
+                            if (checkAllCB) {
+                                const enabledCount = currentDownloadable.filter(p => {
+                                    const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
+                                    return !!(sp && sp.enabled);
+                                }).length;
+                                checkAllCB.checked = currentDownloadable.length > 0 && enabledCount === currentDownloadable.length;
+                            }
+                        });
+                    }
+                }
+            });
+
+            const toggleAllEl = formEl.querySelector('#config-toggle-all-posts');
+            if (toggleAllEl) {
+                const enabledCount = downloadableNow.filter(p => {
+                    const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
+                    return !!(sp && sp.enabled);
+                }).length;
+                toggleAllEl.checked = downloadableNow.length > 0 && enabledCount === downloadableNow.length;
+
+                if (toggleAllEl.dataset.xfpdBound !== '1') {
+                    toggleAllEl.dataset.xfpdBound = '1';
+                    toggleAllEl.addEventListener('change', async e => {
+                        e.preventDefault();
+
+                        const checked = e.target.checked;
+                        const postCheckboxes = parsedPosts
+                            .filter(p => p.parsedHosts.length)
+                            .map(p => formEl.querySelector(`#config-download-post-${p.parsedPost.postId}`))
+                            .filter(Boolean);
+
+                        const checkedPostCheckboxes = postCheckboxes.filter(el => el.checked);
+                        const unCheckedPostCheckboxes = postCheckboxes.filter(el => !el.checked);
+
+                        if (checked) {
+                            unCheckedPostCheckboxes.forEach(c => c.click());
+                        } else {
+                            checkedPostCheckboxes.forEach(c => c.click());
+                        }
+                    });
+                }
+            }
         };
 
         const syncDownloadPageUI = () => {
@@ -9807,68 +10308,17 @@ const selectedPosts = [];
 
             if (downloadPageTippy && typeof downloadPageTippy.setContent === 'function') {
                 downloadPageTippy.setContent(formContent);
+                setupDownloadPageForm(downloadPageTippy);
                 return;
             }
 
             downloadPageTippy = ui.tooltip(btnDownloadPage, formContent, {
                 placement: 'bottom',
                 interactive: true,
-                onShown: () => {
-                    const downloadableNow = parsedPosts.filter(p => p.parsedHosts.length);
-
-                    downloadableNow.forEach(post => {
-                        const { postId, contentContainer } = post.parsedPost;
-                        const linkEl = document.querySelector(`#post-content-${postId}`);
-                        if (linkEl && linkEl.dataset.xfpdTipBound !== '1') {
-                            linkEl.dataset.xfpdTipBound = '1';
-                            ui.tooltip(
-                                linkEl,
-                                `<div style="overflow-y: auto; background: #242323; padding: 16px; width: 500px; max-height: 500px">
-                          ${contentContainer.innerHTML}
-                         </div>`,
-                                { placement: 'right', offset: [10, 15] },
-                            );
-                        }
-
-                        const postCheckbox = document.querySelector(`#config-download-post-${postId}`);
-                        if (postCheckbox && postCheckbox.dataset.xfpdBound !== '1') {
-                            postCheckbox.dataset.xfpdBound = '1';
-                            postCheckbox.addEventListener('change', e => {
-                                const selectedPost = selectedPosts.find(s => s.post.parsedPost.postId === postId);
-                                if (selectedPost) selectedPost.enabled = e.target.checked;
-
-                                const checkAllCB = h.element('#config-toggle-all-posts');
-                                if (checkAllCB) {
-                                    checkAllCB.checked =
-                                        selectedPosts.filter(s => s.enabled).length === downloadableNow.length;
-                                }
-                            });
-                        }
-                    });
-
-                    const toggleAllEl = h.element('#config-toggle-all-posts');
-                    if (toggleAllEl && toggleAllEl.dataset.xfpdBound !== '1') {
-                        toggleAllEl.dataset.xfpdBound = '1';
-                        toggleAllEl.addEventListener('change', async e => {
-                            e.preventDefault();
-
-                            const checked = e.target.checked;
-                            const postCheckboxes = parsedPosts
-                                .filter(p => p.parsedHosts.length)
-                                .map(p => h.element(`#config-download-post-${p.parsedPost.postId}`))
-                                .filter(Boolean);
-
-                            const checkedPostCheckboxes = postCheckboxes.filter(el => el.checked);
-                            const unCheckedPostCheckboxes = postCheckboxes.filter(el => !el.checked);
-
-                            if (checked) {
-                                unCheckedPostCheckboxes.forEach(c => c.click());
-                            } else {
-                                checkedPostCheckboxes.forEach(c => c.click());
-                            }
-                        });
-                    }
-                },
+                onCreate: instance => setupDownloadPageForm(instance),
+                onShow: instance => setupDownloadPageForm(instance),
+                onMount: instance => setupDownloadPageForm(instance),
+                onShown: instance => setupDownloadPageForm(instance),
             });
         };
 
@@ -9892,16 +10342,8 @@ const selectedPosts = [];
 
             post.dataset.xfpdInitialized = '1';
 
-            const postSettings = {
-                zipped: true,
-                flatten: false,
-                generateLinks: false,
-                generateLog: false,
-                skipDuplicates: false,
-                skipDownload: false,
-                verifyBunkrLinks: false,
-                output: [],
-            };
+            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
+            const postSettings = existingIdx > -1 ? parsedPosts[existingIdx].getSettingsCB() : xfpdCreatePostSettings();
 
             const getTotalDownloadableResourcesForPostCB = hostsList => {
                 return hostsList.filter(host => host.enabled && host.resources.length).reduce((acc, host) => acc + host.resources.length, 0);
@@ -9928,10 +10370,12 @@ const selectedPosts = [];
 
             const onFormSubmitCB = data => {
                 const { tippyInstance } = data;
-                tippyInstance.hide();
+                if (tippyInstance && typeof tippyInstance.hide === 'function') {
+                    tippyInstance.hide();
+                }
             };
 
-            ui.forms.config.post.createPostConfigForm(
+            const postTippyInstance = ui.forms.config.post.createPostConfigForm(
                 parsedPost,
                 parsedHosts,
                 `#${parsedPost.postNumber}.zip`,
@@ -9958,7 +10402,6 @@ const selectedPosts = [];
             const getSettingsCB = () => postSettings;
 
             // Replace any stale entry if a post was re-rendered dynamically (e.g. XenSoluce [HIDEREACT] unlock on SMG).
-            const existingIdx = parsedPosts.findIndex(p => p.parsedPost.postId === postId);
             const postEntry = {
                 parsedPost,
                 parsedHosts,
@@ -9967,6 +10410,7 @@ const selectedPosts = [];
                 getSettingsCB,
                 statusUI,
                 postDownloadCallbacks,
+                tippyInstance: postTippyInstance,
             };
             if (existingIdx > -1) {
                 parsedPosts[existingIdx] = postEntry;
