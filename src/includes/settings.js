@@ -59,6 +59,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     contentDedup: true,
     smartMirrors: true,
     autoUnlockReaction: true,
+    autoReactAfterDownload: false,
     videoQuality: 'best',
     flatten: false,
     generateLinks: false,

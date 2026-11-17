@@ -284,8 +284,14 @@ const ui = {
                     ),
                     ui.forms.createCheckbox(
                         `${idPrefix}-auto-unlock-reaction`,
-                        'Auto-React Locked Posts',
+                        'Auto-Unlock [HIDE] Posts',
                         currentSettings.autoUnlockReaction !== false,
+                        false,
+                    ),
+                    ui.forms.createCheckbox(
+                        `${idPrefix}-auto-react-after`,
+                        'Auto-React Downloaded Posts',
+                        !!currentSettings.autoReactAfterDownload,
                         false,
                     ),
                     `
@@ -356,6 +362,7 @@ const ui = {
                 setCb('include-comments', settingsObj.includeComments !== false, false);
                 setCb('smart-mirrors', settingsObj.smartMirrors !== false, false);
                 setCb('auto-unlock-reaction', settingsObj.autoUnlockReaction !== false, false);
+                setCb('auto-react-after', !!settingsObj.autoReactAfterDownload, false);
 
                 const qualEl = rootEl.querySelector(`#${idPrefix}-video-quality`);
                 if (qualEl) {
@@ -508,6 +515,11 @@ const ui = {
                 bindOne('auto-unlock-reaction', e => {
                     settingsObj.autoUnlockReaction = !!e.target.checked;
                     notify({ autoUnlockReaction: settingsObj.autoUnlockReaction }, ['autoUnlockReaction']);
+                });
+
+                bindOne('auto-react-after', e => {
+                    settingsObj.autoReactAfterDownload = !!e.target.checked;
+                    notify({ autoReactAfterDownload: settingsObj.autoReactAfterDownload }, ['autoReactAfterDownload']);
                 });
 
                 bindOne('video-quality', e => {

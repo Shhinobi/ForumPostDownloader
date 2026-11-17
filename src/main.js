@@ -4462,6 +4462,35 @@ try {
     try {
     log.post.info(postId, '::Url resolution started::', postNumber);
 
+    const activeThreadKey =
+        parsedPost && parsedPost.threadKey ? String(parsedPost.threadKey) : xfpdGetCurrentThreadKey();
+    const threadTitle =
+        parsedPost && parsedPost.threadTitle ? String(parsedPost.threadTitle) : parsers.thread.parseTitle();
+    const useContentDedup = postSettings.contentDedup !== false;
+    let dedupedCount = 0;
+
+    const canonicalizeMediaUrl = rawUrl => {
+        const clean = String(rawUrl || '').trim().split('#')[0];
+        if (!clean) return '';
+        try {
+            const u = new URL(clean, typeof location !== 'undefined' ? location.origin : 'https://simpcity.su');
+            let host = (u.hostname || '').toLowerCase().replace(/^www\./, '');
+            host = host.replace(/^simp\d+\.(cuckcapital\.cr)$/i, '$1');
+            host = host.replace(/^jpe?g\d+\.(church|fish|fishing|pet|su|cr)$/i, 'jpg.$1');
+            const path = u.pathname || '';
+            if (
+                /(?:cuckcapital\.cr|jpg\.(?:church|fish|fishing|pet|su|cr)|imagepond\.net|ibb\.co|pixhost\.|pixho\.st|postimg\.cc|pixxxels\.cc|imgbox\.com|putmega\.com|twimg\.com|redd\.it|coomer\.|kemono\.|cdn\.cr|bunkr|scdn\.st|turbocdn\.st|erome\.com|pixeldrain\.|pixeldra\.in|gofile\.io)$/i.test(
+                    host,
+                )
+            ) {
+                return `${host}${path}`;
+            }
+            return `${host}${path}${u.search || ''}`;
+        } catch (e) {
+            return clean;
+        }
+    };
+
     const totalResourcesToResolve = enabledHosts.reduce((acc, host) => acc + host.resources.length, 0);
     let resolvingIndex = 0;
     const compiledResolvers = getCompiledResolvers(resolvers);
@@ -4479,6 +4508,17 @@ try {
         for (const resource of resources) {
             if (isCancelled()) break;
             resolvingIndex++;
+
+            // Fast pre-resolution skip: if this single-file link was already downloaded in this thread,
+            // skip making any HTTP resolution request at all!
+            if (useContentDedup && host.type === 'single' && typeof xfpdHasSeenThreadUrl === 'function') {
+                const origKey = canonicalizeMediaUrl(resource);
+                if (origKey && xfpdHasSeenThreadUrl(origKey, activeThreadKey)) {
+                    dedupedCount++;
+                    log.post.info(postId, `::Skipped already-downloaded link (pre-resolve)::: ${resource}`, postNumber);
+                    continue;
+                }
+            }
             const nowMs = Date.now();
             if (nowMs - lastResolveUiUpdate >= 50 || resolvingIndex === 1 || resolvingIndex === totalResourcesToResolve) {
                 lastResolveUiUpdate = nowMs;
@@ -4606,42 +4646,10 @@ try {
 
     log.post.info(postId, '::Url resolution completed::', postNumber);
 
-    const canonicalizeMediaUrl = rawUrl => {
-        const clean = String(rawUrl || '').trim().split('#')[0];
-        if (!clean) return '';
-        try {
-            const u = new URL(clean, typeof location !== 'undefined' ? location.origin : 'https://simpcity.su');
-            let host = (u.hostname || '').toLowerCase().replace(/^www\./, '');
-            // Normalize Goonbox / JPGX CDN shard mirrors (simp1..simp6.cuckcapital.cr, jpg1..jpg7.*)
-            host = host.replace(/^simp\d+\.(cuckcapital\.cr)$/i, '$1');
-            host = host.replace(/^jpe?g\d+\.(church|fish|fishing|pet|su|cr)$/i, 'jpg.$1');
-
-            const path = u.pathname || '';
-            // For Pixeldrain API URLs, file ID is in pathname; for GoFile/Coomer/Kemono/Bunkr/Turbo/ImagePond/Goonbox/Ibb/Pixhost,
-            // pathname uniquely identifies the underlying file while query params hold transient tokens/signatures.
-            if (
-                /(?:cuckcapital\.cr|jpg\.(?:church|fish|fishing|pet|su|cr)|imagepond\.net|ibb\.co|pixhost\.|pixho\.st|postimg\.cc|pixxxels\.cc|imgbox\.com|putmega\.com|twimg\.com|redd\.it|coomer\.|kemono\.|cdn\.cr|bunkr|scdn\.st|turbocdn\.st|erome\.com|pixeldrain\.|pixeldra\.in|gofile\.io)$/i.test(
-                    host,
-                )
-            ) {
-                return `${host}${path}`;
-            }
-            return `${host}${path}${u.search || ''}`;
-        } catch (e) {
-            return clean;
-        }
-    };
-
     // Smart deduplication:
     // 1) If a post includes both single preview links AND an album link resolving to the exact same media,
     //    prefer the album entry (preserving album sequence & album metadata) and drop the duplicate preview.
     // 2) Deduplicate identical canonical URLs within the post and (when running Download Page) across selected posts.
-    const activeThreadKey =
-        parsedPost && parsedPost.threadKey ? String(parsedPost.threadKey) : xfpdGetCurrentThreadKey();
-    const threadTitle =
-        parsedPost && parsedPost.threadTitle ? String(parsedPost.threadTitle) : parsers.thread.parseTitle();
-    const useContentDedup = postSettings.contentDedup !== false;
-    let dedupedCount = 0;
     let runtimeDedupedCount = 0;
     {
         const validResolved = resolved.filter(r => r && r.url);
@@ -6426,6 +6434,10 @@ if (tmp.length) {
                                 if (useContentDedup) {
                                     const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
                                     if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                    if (resource && !resource.folderName && resource.original) {
+                                        const oKey = canonicalizeMediaUrl(resource.original);
+                                        if (oKey) xfpdMarkSeenThreadUrl(oKey, activeThreadKey);
+                                    }
                                     if (directFingerprint) xfpdMarkSeenThreadHash(directFingerprint, activeThreadKey);
                                 }
                                 finishBatchItem(true);
@@ -7493,6 +7505,10 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             if (blobFingerprint) xfpdMarkSeenThreadHash(blobFingerprint, activeThreadKey);
                             const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
                             if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                            if (resource && !resource.folderName && resource.original) {
+                                const oKey = canonicalizeMediaUrl(resource.original);
+                                if (oKey) xfpdMarkSeenThreadUrl(oKey, activeThreadKey);
+                            }
                         }
 
                         const original = basename;
@@ -8994,9 +9010,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             clearInterval(progressPoll);
         }
 
-        // Trigger post-download thank-you reaction remotely if succeeded OR deduplicated, and not already reacted!
+        // Trigger post-download thank-you reaction remotely ONLY when Auto-React Downloaded Posts is enabled!
         if (
             outcome &&
+            job.postSettings &&
+            job.postSettings.autoReactAfterDownload === true &&
             (outcome.succeeded > 0 || (outcome.deduped > 0 && outcome.failed === 0)) &&
             job.completionReactUrl &&
             !reactedMainDuringUnlock
@@ -9168,6 +9186,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     for (const oppEl of oppEls) {
                         const parsedPost = parsers.thread.parsePost(oppEl);
                         if (!parsedPost) continue;
+
+                        // Instant 0ms resume: if Smart Dedup is ON and this post was already completed cleanly
+                        // in this thread's persistent ledger, skip re-resolving its albums/links completely!
+                        if (
+                            (!crawlJob.postSettings || crawlJob.postSettings.contentDedup !== false) &&
+                            typeof xfpdGetThreadPostRecord === 'function'
+                        ) {
+                            const prevRec = xfpdGetThreadPostRecord(parsedPost.postId, crawlJob.threadKey);
+                            if (prevRec && (prevRec.status === 'done' || prevRec.status === 'dedup')) {
+                                continue;
+                            }
+                        }
+
                         parsedPost.pageNumber = pageNum;
                         const targetContent = incComments ? parsedPost.content : parsedPost.mainOnlyContent;
                         const parsedHosts = parsers.hosts.parseHosts(targetContent);
@@ -10890,7 +10921,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 },
                 onComplete: (total, succeeded, failed = 0, deduped = 0) => {
                     btnDownloadPost.dataset.xfpdState = 'done';
-                    if (total > 0 && succeeded > 0) {
+                    if (postSettings.autoReactAfterDownload === true && (succeeded > 0 || (deduped > 0 && failed === 0))) {
                         registerPostReaction(parsedPost.footer);
                     }
                     if (total === 0 && deduped > 0) {
