@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.44
+// @version 3.45
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -754,7 +754,7 @@ function xfpdCreatePostSettings() {
 // --- Fast Zero-Copy Content Hashing & Persistent Per-Thread Dedup Store --------------------------
 const XFPD_THREAD_DEDUP_KEY = 'xfpd_thread_dedup';
 const XFPD_DEDUP_MAX_THREADS = 150;
-const XFPD_DEDUP_MAX_ITEMS_PER_THREAD = 8000;
+const XFPD_DEDUP_MAX_ITEMS_PER_THREAD = 35000;
 const XFPD_FULL_HASH_MAX_BYTES = 8 * 1024 * 1024; // <= 8 MB: full-file SHA-256; > 8 MB: 4 x 256 KB sparse SHA-256
 const XFPD_SPARSE_CHUNK_BYTES = 262144; // 256 KB
 
@@ -1784,6 +1784,27 @@ const XFPD_FS_IDB_STORE = 'handles';
 const XFPD_FS_FOLDER_LS_KEY = 'xfpd_direct_folder_name';
 
 let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', checkingPromise: null };
+let xfpdAgentActiveLoopback = 0;
+const XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY = 5; // Leaves 1 of Chrome's 6 HTTP/1.1 sockets free for instant /ping & UI!
+const xfpdAgentWaitQueue = [];
+
+function xfpdAcquireAgentSlot() {
+    if (xfpdAgentActiveLoopback < XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY) {
+        xfpdAgentActiveLoopback++;
+        return Promise.resolve();
+    }
+    return new Promise(resolve => xfpdAgentWaitQueue.push(resolve));
+}
+
+function xfpdReleaseAgentSlot() {
+    if (xfpdAgentWaitQueue.length > 0) {
+        const next = xfpdAgentWaitQueue.shift();
+        next();
+    } else {
+        xfpdAgentActiveLoopback = Math.max(0, xfpdAgentActiveLoopback - 1);
+    }
+}
+
 let xfpdCachedRootDirHandle = null;
 const xfpdSubDirHandleCache = new Map();
 
@@ -1792,8 +1813,12 @@ function xfpdGetGoAgentCachedState() {
 }
 
 async function xfpdCheckGoAgentOnline(force = false) {
+    // If active loopback transfers are already talking to Go Agent right now, never waste a socket on /ping!
+    if (!force && xfpdGoAgentState.online && xfpdAgentActiveLoopback > 0) {
+        return true;
+    }
     const now = Date.now();
-    if (!force && xfpdGoAgentState.checkedAt > 0 && now - xfpdGoAgentState.checkedAt < 3500) {
+    if (!force && xfpdGoAgentState.checkedAt > 0 && now - xfpdGoAgentState.checkedAt < (xfpdGoAgentState.online ? 10000 : 3000)) {
         return xfpdGoAgentState.online;
     }
     if (xfpdGoAgentState.checkingPromise) {
@@ -1810,7 +1835,7 @@ async function xfpdCheckGoAgentOnline(force = false) {
                 return false;
             }
             const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-            const timer = ctrl ? setTimeout(() => ctrl.abort(), 650) : null;
+            const timer = ctrl ? setTimeout(() => ctrl.abort(), 2200) : null;
             const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/ping`, {
                 method: 'GET',
                 mode: 'cors',
@@ -1839,6 +1864,7 @@ async function xfpdCheckGoAgentOnline(force = false) {
 }
 
 async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
+    await xfpdAcquireAgentSlot();
     try {
         const fetchFn =
             (typeof fetch === 'function' && fetch) ||
@@ -1858,16 +1884,25 @@ async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
         });
         if (!res || !res.ok) return null;
         const j = await res.json();
-        return j && j.ok ? j : null;
+        if (j && j.ok) {
+            xfpdGoAgentState.online = true;
+            xfpdGoAgentState.checkedAt = Date.now();
+            return j;
+        }
+        return null;
     } catch (e) {
         xfpdGoAgentState.online = false;
         xfpdGoAgentState.checkedAt = 0;
         return null;
+    } finally {
+        xfpdReleaseAgentSlot();
     }
 }
 
 async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
+    await xfpdAcquireAgentSlot();
     try {
+        if (abortSignal && abortSignal.aborted) return null;
         const fetchFn =
             (typeof fetch === 'function' && fetch) ||
             (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
@@ -1881,9 +1916,16 @@ async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
             ...(abortSignal ? { signal: abortSignal } : {}),
         });
         if (!res || !res.ok) return null;
-        return await res.json();
+        const j = await res.json();
+        if (j) {
+            xfpdGoAgentState.online = true;
+            xfpdGoAgentState.checkedAt = Date.now();
+        }
+        return j;
     } catch (e) {
         return null;
+    } finally {
+        xfpdReleaseAgentSlot();
     }
 }
 
