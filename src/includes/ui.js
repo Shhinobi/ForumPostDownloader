@@ -28,17 +28,45 @@ const ui = {
    * @returns {*}
    */
     tooltip: (target, content, options = {}) => {
-        // noinspection JSUnusedGlobalSymbols
-        return tippy(target, {
-            arrow: true,
-            theme: 'transparent',
-            allowHTML: true,
-            content: content,
-            appendTo: () => document.body,
-            placement: 'left',
-            interactive: true,
-            ...options,
-        });
+        const tippyFn =
+            typeof tippy === 'function'
+                ? tippy
+                : (typeof window !== 'undefined' && typeof window.tippy === 'function' ? window.tippy : null);
+        if (!tippyFn) {
+            return {
+                reference: target,
+                popper: null,
+                state: { isMounted: false, isVisible: false, isShown: false },
+                setContent() {},
+                show() {},
+                hide() {},
+                destroy() {},
+            };
+        }
+        try {
+            // noinspection JSUnusedGlobalSymbols
+            return tippyFn(target, {
+                arrow: true,
+                theme: 'transparent',
+                allowHTML: true,
+                content: content,
+                appendTo: () => document.body || document.documentElement,
+                placement: 'left',
+                interactive: true,
+                ...options,
+            });
+        } catch (e) {
+            console.warn('[XFPD] Tooltip init fallback:', e);
+            return {
+                reference: target,
+                popper: null,
+                state: { isMounted: false, isVisible: false, isShown: false },
+                setContent() {},
+                show() {},
+                hide() {},
+                destroy() {},
+            };
+        }
     },
     pBars: {
         /**

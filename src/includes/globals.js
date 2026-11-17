@@ -18,9 +18,16 @@ function xfpdCloseTabHandle(tabOrPromise) {
     } catch (e) {}
 }
 // ---------------------------------------------------------------------------
-const JSZip = window.JSZip;
-const tippy = window.tippy;
-const http = window.GM_xmlhttpRequest;
+const JSZip =
+    (typeof window !== 'undefined' && window.JSZip) ||
+    (typeof globalThis !== 'undefined' && globalThis.JSZip);
+const tippy =
+    (typeof window !== 'undefined' && window.tippy) ||
+    (typeof globalThis !== 'undefined' && globalThis.tippy);
+const http =
+    (typeof GM_xmlhttpRequest === 'function' && GM_xmlhttpRequest) ||
+    (typeof window !== 'undefined' && window.GM_xmlhttpRequest) ||
+    (typeof GM === 'object' && GM && typeof GM.xmlHttpRequest === 'function' && GM.xmlHttpRequest.bind(GM));
 window.isFF = typeof InstallTrigger !== 'undefined';
 window.logs = [];
 

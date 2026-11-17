@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.33
+// @version 3.34
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -161,7 +161,6 @@
 // @grant GM_log
 // @grant GM_openInTab
 // @grant GM_cookie
-// @grant window.close
 
 // ==/UserScript==
 // --- tab handle helper (Tampermonkey can return either a Tab object or a Promise<Tab>) ---
@@ -184,9 +183,16 @@ function xfpdCloseTabHandle(tabOrPromise) {
     } catch (e) {}
 }
 // ---------------------------------------------------------------------------
-const JSZip = window.JSZip;
-const tippy = window.tippy;
-const http = window.GM_xmlhttpRequest;
+const JSZip =
+    (typeof window !== 'undefined' && window.JSZip) ||
+    (typeof globalThis !== 'undefined' && globalThis.JSZip);
+const tippy =
+    (typeof window !== 'undefined' && window.tippy) ||
+    (typeof globalThis !== 'undefined' && globalThis.tippy);
+const http =
+    (typeof GM_xmlhttpRequest === 'function' && GM_xmlhttpRequest) ||
+    (typeof window !== 'undefined' && window.GM_xmlhttpRequest) ||
+    (typeof GM === 'object' && GM && typeof GM.xmlHttpRequest === 'function' && GM.xmlHttpRequest.bind(GM));
 window.isFF = typeof InstallTrigger !== 'undefined';
 window.logs = [];
 
@@ -956,10 +962,11 @@ const XFPD_WORKER_PARAM = 'xfpd_worker';
 const XFPD_WORKER_VAL = '1';
 const XFPD_K_QUEUE_CMD = 'xfpd_q_cmds';
 const XFPD_K_QUEUE_STATE = 'xfpd_q_state';
+const XFPD_K_QUEUE_PING = 'xfpd_q_ping';
 const XFPD_K_WORKER_SPAWN = 'xfpd_q_spawning';
 
-const XFPD_WORKER_HEARTBEAT_MS = 1500;
-const XFPD_WORKER_ALIVE_TTL_MS = 5500;
+const XFPD_WORKER_HEARTBEAT_MS = 1800;
+const XFPD_WORKER_ALIVE_TTL_MS = 6500;
 const XFPD_WORKER_IDLE_CLOSE_MS = 4500;
 
 let xfpdQueueCmdMirror = '';
@@ -967,13 +974,20 @@ let xfpdQueueStateMirror = '';
 let xfpdQueueListenersBound = false;
 let xfpdSpawnedWorkerHandle = null;
 let xfpdCmdSeq = 0;
+let xfpdLastPingSentAt = 0;
+let xfpdBroadcastBus = null;
 
 const xfpdQueueStateSubscribers = new Set();
 const xfpdQueueCmdSubscribers = new Set();
+const xfpdQueuePingSubscribers = new Set();
 
 function xfpdIsWorkerTab() {
     try {
-        return new URLSearchParams(location.search).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
+        const hashRaw = String(location.hash || '').replace(/^#/, '');
+        if (hashRaw && new URLSearchParams(hashRaw).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL) {
+            return true;
+        }
+        return new URLSearchParams(location.search || '').get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
     } catch (e) {
         return false;
     }
@@ -984,6 +998,7 @@ function xfpdDefaultQueueState() {
         workerId: '',
         workerHeartbeat: 0,
         workerClosing: false,
+        workerStandby: false,
         ackCmdIds: [],
         active: null,
         queued: [],
@@ -992,9 +1007,44 @@ function xfpdDefaultQueueState() {
     };
 }
 
+function xfpdGetBroadcastBus() {
+    if (xfpdBroadcastBus) return xfpdBroadcastBus;
+    try {
+        if (typeof BroadcastChannel === 'function') {
+            xfpdBroadcastBus = new BroadcastChannel('xfpd_queue_ipc_v1');
+        }
+    } catch (e) {}
+    return xfpdBroadcastBus;
+}
+
 function xfpdBindQueueStorageListeners() {
     if (xfpdQueueListenersBound) return;
     xfpdQueueListenersBound = true;
+
+    const handleIncomingStateRaw = newV => {
+        if (newV) xfpdQueueStateMirror = typeof newV === 'string' ? newV : JSON.stringify(newV);
+        const st = xfpdReadQueueState();
+        if (st.workerClosing && xfpdSpawnedWorkerHandle) {
+            try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
+            xfpdSpawnedWorkerHandle = null;
+        }
+        xfpdQueueStateSubscribers.forEach(cb => {
+            try { cb(st); } catch (e) {}
+        });
+    };
+
+    const handleIncomingCmdRaw = newV => {
+        if (newV) xfpdQueueCmdMirror = typeof newV === 'string' ? newV : JSON.stringify(newV);
+        xfpdQueueCmdSubscribers.forEach(cb => {
+            try { cb(); } catch (e) {}
+        });
+    };
+
+    const handleIncomingPing = () => {
+        xfpdQueuePingSubscribers.forEach(cb => {
+            try { cb(); } catch (e) {}
+        });
+    };
 
     const addListener =
         (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
@@ -1004,26 +1054,30 @@ function xfpdBindQueueStorageListeners() {
 
     if (addListener) {
         try {
-            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => {
-                xfpdQueueStateMirror = String(newV || '');
-                const st = xfpdReadQueueState();
-                if (st.workerClosing && xfpdSpawnedWorkerHandle) {
-                    try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
-                    xfpdSpawnedWorkerHandle = null;
-                }
-                xfpdQueueStateSubscribers.forEach(cb => {
-                    try { cb(st); } catch (e) {}
-                });
-            });
+            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => handleIncomingStateRaw(newV));
         } catch (e) {}
-
         try {
-            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => {
-                xfpdQueueCmdMirror = String(newV || '');
-                xfpdQueueCmdSubscribers.forEach(cb => {
-                    try { cb(); } catch (e) {}
-                });
-            });
+            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => handleIncomingCmdRaw(newV));
+        } catch (e) {}
+        try {
+            addListener(XFPD_K_QUEUE_PING, () => handleIncomingPing());
+        } catch (e) {}
+    }
+
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try {
+            bus.onmessage = ev => {
+                const msg = ev && ev.data;
+                if (!msg || typeof msg !== 'object') return;
+                if (msg.kind === 'state' && msg.data) {
+                    handleIncomingStateRaw(msg.data);
+                } else if (msg.kind === 'cmd' && msg.data) {
+                    handleIncomingCmdRaw(msg.data);
+                } else if (msg.kind === 'ping') {
+                    handleIncomingPing();
+                }
+            };
         } catch (e) {}
     }
 }
@@ -1035,8 +1089,11 @@ function xfpdReadRawGmOrLs(key, mirrorStr = '') {
         if (p) candidates.push(p);
     }
     try {
-        if (typeof GM_getValue === 'function') {
-            const p = xfpdParsePrefsJson(GM_getValue(key, ''));
+        const getVal =
+            (typeof GM_getValue === 'function' ? GM_getValue : null) ||
+            (typeof window !== 'undefined' && typeof window.GM_getValue === 'function' ? window.GM_getValue.bind(window) : null);
+        if (getVal) {
+            const p = xfpdParsePrefsJson(getVal(key, ''));
             if (p) candidates.push(p);
         }
     } catch (e) {}
@@ -1064,6 +1121,7 @@ function xfpdReadQueueState() {
         workerId: String(raw.workerId || ''),
         workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
         workerClosing: !!raw.workerClosing,
+        workerStandby: !!raw.workerStandby,
         ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
         queued: Array.isArray(raw.queued) ? raw.queued : [],
@@ -1082,15 +1140,40 @@ function xfpdWriteQueueState(stateObj) {
     const rawStr = JSON.stringify(payload);
     xfpdQueueStateMirror = rawStr;
     xfpdWriteStoredObject(XFPD_K_QUEUE_STATE, payload);
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'state', data: rawStr }); } catch (e) {}
+    }
     xfpdQueueStateSubscribers.forEach(cb => {
         try { cb(payload); } catch (e) {}
     });
     return payload;
 }
 
+function xfpdPingQueueWorker() {
+    const now = Date.now();
+    if (now - xfpdLastPingSentAt < 1200) return;
+    xfpdLastPingSentAt = now;
+    try {
+        const setVal =
+            (typeof GM_setValue === 'function' ? GM_setValue : null) ||
+            (typeof window !== 'undefined' && typeof window.GM_setValue === 'function' ? window.GM_setValue.bind(window) : null);
+        if (setVal) setVal(XFPD_K_QUEUE_PING, String(now));
+    } catch (e) {}
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'ping', ts: now }); } catch (e) {}
+    }
+}
+
 function xfpdIsQueueWorkerAlive(stateSnapshot = null) {
     const st = stateSnapshot || xfpdReadQueueState();
-    return !st.workerClosing && st.workerHeartbeat > 0 && Date.now() - st.workerHeartbeat < XFPD_WORKER_ALIVE_TTL_MS;
+    if (st.workerClosing || !st.workerHeartbeat) return false;
+    const age = Date.now() - st.workerHeartbeat;
+    if (age > 2600 && age < XFPD_WORKER_ALIVE_TTL_MS * 2 && !xfpdIsWorkerTab()) {
+        xfpdPingQueueWorker();
+    }
+    return age < XFPD_WORKER_ALIVE_TTL_MS;
 }
 
 function xfpdSendQueueCommand(type, payload = {}) {
@@ -1116,8 +1199,13 @@ function xfpdSendQueueCommand(type, payload = {}) {
         _updatedAt: Math.max(now, (Number((existingObj && existingObj._updatedAt) || 0) || 0) + 1),
         cmds: pendingCmds,
     };
-    xfpdQueueCmdMirror = JSON.stringify(nextBox);
+    const rawStr = JSON.stringify(nextBox);
+    xfpdQueueCmdMirror = rawStr;
     xfpdWriteStoredObject(XFPD_K_QUEUE_CMD, nextBox);
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'cmd', data: rawStr }); } catch (e) {}
+    }
     xfpdQueueCmdSubscribers.forEach(cb => {
         try { cb(); } catch (e) {}
     });
@@ -1144,43 +1232,56 @@ function xfpdOnQueueCommand(cb) {
     return () => xfpdQueueCmdSubscribers.delete(cb);
 }
 
+function xfpdOnQueuePing(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueuePingSubscribers.add(cb);
+    return () => xfpdQueuePingSubscribers.delete(cb);
+}
+
 function xfpdBuildWorkerUrl() {
-    try {
-        const u = new URL(location.href);
-        u.hash = '';
-        u.searchParams.set(XFPD_WORKER_PARAM, XFPD_WORKER_VAL);
-        return u.href;
-    } catch (e) {
-        const base = String(location.href || '').split('#')[0];
-        return `${base}${base.includes('?') ? '&' : '?'}${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
-    }
+    // Use URL hash (`#xfpd_worker=1`) so Cloudflare/XenForo never sees an extra query parameter,
+    // canonical 301 redirects cannot strip it, and the browser can reuse its local HTTP cache!
+    const base = String(location.href || '').split('#')[0];
+    return `${base}#${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
 }
 
 function xfpdEnsureQueueWorkerTab() {
     if (xfpdIsWorkerTab()) return true;
     if (xfpdIsQueueWorkerAlive()) return true;
 
+    const getVal =
+        (typeof GM_getValue === 'function' ? GM_getValue : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_getValue === 'function' ? window.GM_getValue.bind(window) : null);
+    const setVal =
+        (typeof GM_setValue === 'function' ? GM_setValue : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_setValue === 'function' ? window.GM_setValue.bind(window) : null);
+    const openTabFn =
+        (typeof GM_openInTab === 'function' ? GM_openInTab : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_openInTab === 'function' ? window.GM_openInTab.bind(window) : null) ||
+        (typeof GM === 'object' && GM && typeof GM.openInTab === 'function' ? GM.openInTab.bind(GM) : null);
+
     let spawnUntil = 0;
     try {
-        spawnUntil = Number(GM_getValue(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
+        if (getVal) spawnUntil = Number(getVal(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
     } catch (e) {}
     if (Date.now() < spawnUntil) {
         return true;
     }
 
-    if (typeof GM_openInTab !== 'function') {
+    if (!openTabFn) {
         return false;
     }
 
     try {
-        if (typeof GM_setValue === 'function') {
-            GM_setValue(XFPD_K_WORKER_SPAWN, Date.now() + 7000);
+        if (setVal) {
+            setVal(XFPD_K_WORKER_SPAWN, Date.now() + 6500);
         }
     } catch (e) {}
 
     try {
         const workerUrl = xfpdBuildWorkerUrl();
-        const handle = GM_openInTab(workerUrl, { active: false, insert: true, setParent: true });
+        const handle = openTabFn(workerUrl, { active: false, insert: true, setParent: true });
         if (handle) {
             xfpdSpawnedWorkerHandle = handle;
             return true;
@@ -3384,7 +3485,7 @@ const parsers = {
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}#xfpd-queue-hud{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 24px);background:rgba(28,28,32,.96);color:#eaeaea;border:1px solid rgba(61,183,199,.38);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px;z-index:2147483000;overflow:hidden;user-select:none;backdrop-filter:blur(6px)}#xfpd-queue-hud *{box-sizing:border-box}.xfpd-q-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,.04);cursor:pointer}.xfpd-q-title{font-weight:700;font-size:12.5px;color:#3DB7C7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-ctrls{display:inline-flex;align-items:center;gap:4px}.xfpd-q-btn{padding:2px 6px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:rgba(255,255,255,.06);color:#ddd;font-size:11px;font-weight:600;cursor:pointer;line-height:1.2}.xfpd-q-btn:hover{background:rgba(61,183,199,.22);border-color:#3DB7C7;color:#fff}.xfpd-q-btn-danger:hover{background:rgba(217,83,79,.28);border-color:#d9534f;color:#ffb3b0}.xfpd-q-top-bar{height:3px;width:100%;background:rgba(255,255,255,.08)}.xfpd-q-top-fill{height:100%;width:0%;background:#3DB7C7;transition:width .18s ease}.xfpd-q-body{padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);max-height:320px;overflow-y:auto}.xfpd-q-active{padding:7px 8px;border-radius:6px;background:rgba(61,183,199,.09);border:1px solid rgba(61,183,199,.25);margin-bottom:8px}.xfpd-q-active-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-weight:700;font-size:12px;margin-bottom:3px}.xfpd-q-sub{font-size:11px;color:#b8c0c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px}.xfpd-q-pbar{height:4px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:3px}.xfpd-q-pbar>div{height:100%;transition:width .15s ease}.xfpd-q-sec-lbl{font-size:11px;font-weight:700;color:#9aa4af;margin:6px 0 4px;display:flex;justify-content:space-between;align-items:center}.xfpd-q-list{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}.xfpd-q-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.04);font-size:11.5px}.xfpd-q-item-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-foot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#a5b1bd;display:flex;align-items:center;justify-content:space-between;gap:6px}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}#xfpd-queue-hud{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 24px);background:rgba(28,28,32,.96);color:#eaeaea;border:1px solid rgba(61,183,199,.38);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px;z-index:2147483000;overflow:hidden;user-select:none;backdrop-filter:blur(6px);transition:opacity .15s ease,border-color .15s ease}#xfpd-queue-hud.xfpd-q-pill{width:auto;min-width:178px;max-width:265px;border-radius:999px;opacity:.86;box-shadow:0 4px 16px rgba(0,0,0,.45)}#xfpd-queue-hud.xfpd-q-pill:hover{opacity:1;border-color:#3DB7C7}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-head{padding:5px 11px}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-top-bar{display:none}#xfpd-queue-hud *{box-sizing:border-box}.xfpd-q-empty{font-size:11.5px;color:#9aa4af;line-height:1.4;padding:2px 0}.xfpd-q-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,.04);cursor:pointer}.xfpd-q-title{font-weight:700;font-size:12.5px;color:#3DB7C7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-ctrls{display:inline-flex;align-items:center;gap:4px}.xfpd-q-btn{padding:2px 6px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:rgba(255,255,255,.06);color:#ddd;font-size:11px;font-weight:600;cursor:pointer;line-height:1.2}.xfpd-q-btn:hover{background:rgba(61,183,199,.22);border-color:#3DB7C7;color:#fff}.xfpd-q-btn-danger:hover{background:rgba(217,83,79,.28);border-color:#d9534f;color:#ffb3b0}.xfpd-q-top-bar{height:3px;width:100%;background:rgba(255,255,255,.08)}.xfpd-q-top-fill{height:100%;width:0%;background:#3DB7C7;transition:width .18s ease}.xfpd-q-body{padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);max-height:320px;overflow-y:auto}.xfpd-q-active{padding:7px 8px;border-radius:6px;background:rgba(61,183,199,.09);border:1px solid rgba(61,183,199,.25);margin-bottom:8px}.xfpd-q-active-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-weight:700;font-size:12px;margin-bottom:3px}.xfpd-q-sub{font-size:11px;color:#b8c0c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px}.xfpd-q-pbar{height:4px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:3px}.xfpd-q-pbar>div{height:100%;transition:width .15s ease}.xfpd-q-sec-lbl{font-size:11px;font-weight:700;color:#9aa4af;margin:6px 0 4px;display:flex;justify-content:space-between;align-items:center}.xfpd-q-list{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}.xfpd-q-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.04);font-size:11.5px}.xfpd-q-item-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-foot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#a5b1bd;display:flex;align-items:center;justify-content:space-between;gap:6px}`,
     },
 };
 
@@ -3418,17 +3519,45 @@ const ui = {
    * @returns {*}
    */
     tooltip: (target, content, options = {}) => {
-        // noinspection JSUnusedGlobalSymbols
-        return tippy(target, {
-            arrow: true,
-            theme: 'transparent',
-            allowHTML: true,
-            content: content,
-            appendTo: () => document.body,
-            placement: 'left',
-            interactive: true,
-            ...options,
-        });
+        const tippyFn =
+            typeof tippy === 'function'
+                ? tippy
+                : (typeof window !== 'undefined' && typeof window.tippy === 'function' ? window.tippy : null);
+        if (!tippyFn) {
+            return {
+                reference: target,
+                popper: null,
+                state: { isMounted: false, isVisible: false, isShown: false },
+                setContent() {},
+                show() {},
+                hide() {},
+                destroy() {},
+            };
+        }
+        try {
+            // noinspection JSUnusedGlobalSymbols
+            return tippyFn(target, {
+                arrow: true,
+                theme: 'transparent',
+                allowHTML: true,
+                content: content,
+                appendTo: () => document.body || document.documentElement,
+                placement: 'left',
+                interactive: true,
+                ...options,
+            });
+        } catch (e) {
+            console.warn('[XFPD] Tooltip init fallback:', e);
+            return {
+                reference: target,
+                popper: null,
+                state: { isMounted: false, isVisible: false, isShown: false },
+                setContent() {},
+                show() {},
+                hide() {},
+                destroy() {},
+            };
+        }
     },
     pBars: {
         /**
@@ -4370,22 +4499,31 @@ const ui = {
 
 const init = {
     injectCustomStyles: () => {
-        // Tippy transparent theme.
-        const styleEl = document.createElement('style');
-        styleEl.textContent = styles.tippy.theme;
-        document.head.append(styleEl);
+        try {
+            if (document.getElementById('xfpd-theme-styles')) return;
+            const target = document.head || document.documentElement || document.body;
+            if (!target) return;
 
-        const customStyles = document.createElement('style');
-        // Margins classes
-        const marginClasses = [];
+            // Tippy transparent theme + Queue HUD styles.
+            const styleEl = document.createElement('style');
+            styleEl.id = 'xfpd-theme-styles';
+            styleEl.textContent = styles.tippy.theme;
+            target.append(styleEl);
 
-        for (let i = 1; i <= 15; i++) {
-            marginClasses.push(`.m-l-${i} {margin-left: ${i}px;}`);
-            marginClasses.push(`.m-t-${i} {margin-top: ${i}px;}`);
+            const customStyles = document.createElement('style');
+            customStyles.id = 'xfpd-margin-styles';
+            const marginClasses = [];
+
+            for (let i = 1; i <= 15; i++) {
+                marginClasses.push(`.m-l-${i} {margin-left: ${i}px;}`);
+                marginClasses.push(`.m-t-${i} {margin-top: ${i}px;}`);
+            }
+
+            customStyles.textContent = marginClasses.join('\n');
+            target.append(customStyles);
+        } catch (e) {
+            console.error('[XFPD] Style injection error:', e);
         }
-
-        customStyles.textContent = marginClasses.join('\n');
-        document.head.append(customStyles);
     },
 };
 // Holds the posts that are processing downloads.
@@ -12355,6 +12493,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     let activeJobSummary = null;
     let activeCancelController = null;
     let pumping = false;
+    let standbyMode = false;
     let idleCloseTimer = null;
     let workerStatusDom = null;
 
@@ -12377,45 +12516,83 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     });
 
     const publishState = (extra = {}) => {
+        const isStandbyNow = !activeJobSummary && pendingJobs.length === 0 && standbyMode;
         const st = xfpdWriteQueueState({
             workerId,
             workerHeartbeat: Date.now(),
             workerClosing: false,
+            workerStandby: isStandbyNow,
             ackCmdIds: ackQueue.slice(-200),
             active: activeJobSummary ? { ...activeJobSummary } : null,
             queued: pendingJobs.map(summarizeQueuedJob),
             history: history.slice(0, 30),
             ...extra,
         });
+        if (isDedicatedWorkerTab) {
+            try {
+                document.title = st.active
+                    ? `📥 Downloading #${st.active.postNumber} (${st.active.totalPct || 0}%) — XFPD`
+                    : isStandbyNow
+                      ? '💤 XFPD Queue Worker (Ready)'
+                      : '📥 XFPD Download Worker';
+            } catch (e) {}
+        }
         if (workerStatusDom) {
             const actTxt = st.active
                 ? `Active: ${st.active.threadTitle} · Post #${st.active.postNumber} — ${st.active.statusText || st.active.phase}`
-                : 'Idle (waiting for tasks...)';
+                : isStandbyNow
+                  ? 'Standby (ready for next download across any page/thread)'
+                  : 'Idle (waiting for tasks...)';
             workerStatusDom.textContent = `${actTxt} | Queued: ${st.queued.length} | Completed: ${st.history.length}`;
         }
         return st;
     };
 
     if (isDedicatedWorkerTab) {
+        window.addEventListener('pagehide', () => {
+            try {
+                xfpdWriteQueueState({
+                    workerId: '',
+                    workerHeartbeat: 0,
+                    workerClosing: true,
+                    workerStandby: false,
+                    ackCmdIds: ackQueue.slice(-200),
+                    active: null,
+                    queued: [],
+                    history: history.slice(0, 30),
+                });
+            } catch (e) {}
+        });
+
         const mountWorkerDashboard = () => {
             try {
                 document.title = '📥 XFPD Download Worker';
-                if (document.body) {
-                    document.body.style.cssText =
-                        'margin:0;padding:32px;background:#141518;color:#e4e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
-                    document.body.innerHTML = `
-                      <div style="max-width:680px;margin:0 auto;padding:24px;border-radius:10px;background:#1e2025;border:1px solid rgba(61,183,199,.35);">
-                        <h2 style="margin:0 0 8px;color:#3DB7C7;font-size:18px;">📥 XenForoPostDownloader — Background Worker</h2>
-                        <p style="margin:0 0 14px;font-size:13px;color:#9aa4af;">
-                          Keep this background tab untouched while downloads run. It will close automatically once the queue finishes.
-                        </p>
-                        <div id="xfpd-worker-live-line" style="padding:10px 12px;border-radius:6px;background:#141518;font-family:monospace;font-size:12.5px;color:#47ba24;">
-                          Initializing worker...
-                        </div>
-                      </div>
-                    `;
-                    workerStatusDom = document.getElementById('xfpd-worker-live-line');
+                if (!document.body) {
+                    if (typeof MutationObserver !== 'undefined' && document.documentElement) {
+                        const wObs = new MutationObserver(() => {
+                            if (document.body) {
+                                wObs.disconnect();
+                                mountWorkerDashboard();
+                            }
+                        });
+                        wObs.observe(document.documentElement, { childList: true, subtree: true });
+                    }
+                    return;
                 }
+                document.body.style.cssText =
+                    'margin:0;padding:32px;background:#141518;color:#e4e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+                document.body.innerHTML = `
+                  <div style="max-width:680px;margin:0 auto;padding:24px;border-radius:10px;background:#1e2025;border:1px solid rgba(61,183,199,.35);">
+                    <h2 style="margin:0 0 8px;color:#3DB7C7;font-size:18px;">📥 XenForoPostDownloader — Background Queue Worker</h2>
+                    <p style="margin:0 0 14px;font-size:13px;color:#9aa4af;">
+                      Keep this background tab untouched while downloads run. It closes automatically (or stays in zero-CPU standby for instant reuse) once the queue finishes.
+                    </p>
+                    <div id="xfpd-worker-live-line" style="padding:10px 12px;border-radius:6px;background:#141518;font-family:monospace;font-size:12.5px;color:#47ba24;">
+                      Initializing worker...
+                    </div>
+                  </div>
+                `;
+                workerStatusDom = document.getElementById('xfpd-worker-live-line');
             } catch (e) {}
         };
         if (document.readyState === 'loading') {
@@ -12429,24 +12606,34 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         cancelIdleClose();
         if (!isDedicatedWorkerTab) return;
         if (activeJobSummary || pendingJobs.length > 0) return;
+        if (standbyMode) return;
         idleCloseTimer = setTimeout(() => {
             const unacked = xfpdReadPendingQueueCommands(processedCmdIds);
             if (unacked.length > 0 || activeJobSummary || pendingJobs.length > 0) {
                 drainCommands();
                 return;
             }
-            clearInterval(heartbeatTimer);
-            clearInterval(cmdPollTimer);
+            // Signal opener tab's GM_openInTab handle to close us cleanly (no @grant window.close needed!)
             xfpdWriteQueueState({
                 workerId: '',
                 workerHeartbeat: 0,
                 workerClosing: true,
+                workerStandby: false,
                 ackCmdIds: ackQueue.slice(-200),
                 active: null,
                 queued: [],
                 history: history.slice(0, 30),
             });
             try { window.close(); } catch (e) {}
+
+            // If opener tab navigated away and the browser kept this tab open, enter Standby Mode
+            // so future downloads across any page/thread reuse this exact single tab with zero new tabs!
+            setTimeout(() => {
+                if (window.closed) return;
+                standbyMode = true;
+                publishState();
+                drainCommands();
+            }, 900);
         }, XFPD_WORKER_IDLE_CLOSE_MS);
     };
 
@@ -12678,16 +12865,18 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         activeJobSummary.total = finalResourceTotal;
         publishState();
 
-        // Virtual statusUI elements observed with 150ms throttling to broadcast progress to HUD
+        // Virtual statusUI elements observed via MutationObserver (immune to background timer throttling!)
+        const vRoot = document.createElement('div');
         const vStatus = document.createElement('span');
         const vFilePB = document.createElement('div');
         const vTotalPB = document.createElement('div');
+        vRoot.append(vStatus, vFilePB, vTotalPB);
 
         let lastBroadcastAt = 0;
         const syncVirtualDomProgress = (force = false) => {
             if (!activeJobSummary) return;
             const now = Date.now();
-            if (!force && now - lastBroadcastAt < 150) return;
+            if (!force && now - lastBroadcastAt < 140) return;
             lastBroadcastAt = now;
             const txt = String(vStatus.textContent || '').replace(/Copy Log$/i, '').trim();
             if (txt) activeJobSummary.statusText = txt;
@@ -12698,7 +12887,17 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             publishState();
         };
 
-        const progressPoll = setInterval(() => syncVirtualDomProgress(false), 180);
+        let vObserver = null;
+        if (typeof MutationObserver !== 'undefined') {
+            vObserver = new MutationObserver(() => syncVirtualDomProgress(false));
+            vObserver.observe(vRoot, {
+                childList: true,
+                characterData: true,
+                attributes: true,
+                subtree: true,
+            });
+        }
+        const progressPoll = setInterval(() => syncVirtualDomProgress(false), 350);
 
         const virtualParsedPost = {
             postId: job.postId,
@@ -12771,6 +12970,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 errorLog: String((err && err.stack) || err || ''),
             };
         } finally {
+            if (vObserver) {
+                try { vObserver.disconnect(); } catch (e) {}
+            }
             clearInterval(progressPoll);
         }
 
@@ -12820,12 +13022,22 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     const pumpQueue = async () => {
         if (pumping) return;
         pumping = true;
+        standbyMode = false;
         cancelIdleClose();
-        try {
+
+        const runLoop = async () => {
             while (pendingJobs.length > 0) {
                 const nextJob = pendingJobs.shift();
                 if (!nextJob) continue;
                 await executeSingleJob(nextJob);
+            }
+        };
+
+        try {
+            if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+                await navigator.locks.request('xfpd_active_download_lock', { mode: 'shared' }, runLoop);
+            } else {
+                await runLoop();
             }
         } finally {
             pumping = false;
@@ -12896,8 +13108,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     const heartbeatTimer = setInterval(() => {
         publishState();
     }, XFPD_WORKER_HEARTBEAT_MS);
-    const cmdPollTimer = setInterval(drainCommands, 300);
+    const cmdPollTimer = setInterval(drainCommands, 400);
     xfpdOnQueueCommand(drainCommands);
+    xfpdOnQueuePing(() => {
+        publishState();
+        drainCommands();
+    });
 
     publishState();
     drainCommands();
@@ -12932,10 +13148,29 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     }
 
     const onReady = cb => {
+        let ran = false;
+        const runOnceWhenBodyReady = () => {
+            if (ran) return;
+            if (document.body) {
+                ran = true;
+                cb();
+                return;
+            }
+            if (typeof MutationObserver !== 'undefined' && document.documentElement) {
+                const bootObs = new MutationObserver(() => {
+                    if (!ran && document.body) {
+                        ran = true;
+                        bootObs.disconnect();
+                        cb();
+                    }
+                });
+                bootObs.observe(document.documentElement, { childList: true, subtree: true });
+            }
+        };
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', cb, { once: true });
+            document.addEventListener('DOMContentLoaded', runOnceWhenBodyReady, { once: true });
         } else {
-            cb();
+            runOnceWhenBodyReady();
         }
     };
 
@@ -13071,9 +13306,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
         let hudDismissedUntilCount = -1;
         let hudExpanded = true;
+        let hudIdleExpanded = false;
+        let hudIdleDismissed = false;
         try {
             const savedHudExp = sessionStorage.getItem('xfpd_hud_expanded');
             if (savedHudExp === '0') hudExpanded = false;
+            if (sessionStorage.getItem('xfpd_hud_idle_dismissed') === '1') hudIdleDismissed = true;
         } catch (e) {}
 
         const collectPostHintsSnapshot = postEntry => {
@@ -13222,6 +13460,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const list = (entries || []).filter(Boolean);
             if (!list.length) return;
             hudDismissedUntilCount = -1;
+            hudIdleDismissed = false;
+            try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
             const jobs = list.map(serializePostEntryToJob);
             const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
 
@@ -13235,6 +13475,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             });
 
             const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+            syncVisiblePostsAndHud(xfpdReadQueueState());
             if (!spawnedOrAlive) {
                 xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
                 return;
@@ -13321,10 +13562,17 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             });
 
             // 2) Render Floating Queue HUD (#xfpd-queue-hud)
+            if (!document.body) return;
             const recentHistory = history.filter(hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000);
-            const isBusy = !!(active || queued.length > 0);
-            const shouldShowHud =
-                isBusy || (recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount);
+            const unackedCmds = xfpdReadPendingQueueCommands(new Set(st.ackCmdIds || []));
+            const pendingEnqueues = unackedCmds.reduce(
+                (acc, c) => acc + (c.type === 'enqueue' && c.payload && Array.isArray(c.payload.jobs) ? c.payload.jobs.length : 0),
+                0,
+            );
+            const isBusy = !!(active || queued.length > 0 || pendingEnqueues > 0);
+            const hasUnclosedHistory = recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount;
+            const isIdlePillMode = !isBusy && !hasUnclosedHistory;
+            const shouldShowHud = isBusy || hasUnclosedHistory || (parsedPosts.length > 0 && !hudIdleDismissed);
 
             let hudEl = document.getElementById('xfpd-queue-hud');
             if (!shouldShowHud) {
@@ -13341,7 +13589,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
-                      <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Close">✕</button>
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Hide">✕</button>
                     </span>
                   </div>
                   <div class="xfpd-q-top-bar"><div class="xfpd-q-top-fill" id="xfpd-q-top-fill"></div></div>
@@ -13350,9 +13598,28 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 document.body.appendChild(hudEl);
 
                 const toggleExpand = () => {
-                    hudExpanded = !hudExpanded;
-                    try { sessionStorage.setItem('xfpd_hud_expanded', hudExpanded ? '1' : '0'); } catch (e) {}
-                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                    const curSt = xfpdReadQueueState();
+                    const curAlive = xfpdIsQueueWorkerAlive(curSt);
+                    const curUnacked = xfpdReadPendingQueueCommands(new Set(curSt.ackCmdIds || []));
+                    const curPending = curUnacked.reduce(
+                        (a, c) => a + (c.type === 'enqueue' && c.payload && Array.isArray(c.payload.jobs) ? c.payload.jobs.length : 0),
+                        0,
+                    );
+                    const curBusy = !!(
+                        (curAlive && (curSt.active || (curSt.queued && curSt.queued.length))) ||
+                        curPending > 0
+                    );
+                    const curRecent = (curSt.history || []).filter(
+                        hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000,
+                    );
+                    const curIdleMode = !curBusy && !(curRecent.length > 0 && curRecent.length !== hudDismissedUntilCount);
+                    if (curIdleMode) {
+                        hudIdleExpanded = !hudIdleExpanded;
+                    } else {
+                        hudExpanded = !hudExpanded;
+                        try { sessionStorage.setItem('xfpd_hud_expanded', hudExpanded ? '1' : '0'); } catch (e) {}
+                    }
+                    syncVisiblePostsAndHud(curSt);
                 };
 
                 hudEl.querySelector('#xfpd-q-head-bar').addEventListener('click', e => {
@@ -13375,8 +13642,15 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         const curRecent = (curSt.history || []).filter(
                             hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000,
                         );
-                        hudDismissedUntilCount = curRecent.length;
-                        hudEl.style.display = 'none';
+                        if (curRecent.length > 0 && curRecent.length !== hudDismissedUntilCount) {
+                            hudDismissedUntilCount = curRecent.length;
+                            hudIdleExpanded = false;
+                            syncVisiblePostsAndHud(curSt);
+                        } else {
+                            hudIdleDismissed = true;
+                            try { sessionStorage.setItem('xfpd_hud_idle_dismissed', '1'); } catch (err) {}
+                            hudEl.style.display = 'none';
+                        }
                     }
                 });
 
@@ -13392,7 +13666,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         e.preventDefault();
                         xfpdSendQueueCommand('clear_history', {});
                         hudDismissedUntilCount = 0;
-                        hudEl.style.display = 'none';
+                        hudIdleExpanded = false;
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
                         return;
                     }
                     const copyErrBtn = e.target.closest('[data-xfpd-copy-err]');
@@ -13418,8 +13693,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const topFill = hudEl.querySelector('#xfpd-q-top-fill');
             const bodyEl = hudEl.querySelector('#xfpd-q-body');
 
+            const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
+            hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
+
             const doneCount = recentHistory.filter(hItem => hItem.status !== 'cancelled').length;
-            const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length;
+            const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length + pendingEnqueues;
 
             if (active) {
                 const curPostIdx = doneCount + 1;
@@ -13428,24 +13706,37 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts) · ${pct}%`;
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = `${pct}%`;
-            } else if (queued.length > 0) {
+            } else if (queued.length > 0 || pendingEnqueues > 0) {
+                const waitTotal = queued.length + pendingEnqueues;
                 titleEl.style.color = '#3DB7C7';
-                titleEl.textContent = `⏳ Starting Queue (${queued.length} pending)...`;
+                titleEl.textContent = `⏳ Starting Queue (${waitTotal} pending)...`;
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = '5%';
-            } else {
+            } else if (hasUnclosedHistory) {
                 titleEl.style.color = '#47ba24';
                 titleEl.textContent = `✓ Queue Finished (${doneCount} ${doneCount === 1 ? 'post' : 'posts'})`;
                 topFill.style.background = '#47ba24';
                 topFill.style.width = '100%';
+            } else {
+                titleEl.style.color = '#3DB7C7';
+                titleEl.textContent = workerAlive ? '📥 Queue · Standby ●' : '📥 Queue · Ready';
+                topFill.style.background = '#3DB7C7';
+                topFill.style.width = '0%';
             }
 
-            toggleBtn.textContent = hudExpanded ? '▼' : '▲';
-            bodyEl.style.display = hudExpanded ? 'block' : 'none';
+            toggleBtn.textContent = effectiveExpanded ? '▼' : '▲';
+            bodyEl.style.display = effectiveExpanded ? 'block' : 'none';
 
-            if (!hudExpanded) return;
+            if (!effectiveExpanded) return;
 
             const parts = [];
+            if (isIdlePillMode) {
+                parts.push(`
+                  <div class="xfpd-q-empty">
+                    Queue is ready (v${escapeHudHtml(xfpdVersion)}). Click <b>Download</b> on any post or <b>Download Page</b> — downloads continue in background while you navigate between pages or threads.
+                  </div>
+                `);
+            }
             if (active) {
                 parts.push(`
                   <div class="xfpd-q-active">
@@ -14254,8 +14545,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         scanPosts();
         syncVisiblePostsAndHud(xfpdReadQueueState());
 
-        // Watch for dynamically unlocked/inserted posts & comments (e.g. SMG [HIDEREACT]/[HIDETHANKS] or UW/FCS comment expansion).
-        if (typeof MutationObserver !== 'undefined' && document.body) {
+        window.addEventListener(
+            'load',
+            () => {
+                init.injectCustomStyles();
+                scanPosts();
+                syncVisiblePostsAndHud(xfpdReadQueueState());
+            },
+            { once: true },
+        );
+
+        // Watch for dynamically unlocked/inserted posts & comments (e.g. SMG [HIDEREACT]/[HIDETHANKS], Rocket Loader, or UW/FCS comment expansion).
+        const observeRoot = h.element('.block--messages') || document.body || document.documentElement;
+        if (typeof MutationObserver !== 'undefined' && observeRoot) {
             let rescanTimer = null;
             const observer = new MutationObserver(mutations => {
                 let shouldScan = false;
@@ -14273,7 +14575,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         if (node.nodeType !== 1) continue;
                         if (
                             (node.matches &&
-                                node.matches('article.message, .js-post, .message-attribution-opposite, .bbCodeBlock--visible, .comment, .js-comment')) ||
+                                node.matches('body, article.message, .js-post, .message-attribution-opposite, .bbCodeBlock--visible, .comment, .js-comment')) ||
                             (node.querySelector &&
                                 node.querySelector('.message-attribution-opposite, .bbCodeBlock--visible, .comment, .js-comment')) ||
                             (node.closest && node.closest('.message-body, .message-userContent, .message-responses, .uw_fcs_comment_section'))
@@ -14288,6 +14590,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     if (rescanTimer) clearTimeout(rescanTimer);
                     rescanTimer = setTimeout(() => {
                         rescanTimer = null;
+                        init.injectCustomStyles();
                         // Refresh existing posts when comments are added dynamically too!
                         let updatedExisting = false;
                         parsedPosts.forEach(entry => {
@@ -14299,10 +14602,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         });
                         scanPosts();
                         if (updatedExisting) syncDownloadPageUI();
-                    }, 120);
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
+                    }, 80);
                 }
             });
-            observer.observe(h.element('.block--messages') || document.body, {
+            observer.observe(observeRoot, {
                 childList: true,
                 subtree: true,
                 attributes: true,

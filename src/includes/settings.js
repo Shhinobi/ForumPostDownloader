@@ -666,10 +666,11 @@ const XFPD_WORKER_PARAM = 'xfpd_worker';
 const XFPD_WORKER_VAL = '1';
 const XFPD_K_QUEUE_CMD = 'xfpd_q_cmds';
 const XFPD_K_QUEUE_STATE = 'xfpd_q_state';
+const XFPD_K_QUEUE_PING = 'xfpd_q_ping';
 const XFPD_K_WORKER_SPAWN = 'xfpd_q_spawning';
 
-const XFPD_WORKER_HEARTBEAT_MS = 1500;
-const XFPD_WORKER_ALIVE_TTL_MS = 5500;
+const XFPD_WORKER_HEARTBEAT_MS = 1800;
+const XFPD_WORKER_ALIVE_TTL_MS = 6500;
 const XFPD_WORKER_IDLE_CLOSE_MS = 4500;
 
 let xfpdQueueCmdMirror = '';
@@ -677,13 +678,20 @@ let xfpdQueueStateMirror = '';
 let xfpdQueueListenersBound = false;
 let xfpdSpawnedWorkerHandle = null;
 let xfpdCmdSeq = 0;
+let xfpdLastPingSentAt = 0;
+let xfpdBroadcastBus = null;
 
 const xfpdQueueStateSubscribers = new Set();
 const xfpdQueueCmdSubscribers = new Set();
+const xfpdQueuePingSubscribers = new Set();
 
 function xfpdIsWorkerTab() {
     try {
-        return new URLSearchParams(location.search).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
+        const hashRaw = String(location.hash || '').replace(/^#/, '');
+        if (hashRaw && new URLSearchParams(hashRaw).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL) {
+            return true;
+        }
+        return new URLSearchParams(location.search || '').get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
     } catch (e) {
         return false;
     }
@@ -694,6 +702,7 @@ function xfpdDefaultQueueState() {
         workerId: '',
         workerHeartbeat: 0,
         workerClosing: false,
+        workerStandby: false,
         ackCmdIds: [],
         active: null,
         queued: [],
@@ -702,9 +711,44 @@ function xfpdDefaultQueueState() {
     };
 }
 
+function xfpdGetBroadcastBus() {
+    if (xfpdBroadcastBus) return xfpdBroadcastBus;
+    try {
+        if (typeof BroadcastChannel === 'function') {
+            xfpdBroadcastBus = new BroadcastChannel('xfpd_queue_ipc_v1');
+        }
+    } catch (e) {}
+    return xfpdBroadcastBus;
+}
+
 function xfpdBindQueueStorageListeners() {
     if (xfpdQueueListenersBound) return;
     xfpdQueueListenersBound = true;
+
+    const handleIncomingStateRaw = newV => {
+        if (newV) xfpdQueueStateMirror = typeof newV === 'string' ? newV : JSON.stringify(newV);
+        const st = xfpdReadQueueState();
+        if (st.workerClosing && xfpdSpawnedWorkerHandle) {
+            try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
+            xfpdSpawnedWorkerHandle = null;
+        }
+        xfpdQueueStateSubscribers.forEach(cb => {
+            try { cb(st); } catch (e) {}
+        });
+    };
+
+    const handleIncomingCmdRaw = newV => {
+        if (newV) xfpdQueueCmdMirror = typeof newV === 'string' ? newV : JSON.stringify(newV);
+        xfpdQueueCmdSubscribers.forEach(cb => {
+            try { cb(); } catch (e) {}
+        });
+    };
+
+    const handleIncomingPing = () => {
+        xfpdQueuePingSubscribers.forEach(cb => {
+            try { cb(); } catch (e) {}
+        });
+    };
 
     const addListener =
         (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
@@ -714,26 +758,30 @@ function xfpdBindQueueStorageListeners() {
 
     if (addListener) {
         try {
-            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => {
-                xfpdQueueStateMirror = String(newV || '');
-                const st = xfpdReadQueueState();
-                if (st.workerClosing && xfpdSpawnedWorkerHandle) {
-                    try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
-                    xfpdSpawnedWorkerHandle = null;
-                }
-                xfpdQueueStateSubscribers.forEach(cb => {
-                    try { cb(st); } catch (e) {}
-                });
-            });
+            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => handleIncomingStateRaw(newV));
         } catch (e) {}
-
         try {
-            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => {
-                xfpdQueueCmdMirror = String(newV || '');
-                xfpdQueueCmdSubscribers.forEach(cb => {
-                    try { cb(); } catch (e) {}
-                });
-            });
+            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => handleIncomingCmdRaw(newV));
+        } catch (e) {}
+        try {
+            addListener(XFPD_K_QUEUE_PING, () => handleIncomingPing());
+        } catch (e) {}
+    }
+
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try {
+            bus.onmessage = ev => {
+                const msg = ev && ev.data;
+                if (!msg || typeof msg !== 'object') return;
+                if (msg.kind === 'state' && msg.data) {
+                    handleIncomingStateRaw(msg.data);
+                } else if (msg.kind === 'cmd' && msg.data) {
+                    handleIncomingCmdRaw(msg.data);
+                } else if (msg.kind === 'ping') {
+                    handleIncomingPing();
+                }
+            };
         } catch (e) {}
     }
 }
@@ -745,8 +793,11 @@ function xfpdReadRawGmOrLs(key, mirrorStr = '') {
         if (p) candidates.push(p);
     }
     try {
-        if (typeof GM_getValue === 'function') {
-            const p = xfpdParsePrefsJson(GM_getValue(key, ''));
+        const getVal =
+            (typeof GM_getValue === 'function' ? GM_getValue : null) ||
+            (typeof window !== 'undefined' && typeof window.GM_getValue === 'function' ? window.GM_getValue.bind(window) : null);
+        if (getVal) {
+            const p = xfpdParsePrefsJson(getVal(key, ''));
             if (p) candidates.push(p);
         }
     } catch (e) {}
@@ -774,6 +825,7 @@ function xfpdReadQueueState() {
         workerId: String(raw.workerId || ''),
         workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
         workerClosing: !!raw.workerClosing,
+        workerStandby: !!raw.workerStandby,
         ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
         queued: Array.isArray(raw.queued) ? raw.queued : [],
@@ -792,15 +844,40 @@ function xfpdWriteQueueState(stateObj) {
     const rawStr = JSON.stringify(payload);
     xfpdQueueStateMirror = rawStr;
     xfpdWriteStoredObject(XFPD_K_QUEUE_STATE, payload);
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'state', data: rawStr }); } catch (e) {}
+    }
     xfpdQueueStateSubscribers.forEach(cb => {
         try { cb(payload); } catch (e) {}
     });
     return payload;
 }
 
+function xfpdPingQueueWorker() {
+    const now = Date.now();
+    if (now - xfpdLastPingSentAt < 1200) return;
+    xfpdLastPingSentAt = now;
+    try {
+        const setVal =
+            (typeof GM_setValue === 'function' ? GM_setValue : null) ||
+            (typeof window !== 'undefined' && typeof window.GM_setValue === 'function' ? window.GM_setValue.bind(window) : null);
+        if (setVal) setVal(XFPD_K_QUEUE_PING, String(now));
+    } catch (e) {}
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'ping', ts: now }); } catch (e) {}
+    }
+}
+
 function xfpdIsQueueWorkerAlive(stateSnapshot = null) {
     const st = stateSnapshot || xfpdReadQueueState();
-    return !st.workerClosing && st.workerHeartbeat > 0 && Date.now() - st.workerHeartbeat < XFPD_WORKER_ALIVE_TTL_MS;
+    if (st.workerClosing || !st.workerHeartbeat) return false;
+    const age = Date.now() - st.workerHeartbeat;
+    if (age > 2600 && age < XFPD_WORKER_ALIVE_TTL_MS * 2 && !xfpdIsWorkerTab()) {
+        xfpdPingQueueWorker();
+    }
+    return age < XFPD_WORKER_ALIVE_TTL_MS;
 }
 
 function xfpdSendQueueCommand(type, payload = {}) {
@@ -826,8 +903,13 @@ function xfpdSendQueueCommand(type, payload = {}) {
         _updatedAt: Math.max(now, (Number((existingObj && existingObj._updatedAt) || 0) || 0) + 1),
         cmds: pendingCmds,
     };
-    xfpdQueueCmdMirror = JSON.stringify(nextBox);
+    const rawStr = JSON.stringify(nextBox);
+    xfpdQueueCmdMirror = rawStr;
     xfpdWriteStoredObject(XFPD_K_QUEUE_CMD, nextBox);
+    const bus = xfpdGetBroadcastBus();
+    if (bus) {
+        try { bus.postMessage({ kind: 'cmd', data: rawStr }); } catch (e) {}
+    }
     xfpdQueueCmdSubscribers.forEach(cb => {
         try { cb(); } catch (e) {}
     });
@@ -854,43 +936,56 @@ function xfpdOnQueueCommand(cb) {
     return () => xfpdQueueCmdSubscribers.delete(cb);
 }
 
+function xfpdOnQueuePing(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueuePingSubscribers.add(cb);
+    return () => xfpdQueuePingSubscribers.delete(cb);
+}
+
 function xfpdBuildWorkerUrl() {
-    try {
-        const u = new URL(location.href);
-        u.hash = '';
-        u.searchParams.set(XFPD_WORKER_PARAM, XFPD_WORKER_VAL);
-        return u.href;
-    } catch (e) {
-        const base = String(location.href || '').split('#')[0];
-        return `${base}${base.includes('?') ? '&' : '?'}${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
-    }
+    // Use URL hash (`#xfpd_worker=1`) so Cloudflare/XenForo never sees an extra query parameter,
+    // canonical 301 redirects cannot strip it, and the browser can reuse its local HTTP cache!
+    const base = String(location.href || '').split('#')[0];
+    return `${base}#${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
 }
 
 function xfpdEnsureQueueWorkerTab() {
     if (xfpdIsWorkerTab()) return true;
     if (xfpdIsQueueWorkerAlive()) return true;
 
+    const getVal =
+        (typeof GM_getValue === 'function' ? GM_getValue : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_getValue === 'function' ? window.GM_getValue.bind(window) : null);
+    const setVal =
+        (typeof GM_setValue === 'function' ? GM_setValue : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_setValue === 'function' ? window.GM_setValue.bind(window) : null);
+    const openTabFn =
+        (typeof GM_openInTab === 'function' ? GM_openInTab : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_openInTab === 'function' ? window.GM_openInTab.bind(window) : null) ||
+        (typeof GM === 'object' && GM && typeof GM.openInTab === 'function' ? GM.openInTab.bind(GM) : null);
+
     let spawnUntil = 0;
     try {
-        spawnUntil = Number(GM_getValue(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
+        if (getVal) spawnUntil = Number(getVal(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
     } catch (e) {}
     if (Date.now() < spawnUntil) {
         return true;
     }
 
-    if (typeof GM_openInTab !== 'function') {
+    if (!openTabFn) {
         return false;
     }
 
     try {
-        if (typeof GM_setValue === 'function') {
-            GM_setValue(XFPD_K_WORKER_SPAWN, Date.now() + 7000);
+        if (setVal) {
+            setVal(XFPD_K_WORKER_SPAWN, Date.now() + 6500);
         }
     } catch (e) {}
 
     try {
         const workerUrl = xfpdBuildWorkerUrl();
-        const handle = GM_openInTab(workerUrl, { active: false, insert: true, setParent: true });
+        const handle = openTabFn(workerUrl, { active: false, insert: true, setParent: true });
         if (handle) {
             xfpdSpawnedWorkerHandle = handle;
             return true;
