@@ -6987,6 +6987,36 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             return;
                         }
 
+                        // Universal HTML error-page guard (e.g. Cyberdrop/ImageBam/Pixhost deleted file redirecting to 200 OK homepage HTML):
+                        // prevent saving junk <!DOCTYPE html> files into Archives/ and trigger Smart Mirrors fallback!
+                        {
+                            const respCt = String(headerValue(response.responseHeaders || '', 'content-type') || '');
+                            const isHtmlHeader = /text\/html|application\/xhtml\+xml/i.test(respCt);
+                            const intentionalHtml = /\.html?(?:$|[?#])/i.test(String(url || ''));
+                            const bObj = response.response;
+                            let smallHtmlSniff = false;
+                            if (!isHtmlHeader && !intentionalHtml && bObj && typeof bObj.size === 'number' && bObj.size > 0 && bObj.size < 65536) {
+                                try {
+                                    const headBytes = new Uint8Array(await xfpdReadBlobArrayBuffer(bObj.slice(0, 256)));
+                                    const headAscii = String.fromCharCode(...headBytes).trimStart().toLowerCase();
+                                    if (headAscii.startsWith('<!doctype html') || headAscii.startsWith('<html')) {
+                                        smallHtmlSniff = true;
+                                    }
+                                } catch (e) {}
+                            }
+                            if ((isHtmlHeader || smallHtmlSniff) && !intentionalHtml) {
+                                log.post.error(postId, `::Rejected HTML page response (dead/deleted host link)::: ${url}`, postNumber);
+                                if (tryFallbackMirror('HTML error page')) return;
+                                finishBatchItem(false);
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                                h.ui.setElProps(totalPB, {
+                                    width: `${(completed / totalDownloadable) * 100}%`,
+                                });
+                                return;
+                            }
+                        }
+
                         // Success path (finishBatchItem(true) and status update run after saving/zipping below)
 
                         // TODO: Extract to method.
@@ -8181,9 +8211,10 @@ const xfpdBuildSerializedPostJob = ({
     if (messageEl) {
         const mainReactLink = xfpdFindPostNativeReactLink(messageEl);
         if (mainReactLink) {
-            const alreadyMain =
-                mainReactLink.classList.contains('has-reaction') ||
-                !!messageEl.querySelector(':scope > footer .has-reaction, :scope > footer .smgReactionPill--reacted');
+            const ownPostReacted = [...messageEl.querySelectorAll('.has-reaction, .smgReactionPill--reacted')].some(
+                el => !el.closest('.comment, .js-comment, .uw_fcs_comment_section, .message-responses'),
+            );
+            const alreadyMain = mainReactLink.classList.contains('has-reaction') || ownPostReacted;
             if (!alreadyMain) {
                 const rUrl = xfpdBuildPostReactUrl(mainReactLink.getAttribute('href') || '');
                 completionReactUrl = rUrl;
@@ -8246,13 +8277,13 @@ const xfpdBuildSerializedPostJob = ({
     };
 };
 
-const xfpdGetXenForoCsrfToken = () => {
+const xfpdExtractCsrfFromDoc = (doc = document) => {
     try {
-        const inputEl = document.querySelector('input[name="_xfToken"]');
+        const inputEl = doc.querySelector('input[name="_xfToken"]');
         if (inputEl && inputEl.value) return String(inputEl.value);
-        const htmlCsrf = document.documentElement && document.documentElement.getAttribute('data-csrf');
+        const htmlCsrf = doc.documentElement && doc.documentElement.getAttribute('data-csrf');
         if (htmlCsrf) return String(htmlCsrf);
-        const scripts = document.querySelectorAll('script:not([src])');
+        const scripts = doc.querySelectorAll('script:not([src])');
         for (const s of scripts) {
             const m = /\bcsrf\s*:\s*['"]([^'"]+)['"]/.exec(s.textContent || '');
             if (m && m[1]) return m[1];
@@ -8260,6 +8291,8 @@ const xfpdGetXenForoCsrfToken = () => {
     } catch (e) {}
     return '';
 };
+
+const xfpdGetXenForoCsrfToken = () => xfpdExtractCsrfFromDoc(document);
 
 const xfpdBuildPostReactUrl = rawHref => {
     if (!rawHref) return '';
@@ -8961,31 +8994,47 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             clearInterval(progressPoll);
         }
 
-        // Trigger post-download thank-you reaction remotely if succeeded and not already reacted!
+        // Trigger post-download thank-you reaction remotely if succeeded OR deduplicated, and not already reacted!
         if (
             outcome &&
-            outcome.succeeded > 0 &&
+            (outcome.succeeded > 0 || (outcome.deduped > 0 && outcome.failed === 0)) &&
             job.completionReactUrl &&
-            !reactedMainDuringUnlock &&
-            job.csrfToken
+            !reactedMainDuringUnlock
         ) {
-            try {
-                let reqUri = '/';
+            const activeCsrf = job.csrfToken || xfpdGetXenForoCsrfToken();
+            if (activeCsrf) {
                 try {
-                    const pUrl = new URL(job.pageUrl);
-                    reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                    let reqUri = '/';
+                    try {
+                        const pUrl = new URL(job.pageUrl);
+                        reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                    } catch (e) {}
+                    const bodyParams = new URLSearchParams({
+                        _xfToken: activeCsrf,
+                        _xfRequestUri: reqUri,
+                        _xfWithData: '1',
+                        _xfResponseType: 'json',
+                    }).toString();
+                    let reactRes = await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
+                    // Retry once after 1.2s if XenForo flood-checked rapid consecutive reactions!
+                    if (!reactRes || !reactRes.ok || /"status"\s*:\s*"error"/i.test(reactRes.text || '')) {
+                        await h.delayedResolve(1200);
+                        await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
+                    }
                 } catch (e) {}
-                const bodyParams = new URLSearchParams({
-                    _xfToken: job.csrfToken,
-                    _xfRequestUri: reqUri,
-                    _xfWithData: '1',
-                    _xfResponseType: 'json',
-                }).toString();
-                await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
-            } catch (e) {}
+            }
         }
 
         if (outcome) {
+            if (typeof xfpdRecordThreadPostOutcome === 'function') {
+                try {
+                    xfpdRecordThreadPostOutcome(job.threadKey, {
+                        postId: job.postId,
+                        postNumber: job.postNumber,
+                        ...outcome,
+                    });
+                } catch (e) {}
+            }
             history = history.filter(hItem => !(hItem.threadKey === job.threadKey && hItem.postId === job.postId));
             history.unshift({
                 jobId: job.jobId,
@@ -9071,25 +9120,51 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 };
                 publishState();
 
-                let pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
-                if ((!pageRes || !pageRes.ok) && !activeThreadCrawl.cancelled) {
-                    await h.delayedResolve(1200);
-                    pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                // Resilient 6-attempt exponential backoff (up to ~72s recovery) + valid XenForo DOM check
+                // so temporary Cloudflare 429 / 502 / 522 / interstitial pages never silently skip pages!
+                const backoffDelaysMs = [0, 2200, 5000, 10000, 20000, 35000];
+                let validDoc = null;
+
+                for (let attempt = 0; attempt < backoffDelaysMs.length; attempt++) {
+                    if (activeThreadCrawl.cancelled) break;
+                    if (backoffDelaysMs[attempt] > 0) {
+                        const waitSec = Math.round(backoffDelaysMs[attempt] / 1000);
+                        activeJobSummary.statusText = `⏳ Forum busy/rate-limited on Page ${pageNum} — retry [${attempt}/${backoffDelaysMs.length - 1}] in ${waitSec}s...`;
+                        publishState();
+                        await h.delayedResolve(backoffDelaysMs[attempt]);
+                        if (activeThreadCrawl.cancelled) break;
+                    }
+                    const pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                    if (pageRes && pageRes.ok && pageRes.text) {
+                        try {
+                            const candidateDoc = new DOMParser().parseFromString(pageRes.text, 'text/html');
+                            if (candidateDoc.querySelector('.block--messages, .js-post, article.message, .message-attribution-opposite')) {
+                                validDoc = candidateDoc;
+                                break;
+                            }
+                        } catch (e) {}
+                    }
                 }
-                if (!pageRes || !pageRes.ok || !pageRes.text || activeThreadCrawl.cancelled) {
+
+                if (activeThreadCrawl.cancelled) break;
+
+                if (!validDoc) {
+                    if (typeof xfpdRecordThreadPageOutcome === 'function') {
+                        xfpdRecordThreadPageOutcome(crawlJob.threadKey, pageNum, false);
+                    }
                     continue;
+                }
+
+                if (typeof xfpdRecordThreadPageOutcome === 'function') {
+                    xfpdRecordThreadPageOutcome(crawlJob.threadKey, pageNum, true);
                 }
 
                 const pagePostJobs = [];
                 try {
-                    const doc = new DOMParser().parseFromString(pageRes.text, 'text/html');
-                    const freshCsrf =
-                        doc.querySelector('input[name="_xfToken"]')?.value ||
-                        (doc.documentElement && doc.documentElement.getAttribute('data-csrf')) ||
-                        '';
+                    const freshCsrf = xfpdExtractCsrfFromDoc(validDoc);
                     if (freshCsrf) csrfToken = freshCsrf;
 
-                    const oppEls = [...doc.querySelectorAll('.message-attribution-opposite')];
+                    const oppEls = [...validDoc.querySelectorAll('.message-attribution-opposite')];
                     for (const oppEl of oppEls) {
                         const parsedPost = parsers.thread.parsePost(oppEl);
                         if (!parsedPost) continue;
@@ -9124,11 +9199,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
                 for (const postJob of pagePostJobs) {
                     if (activeThreadCrawl.cancelled) break;
+                    if (csrfToken) postJob.csrfToken = csrfToken;
                     await executeSingleJob(postJob);
                 }
 
                 if (pIdx + 1 < pages.length && !activeThreadCrawl.cancelled) {
-                    await h.delayedResolve(350);
+                    await h.delayedResolve(450);
                 }
             }
         } finally {
@@ -9524,25 +9600,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             });
         };
 
-        const enqueueThreadPagesRange = (rawStartPage = null, rawEndPage = null) => {
+        const enqueueThreadPageList = pageNumList => {
             const pag = xfpdGetThreadPaginationInfo();
-            if (pag.totalPages <= 1 && parsedPosts.length > 0) {
-                enqueueAllPagePosts();
-                return;
-            }
-            const sPage = Math.max(1, Math.min(pag.totalPages, parseInt(rawStartPage, 10) || 1));
-            const ePage = Math.max(sPage, Math.min(pag.totalPages, parseInt(rawEndPage, 10) || pag.totalPages));
-            const pages = [];
-            for (let p = sPage; p <= ePage; p++) {
-                pages.push({ pageNum: p, pageUrl: pag.buildPageUrl(p) });
-            }
-            if (!pages.length) return;
+            const cleanNums = [...new Set((pageNumList || []).map(n => parseInt(n, 10)).filter(n => n >= 1 && n <= pag.totalPages))].sort(
+                (a, b) => a - b,
+            );
+            if (!cleanNums.length) return;
+            const pages = cleanNums.map(p => ({ pageNum: p, pageUrl: pag.buildPageUrl(p) }));
 
             hudDismissedUntilCount = -1;
             hudIdleDismissed = false;
             try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
 
             const tKey = xfpdGetCurrentThreadKey();
+            const sPage = cleanNums[0];
+            const ePage = cleanNums[cleanNums.length - 1];
             const crawlJob = {
                 kind: 'thread_crawl',
                 jobId: `tcrawl_${tKey || 'f'}_${sPage}_${ePage}_${Date.now()}`,
@@ -9569,6 +9641,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
                 }
             }, 3500);
+        };
+
+        const enqueueThreadPagesRange = (rawStartPage = null, rawEndPage = null) => {
+            const pag = xfpdGetThreadPaginationInfo();
+            if (pag.totalPages <= 1 && parsedPosts.length > 0) {
+                enqueueAllPagePosts();
+                return;
+            }
+            const sPage = Math.max(1, Math.min(pag.totalPages, parseInt(rawStartPage, 10) || 1));
+            const ePage = Math.max(sPage, Math.min(pag.totalPages, parseInt(rawEndPage, 10) || pag.totalPages));
+            const nums = [];
+            for (let p = sPage; p <= ePage; p++) nums.push(p);
+            enqueueThreadPageList(nums);
         };
 
         const enqueuePostsToBackgroundWorker = entries => {
@@ -9644,9 +9729,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     return;
                 }
 
-                const hist = history.find(
-                    hItem => hItem.postId === pid && (!hItem.threadKey || hItem.threadKey === curThreadKey),
-                );
+                const hist =
+                    history.find(hItem => hItem.postId === pid && (!hItem.threadKey || hItem.threadKey === curThreadKey)) ||
+                    (typeof xfpdGetThreadPostRecord === 'function' ? xfpdGetThreadPostRecord(pid, curThreadKey) : null);
                 if (hist) {
                     if (hist.status === 'cancelled') {
                         btn.dataset.xfpdState = 'idle';
@@ -9790,6 +9875,15 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 });
 
                 hudEl.querySelector('#xfpd-q-body').addEventListener('click', async e => {
+                    const retryPagesBtn = e.target.closest('[data-xfpd-retry-failed-pages]');
+                    if (retryPagesBtn) {
+                        e.preventDefault();
+                        const summary = typeof xfpdGetThreadLedgerSummary === 'function' ? xfpdGetThreadLedgerSummary() : null;
+                        if (summary && Array.isArray(summary.failedPages) && summary.failedPages.length) {
+                            enqueueThreadPageList(summary.failedPages);
+                        }
+                        return;
+                    }
                     const cancelThreadBtn = e.target.closest('[data-xfpd-cancel-thread]');
                     if (cancelThreadBtn) {
                         e.preventDefault();
@@ -9896,11 +9990,30 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             if (!effectiveExpanded) return;
 
+            const ledgerSummary =
+                typeof xfpdGetThreadLedgerSummary === 'function'
+                    ? xfpdGetThreadLedgerSummary(curThreadKey)
+                    : { postCount: 0, savedPosts: 0, scannedPages: [], failedPages: [] };
+
             const parts = [];
             if (isIdlePillMode) {
                 parts.push(`
                   <div class="xfpd-q-empty">
-                    Queue is ready (v${escapeHudHtml(xfpdVersion)}). Click <b>Download</b> on any post or <b>Download Page</b> — downloads continue in background while you navigate between pages or threads.
+                    Queue is ready (v${escapeHudHtml(xfpdVersion)}).${
+                        ledgerSummary.savedPosts > 0
+                            ? `<br/><span style="color:#47ba24;font-weight:600;">✓ This thread: ${ledgerSummary.savedPosts} posts saved${
+                                  ledgerSummary.scannedPages.length ? ` · ${ledgerSummary.scannedPages.length} pages scanned` : ''
+                              }</span>`
+                            : ' Click <b>Download</b> on any post, <b>⬇ Page</b>, or <b>📚 Thread</b>.'
+                    }
+                  </div>
+                `);
+            }
+            if (ledgerSummary.failedPages.length > 0) {
+                parts.push(`
+                  <div class="xfpd-q-item" style="border:1px solid rgba(232,168,56,.45);background:rgba(232,168,56,.12);margin-bottom:6px;">
+                    <span class="xfpd-q-item-txt" style="color:#ffca6b;">⚠ Skipped pages: ${escapeHudHtml(ledgerSummary.failedPages.join(', '))}</span>
+                    <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" data-xfpd-retry-failed-pages="1">🔄 Retry</button>
                   </div>
                 `);
             }
@@ -10092,6 +10205,23 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 });
 
             const pag = xfpdGetThreadPaginationInfo();
+            const ledger =
+                typeof xfpdGetThreadLedgerSummary === 'function'
+                    ? xfpdGetThreadLedgerSummary()
+                    : { postCount: 0, savedPosts: 0, scannedPages: [], failedPages: [] };
+            const ledgerBadgeHtml =
+                ledger.savedPosts > 0 || ledger.failedPages.length > 0
+                    ? `<div style="font-size:11.5px;color:#a5b1bd;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                         <span>✓ Saved in thread: <b style="color:#47ba24;">${ledger.savedPosts} posts</b>${
+                             ledger.scannedPages.length ? ` (${ledger.scannedPages.length}/${pag.totalPages}p scanned)` : ''
+                         }</span>
+                         ${
+                             ledger.failedPages.length > 0
+                                 ? `<button type="button" id="xfpd-retry-failed-pages-btn" class="xfpd-mini-btn" style="border-color:#e8a838;color:#ffca6b;" title="Retry pages: ${ledger.failedPages.join(', ')}">🔄 Retry ${ledger.failedPages.length} Failed Page(s)</button>`
+                                 : ''
+                         }
+                       </div>`
+                    : '';
             const threadRangeHtml =
                 pag.totalPages > 1
                     ? ui.forms.createRow(`
@@ -10104,6 +10234,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                                     : ''
                             }
                           </div>
+                          ${ledgerBadgeHtml}
                           <div class="xfpd-thread-range-row">
                             <span>Pages:</span>
                             <span style="display:inline-flex;align-items:center;gap:5px;">
@@ -10149,6 +10280,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     e.preventDefault();
                     if (instance && typeof instance.hide === 'function') {
                         instance.hide();
+                    }
+                });
+            }
+
+            const retryFailedFormBtn = formEl.querySelector('#xfpd-retry-failed-pages-btn');
+            if (retryFailedFormBtn && retryFailedFormBtn.dataset.xfpdBound !== '1') {
+                retryFailedFormBtn.dataset.xfpdBound = '1';
+                retryFailedFormBtn.addEventListener('click', e => {
+                    e.preventDefault();
+                    const curLed = typeof xfpdGetThreadLedgerSummary === 'function' ? xfpdGetThreadLedgerSummary() : null;
+                    if (curLed && Array.isArray(curLed.failedPages) && curLed.failedPages.length) {
+                        if (instance && typeof instance.hide === 'function') instance.hide();
+                        enqueueThreadPageList(curLed.failedPages);
                     }
                 });
             }

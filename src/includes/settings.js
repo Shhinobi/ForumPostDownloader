@@ -575,6 +575,155 @@ function xfpdClearThreadDedup(explicitThreadKey = null) {
     const tKey = (explicitThreadKey !== null ? explicitThreadKey : xfpdGetCurrentThreadKey()) || '_session';
     delete store.threads[tKey];
     xfpdFlushDedupStoreNow();
+    if (typeof xfpdClearThreadLedger === 'function') {
+        xfpdClearThreadLedger(tKey);
+    }
+}
+
+// --- Persistent Per-Thread Post & Page Coverage Ledger -------------------------------------------
+const XFPD_THREAD_LEDGER_KEY = 'xfpd_thread_ledger';
+const XFPD_MAX_LEDGER_THREADS = 250;
+
+let xfpdLedgerMirror = null;
+let xfpdLedgerListenerBound = false;
+
+function xfpdBindLedgerListener() {
+    if (xfpdLedgerListenerBound) return;
+    xfpdLedgerListenerBound = true;
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+    if (addListener) {
+        try {
+            addListener(XFPD_THREAD_LEDGER_KEY, (_k, _oldV, newV) => {
+                const parsed = xfpdParsePrefsJson(newV);
+                if (parsed && parsed.threads && typeof parsed.threads === 'object') {
+                    xfpdLedgerMirror = parsed;
+                }
+            });
+        } catch (e) {}
+    }
+}
+
+function xfpdLoadLedgerStore() {
+    xfpdBindLedgerListener();
+    const raw = xfpdReadStoredObject(XFPD_THREAD_LEDGER_KEY, xfpdLedgerMirror);
+    const store = {
+        _updatedAt: Number((raw && raw._updatedAt) || 0) || 0,
+        threads: raw && raw.threads && typeof raw.threads === 'object' ? { ...raw.threads } : {},
+    };
+    xfpdLedgerMirror = store;
+    return store;
+}
+
+function xfpdSaveLedgerStore(store) {
+    const prevTime = Number((xfpdLedgerMirror && xfpdLedgerMirror._updatedAt) || 0) || 0;
+    store._updatedAt = Math.max(Date.now(), prevTime + 1);
+    const keys = Object.keys(store.threads || {});
+    if (keys.length > XFPD_MAX_LEDGER_THREADS) {
+        keys
+            .sort((a, b) => (Number(store.threads[a]?._t) || 0) - (Number(store.threads[b]?._t) || 0))
+            .slice(0, keys.length - XFPD_MAX_LEDGER_THREADS)
+            .forEach(k => delete store.threads[k]);
+    }
+    xfpdLedgerMirror = store;
+    xfpdWriteStoredObject(XFPD_THREAD_LEDGER_KEY, store);
+}
+
+function xfpdEnsureThreadLedgerBucket(store, threadKey) {
+    if (!store.threads[threadKey] || typeof store.threads[threadKey] !== 'object') {
+        store.threads[threadKey] = { p: {}, sp: [], fp: [], _t: Date.now() };
+    }
+    const b = store.threads[threadKey];
+    if (!b.p || typeof b.p !== 'object') b.p = {};
+    if (!Array.isArray(b.sp)) b.sp = [];
+    if (!Array.isArray(b.fp)) b.fp = [];
+    return b;
+}
+
+function xfpdRecordThreadPostOutcome(explicitThreadKey, info) {
+    const tKey = explicitThreadKey || xfpdGetCurrentThreadKey();
+    if (!tKey || !info || !info.postId || info.status === 'cancelled') return;
+    const store = xfpdLoadLedgerStore();
+    const b = xfpdEnsureThreadLedgerBucket(store, tKey);
+    const codeMap = { done: 'd', dedup: 'u', partial: 'p', failed: 'f' };
+    const code = codeMap[info.status] || 'd';
+    b.p[String(info.postId)] = [
+        String(info.postNumber || ''),
+        code,
+        Number(info.succeeded || 0) || 0,
+        Number(info.total || 0) || 0,
+        Number(info.deduped || 0) || 0,
+    ];
+    b._t = Date.now();
+    xfpdSaveLedgerStore(store);
+}
+
+function xfpdRecordThreadPageOutcome(explicitThreadKey, pageNum, ok) {
+    const tKey = explicitThreadKey || xfpdGetCurrentThreadKey();
+    const pNum = parseInt(pageNum, 10) || 0;
+    if (!tKey || pNum <= 0) return;
+    const store = xfpdLoadLedgerStore();
+    const b = xfpdEnsureThreadLedgerBucket(store, tKey);
+    if (ok) {
+        if (!b.sp.includes(pNum)) {
+            b.sp.push(pNum);
+            b.sp.sort((a, c) => a - c);
+        }
+        b.fp = b.fp.filter(x => x !== pNum);
+    } else {
+        if (!b.fp.includes(pNum)) {
+            b.fp.push(pNum);
+            b.fp.sort((a, c) => a - c);
+        }
+    }
+    b._t = Date.now();
+    xfpdSaveLedgerStore(store);
+}
+
+function xfpdGetThreadPostRecord(postId, explicitThreadKey = null) {
+    const tKey = explicitThreadKey || xfpdGetCurrentThreadKey();
+    if (!tKey || !postId) return null;
+    const store = xfpdLoadLedgerStore();
+    const b = store.threads && store.threads[tKey];
+    const row = b && b.p && b.p[String(postId)];
+    if (!Array.isArray(row) || row.length < 5) return null;
+    const revMap = { d: 'done', u: 'dedup', p: 'partial', f: 'failed' };
+    return {
+        postNumber: row[0],
+        status: revMap[row[1]] || 'done',
+        succeeded: Number(row[2] || 0) || 0,
+        total: Number(row[3] || 0) || 0,
+        deduped: Number(row[4] || 0) || 0,
+    };
+}
+
+function xfpdGetThreadLedgerSummary(explicitThreadKey = null) {
+    const tKey = explicitThreadKey || xfpdGetCurrentThreadKey();
+    if (!tKey) return { postCount: 0, savedPosts: 0, scannedPages: [], failedPages: [] };
+    const store = xfpdLoadLedgerStore();
+    const b = store.threads && store.threads[tKey];
+    if (!b) return { postCount: 0, savedPosts: 0, scannedPages: [], failedPages: [] };
+    const entries = Object.values(b.p || {});
+    const savedPosts = entries.filter(r => Array.isArray(r) && (r[1] === 'd' || r[1] === 'u' || r[1] === 'p')).length;
+    return {
+        postCount: entries.length,
+        savedPosts,
+        scannedPages: Array.isArray(b.sp) ? b.sp.slice() : [],
+        failedPages: Array.isArray(b.fp) ? b.fp.slice() : [],
+    };
+}
+
+function xfpdClearThreadLedger(explicitThreadKey = null) {
+    const tKey = explicitThreadKey || xfpdGetCurrentThreadKey();
+    if (!tKey) return;
+    const store = xfpdLoadLedgerStore();
+    if (store.threads && store.threads[tKey]) {
+        delete store.threads[tKey];
+        xfpdSaveLedgerStore(store);
+    }
 }
 
 async function xfpdReadBlobArrayBuffer(blob) {
