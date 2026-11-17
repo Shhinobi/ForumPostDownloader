@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.41
+// @version 3.42
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -3462,6 +3462,166 @@ function xfpdFindCollapsedCommentLoaders(messageEl) {
     return loaders;
 }
 
+function xfpdDecodeB64UrlText(s) {
+    if (!s) return null;
+    let b = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
+    while (b.length % 4) b += '=';
+    try {
+        const bin = atob(b);
+        try {
+            const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+            return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch (e2) {
+            return bin;
+        }
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdDecodeForumRedirectUrl(href) {
+    if (!href) return null;
+    try {
+        const baseOrigin = typeof location !== 'undefined' && location.origin ? location.origin : 'https://simpcity.cr';
+        const u = new URL(String(href).replace(/&amp;/g, '&').trim(), baseOrigin);
+        const p = (u.pathname || '').toLowerCase();
+        const q = (u.search || '').toLowerCase();
+
+        const looksRedirect = p === '/redirect' || p === '/redirect/' || p.startsWith('/redirect/');
+        const looksLinkProxy = p.includes('link-proxy') || p === '/proxy.php';
+        const looksGoto =
+            p.includes('/goto/link-confirmation') ||
+            q.includes('goto/link-confirmation') ||
+            (p.startsWith('/goto/') && !p.startsWith('/goto/post') && !p.startsWith('/goto/quoted'));
+        if (!looksRedirect && !looksLinkProxy && !looksGoto) return null;
+
+        const to =
+            u.searchParams.get('to') ||
+            u.searchParams.get('url') ||
+            u.searchParams.get('link') ||
+            u.searchParams.get('u') ||
+            u.searchParams.get('target');
+        if (!to) return null;
+
+        const mode = (u.searchParams.get('m') || '').toLowerCase();
+        let decoded = null;
+
+        if (mode === 'b64' || mode === 'base64') {
+            decoded = xfpdDecodeB64UrlText(to);
+        }
+
+        if (!decoded) {
+            let rawTo = to;
+            try { rawTo = decodeURIComponent(rawTo); } catch (e) {}
+            const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(rawTo) && rawTo.length >= 16 && rawTo.length % 4 !== 1;
+            if (looksB64) decoded = xfpdDecodeB64UrlText(rawTo);
+        }
+
+        if (!decoded) {
+            try { decoded = decodeURIComponent(to); } catch (e) { decoded = to; }
+        }
+
+        decoded = String(decoded || '').trim();
+
+        if (decoded && !/^https?:\/\//i.test(decoded) && /%3a%2f%2f/i.test(decoded)) {
+            try {
+                const d2 = decodeURIComponent(decoded);
+                if (/^https?:\/\//i.test(d2)) decoded = d2;
+            } catch (e) {}
+        }
+
+        if (!/^https?:\/\//i.test(decoded)) return null;
+        return decoded;
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdUnwrapSingleAnchorRedirect(a) {
+    if (!a || !a.getAttribute) return null;
+    const candidates = [
+        a.getAttribute('href'),
+        a.getAttribute('data-href'),
+        a.getAttribute('data-url'),
+        a.getAttribute('data-proxy-href'),
+    ].filter(Boolean);
+
+    let direct = null;
+    for (const c of candidates) {
+        const dec = xfpdDecodeForumRedirectUrl(c);
+        if (dec) {
+            direct = dec;
+            break;
+        }
+    }
+
+    // Even if href is already direct, strip XenForo's proxy-link attribute so click doesn't route via /proxy.php!
+    if (!direct && a.hasAttribute('data-proxy-href')) {
+        const curHref = a.getAttribute('href') || '';
+        if (/^https?:\/\//i.test(curHref) && !xfpdDecodeForumRedirectUrl(curHref)) {
+            a.removeAttribute('data-proxy-href');
+            const xfInit = a.getAttribute('data-xf-init') || '';
+            if (xfInit.includes('proxy-link')) {
+                const cleanedInit = xfInit.replace(/\bproxy-link\b/g, '').trim();
+                if (cleanedInit) a.setAttribute('data-xf-init', cleanedInit);
+                else a.removeAttribute('data-xf-init');
+            }
+        }
+        return null;
+    }
+
+    if (!direct) return null;
+
+    a.setAttribute('href', direct);
+    a.setAttribute('data-url', direct);
+    a.setAttribute('data-xfpd-decoded', '1');
+    a.removeAttribute('data-proxy-href');
+    a.removeAttribute('data-href');
+
+    // Prevent SMG / XenForo link-confirmation modal overlay from intercepting clicks!
+    const xfClick = (a.getAttribute('data-xf-click') || '').toLowerCase();
+    if (xfClick === 'overlay' || xfClick.includes('proxy') || xfClick.includes('confirm')) {
+        a.removeAttribute('data-xf-click');
+    }
+    const xfInit = a.getAttribute('data-xf-init') || '';
+    if (xfInit.includes('proxy-link')) {
+        const cleanedInit = xfInit.replace(/\bproxy-link\b/g, '').trim();
+        if (cleanedInit) a.setAttribute('data-xf-init', cleanedInit);
+        else a.removeAttribute('data-xf-init');
+    }
+
+    if (!a.getAttribute('target')) {
+        a.setAttribute('target', '_blank');
+    }
+    a.setAttribute('rel', 'noopener noreferrer');
+    return direct;
+}
+
+function xfpdUnwrapLiveForumLinks(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    try {
+        const anchorSel = [
+            'a[href*="/redirect"]',
+            'a[href*="redirect?"]',
+            'a[href*="link-proxy"]',
+            'a[href*="/goto/"]',
+            'a[href*="goto/link-confirmation"]',
+            'a[data-href*="/goto/"]',
+            'a[data-proxy-href]',
+        ].join(', ');
+        root.querySelectorAll(anchorSel).forEach(a => {
+            xfpdUnwrapSingleAnchorRedirect(a);
+        });
+
+        root.querySelectorAll('.js-unfurl[data-url], .bbCodeBlock--unfurl[data-url]').forEach(card => {
+            const dec = xfpdDecodeForumRedirectUrl(card.getAttribute('data-url'));
+            if (dec) {
+                card.setAttribute('data-url', dec);
+            }
+        });
+    } catch (e) {}
+}
+
 function xfpdCleanContentFragmentClone(fragmentClone) {
     if (!fragmentClone || !fragmentClone.querySelectorAll) return fragmentClone;
 
@@ -3493,80 +3653,6 @@ function xfpdCleanContentFragmentClone(fragmentClone) {
 
     // Decode forum outbound link protection (/redirect/?to=...&m=b64 and SMG /goto/link-confirmation?url=...)
     try {
-        const __decodeB64Url = s => {
-            if (!s) return null;
-            let b = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
-            while (b.length % 4) b += '=';
-            try {
-                const bin = atob(b);
-                try {
-                    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
-                    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-                } catch (e2) {
-                    return bin;
-                }
-            } catch (e) {
-                return null;
-            }
-        };
-
-        const __decodeForumRedirect = href => {
-            if (!href) return null;
-            try {
-                const u = new URL(href, location.origin);
-                const p = (u.pathname || '').toLowerCase();
-                const q = (u.search || '').toLowerCase();
-
-                const looksRedirect = p === '/redirect' || p === '/redirect/' || p.startsWith('/redirect/');
-                const looksLinkProxy = p.includes('link-proxy');
-                const looksGoto =
-                    p.includes('/goto/link-confirmation') ||
-                    q.includes('goto/link-confirmation') ||
-                    (p.startsWith('/goto/') && !p.startsWith('/goto/post') && !p.startsWith('/goto/quoted'));
-                if (!looksRedirect && !looksLinkProxy && !looksGoto) return null;
-
-                const to =
-                    u.searchParams.get('to') ||
-                    u.searchParams.get('url') ||
-                    u.searchParams.get('u') ||
-                    u.searchParams.get('link') ||
-                    u.searchParams.get('target');
-                if (!to) return null;
-
-                const mode = (u.searchParams.get('m') || '').toLowerCase();
-                let decoded = null;
-
-                if (mode === 'b64' || mode === 'base64') {
-                    decoded = __decodeB64Url(to);
-                }
-
-                if (!decoded) {
-                    let rawTo = to;
-                    try { rawTo = decodeURIComponent(rawTo); } catch (e) {}
-                    const looksB64 = /^[A-Za-z0-9+/_-]+={0,2}$/.test(rawTo) && rawTo.length >= 16 && rawTo.length % 4 !== 1;
-                    if (looksB64) decoded = __decodeB64Url(rawTo);
-                }
-
-                if (!decoded) {
-                    try { decoded = decodeURIComponent(to); } catch (e) { decoded = to; }
-                }
-
-                decoded = String(decoded || '').trim();
-
-                if (decoded && !/^https?:\/\//i.test(decoded) && /%3a%2f%2f/i.test(decoded)) {
-                    try {
-                        const d2 = decodeURIComponent(decoded);
-                        if (/^https?:\/\//i.test(d2)) decoded = d2;
-                    } catch (e) {}
-                }
-
-                if (!/^https?:\/\//i.test(decoded)) return null;
-                return decoded;
-            } catch (e) {
-                return null;
-            }
-        };
-
         const sel = [
             'a[href*="/redirect/"]',
             'a[href^="/redirect"]',
@@ -3575,12 +3661,18 @@ function xfpdCleanContentFragmentClone(fragmentClone) {
             'a[href*="/goto/"]',
             'a[href*="goto/link-confirmation"]',
             'a[data-href*="/goto/"]',
+            'a[data-proxy-href]',
         ].join(', ');
 
         fragmentClone.querySelectorAll(sel).forEach(a => {
-            const candidates = [a.getAttribute('href'), a.getAttribute('data-href'), a.getAttribute('data-url')].filter(Boolean);
+            const candidates = [
+                a.getAttribute('href'),
+                a.getAttribute('data-href'),
+                a.getAttribute('data-url'),
+                a.getAttribute('data-proxy-href'),
+            ].filter(Boolean);
             for (const c of candidates) {
-                const decoded = __decodeForumRedirect(c);
+                const decoded = xfpdDecodeForumRedirectUrl(c);
                 if (decoded) {
                     a.setAttribute('data-url', decoded);
                     a.setAttribute('href', decoded);
@@ -15074,6 +15166,39 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
     } catch (e) {}
 
+    // Instant bypass if user ever lands directly on SimpCity /redirect/?to=... or SMG /goto/link-confirmation?url=...
+    try {
+        if (/^\/(?:redirect\b|goto\/link-confirmation\b)/i.test(location.pathname || '')) {
+            const directTarget = typeof xfpdDecodeForumRedirectUrl === 'function' ? xfpdDecodeForumRedirectUrl(location.href) : null;
+            if (directTarget) {
+                location.replace(directTarget);
+                return;
+            }
+        }
+    } catch (e) {}
+
+    // Synchronous capture-phase unwrap so left-click, middle-click, Ctrl+click, and right-click "Copy link"
+    // ALWAYS open/copy the clean external URL directly without hitting /redirect/ or confirmation overlays!
+    const unwrapEventAnchor = ev => {
+        try {
+            const t = ev && ev.target;
+            if (!t || !t.closest) return;
+            const a = t.closest('a');
+            if (a && typeof xfpdUnwrapSingleAnchorRedirect === 'function') {
+                xfpdUnwrapSingleAnchorRedirect(a);
+            }
+            const card = t.closest('.js-unfurl[data-url], .bbCodeBlock--unfurl[data-url]');
+            if (card && typeof xfpdDecodeForumRedirectUrl === 'function') {
+                const dec = xfpdDecodeForumRedirectUrl(card.getAttribute('data-url'));
+                if (dec) card.setAttribute('data-url', dec);
+            }
+        } catch (e) {}
+    };
+    document.addEventListener('mousedown', unwrapEventAnchor, true);
+    document.addEventListener('click', unwrapEventAnchor, true);
+    document.addEventListener('auxclick', unwrapEventAnchor, true);
+    document.addEventListener('contextmenu', unwrapEventAnchor, true);
+
     window.addEventListener('beforeunload', e => {
         if (processing.find(p => p.processing)) {
             const message = 'Downloads are in progress. Sure you wanna exit this page?';
@@ -16709,6 +16834,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         };
 
         const scanPosts = () => {
+            if (typeof xfpdUnwrapLiveForumLinks === 'function') {
+                xfpdUnwrapLiveForumLinks(document);
+            }
             let changed = false;
             // Also refresh any already-initialized locked posts whose DOM was unlocked manually on the page.
             parsedPosts.forEach(entry => {

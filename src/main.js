@@ -9959,6 +9959,39 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
     } catch (e) {}
 
+    // Instant bypass if user ever lands directly on SimpCity /redirect/?to=... or SMG /goto/link-confirmation?url=...
+    try {
+        if (/^\/(?:redirect\b|goto\/link-confirmation\b)/i.test(location.pathname || '')) {
+            const directTarget = typeof xfpdDecodeForumRedirectUrl === 'function' ? xfpdDecodeForumRedirectUrl(location.href) : null;
+            if (directTarget) {
+                location.replace(directTarget);
+                return;
+            }
+        }
+    } catch (e) {}
+
+    // Synchronous capture-phase unwrap so left-click, middle-click, Ctrl+click, and right-click "Copy link"
+    // ALWAYS open/copy the clean external URL directly without hitting /redirect/ or confirmation overlays!
+    const unwrapEventAnchor = ev => {
+        try {
+            const t = ev && ev.target;
+            if (!t || !t.closest) return;
+            const a = t.closest('a');
+            if (a && typeof xfpdUnwrapSingleAnchorRedirect === 'function') {
+                xfpdUnwrapSingleAnchorRedirect(a);
+            }
+            const card = t.closest('.js-unfurl[data-url], .bbCodeBlock--unfurl[data-url]');
+            if (card && typeof xfpdDecodeForumRedirectUrl === 'function') {
+                const dec = xfpdDecodeForumRedirectUrl(card.getAttribute('data-url'));
+                if (dec) card.setAttribute('data-url', dec);
+            }
+        } catch (e) {}
+    };
+    document.addEventListener('mousedown', unwrapEventAnchor, true);
+    document.addEventListener('click', unwrapEventAnchor, true);
+    document.addEventListener('auxclick', unwrapEventAnchor, true);
+    document.addEventListener('contextmenu', unwrapEventAnchor, true);
+
     window.addEventListener('beforeunload', e => {
         if (processing.find(p => p.processing)) {
             const message = 'Downloads are in progress. Sure you wanna exit this page?';
@@ -11594,6 +11627,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         };
 
         const scanPosts = () => {
+            if (typeof xfpdUnwrapLiveForumLinks === 'function') {
+                xfpdUnwrapLiveForumLinks(document);
+            }
             let changed = false;
             // Also refresh any already-initialized locked posts whose DOM was unlocked manually on the page.
             parsedPosts.forEach(entry => {
