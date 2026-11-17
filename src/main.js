@@ -7955,33 +7955,60 @@ const addDownloadPageButton = () => {
     downloadAllButton.setAttribute('id', 'download-page');
     downloadAllButton.setAttribute('href', '#');
     downloadAllButton.setAttribute('class', 'button--link button rippleButton');
+    downloadAllButton.style.borderColor = 'rgba(61, 183, 199, 0.55)';
 
     const buttonTextSpan = document.createElement('span');
     buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
-    buttonTextSpan.innerText = `🡳 Download Page`;
+    buttonTextSpan.innerText = `🡳 Download All Page`;
 
     downloadAllButton.appendChild(buttonTextSpan);
 
-    let buttonGroup =
-        h.element('.block--messages .block-outer .buttonGroup') ||
-        h.element('.buttonGroup');
+    // Strictly target the TOP .block-outer of .block--messages (never fall back to a hidden navbar menu
+    // or bottom .block-outer--after!). On 1-page threads where XenForo/SMG omits the top .block-outer,
+    // create a clean top .block-outer bar right above .block-container so the button is ALWAYS visible!
+    const messagesBlock =
+        h.element('.block.block--messages') ||
+        h.element('.block--messages') ||
+        (h.element('.js-post, article.message') && h.element('.js-post, article.message').closest('.block'));
 
-    // SocialMediaGirls omits .buttonGroup on guest/locked views or when only sort tabs are rendered.
-    if (!buttonGroup) {
-        const outerOpposite =
-            h.element('.block--messages .block-outer .block-outer-opposite') ||
-            h.element('.block--messages .block-outer');
-        if (outerOpposite) {
-            buttonGroup = document.createElement('div');
-            buttonGroup.setAttribute('class', 'buttonGroup');
-            buttonGroup.style.display = 'inline-block';
-            buttonGroup.style.marginRight = '6px';
-            outerOpposite.prepend(buttonGroup);
+    let topOuter =
+        (messagesBlock &&
+            (messagesBlock.querySelector(':scope > .block-outer:not(.block-outer--after)') ||
+                messagesBlock.querySelector('.block-outer:not(.block-outer--after)'))) ||
+        h.element('.block--messages .block-outer:not(.block-outer--after)');
+
+    if (!topOuter && messagesBlock) {
+        topOuter = document.createElement('div');
+        topOuter.className = 'block-outer';
+        topOuter.style.paddingBottom = '8px';
+        const opposite = document.createElement('div');
+        opposite.className = 'block-outer-opposite';
+        topOuter.appendChild(opposite);
+        messagesBlock.prepend(topOuter);
+    }
+
+    let buttonGroup = topOuter ? topOuter.querySelector('.buttonGroup') : null;
+    if (!buttonGroup && topOuter) {
+        let outerOpposite = topOuter.querySelector('.block-outer-opposite');
+        if (!outerOpposite) {
+            outerOpposite = document.createElement('div');
+            outerOpposite.className = 'block-outer-opposite';
+            topOuter.appendChild(outerOpposite);
         }
+        buttonGroup = document.createElement('div');
+        buttonGroup.setAttribute('class', 'buttonGroup');
+        buttonGroup.style.display = 'inline-block';
+        buttonGroup.style.marginRight = '6px';
+        outerOpposite.prepend(buttonGroup);
     }
 
     if (buttonGroup) {
         buttonGroup.prepend(downloadAllButton);
+    } else {
+        const pageAction = h.element('.p-title-pageAction') || h.element('.p-body-header');
+        if (pageAction) {
+            pageAction.prepend(downloadAllButton);
+        }
     }
 
     return downloadAllButton;
@@ -8920,21 +8947,30 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
         const getPageSelectionStats = () => {
             const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
+            let totalResourcesCount = 0;
+            let totalLockedPosts = 0;
             let enabledPostsCount = 0;
             let selectedResourcesCount = 0;
             let selectedLockedPosts = 0;
             downloadablePosts.forEach(p => {
+                const resCnt = getPostEnabledResourceCount(p);
+                const isLck = !!(p.parsedPost && p.parsedPost.hasLockedContent);
+                totalResourcesCount += resCnt;
+                if (isLck) totalLockedPosts++;
+
                 const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
                 if (sp && sp.enabled) {
                     enabledPostsCount++;
-                    selectedResourcesCount += getPostEnabledResourceCount(p);
-                    if (p.parsedPost && p.parsedPost.hasLockedContent) {
+                    selectedResourcesCount += resCnt;
+                    if (isLck) {
                         selectedLockedPosts++;
                     }
                 }
             });
             return {
                 totalPosts: downloadablePosts.length,
+                totalResources: totalResourcesCount,
+                totalLockedPosts,
                 enabledPosts: enabledPostsCount,
                 selectedResources: selectedResourcesCount,
                 selectedLockedPosts,
@@ -8952,18 +8988,26 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             }
             if (customState === 'completed') {
                 btn.style.color = '#47ba24';
-                span.textContent = `✓ Page Downloaded (${pageBatchState.finished}/${pageBatchState.total})`;
+                span.textContent = `✓ Page Queued`;
                 return;
             }
             btn.style.color = '';
-            const { totalPosts, enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
-            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+            const {
+                totalPosts,
+                totalResources,
+                totalLockedPosts,
+                enabledPosts,
+                selectedResources,
+                selectedLockedPosts,
+            } = getPageSelectionStats();
             if (!totalPosts) {
-                span.textContent = '🡳 Download Page';
+                span.textContent = '🡳 Download All Page';
             } else if (enabledPosts > 0) {
-                span.textContent = `🡳 Download Page (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
+                const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+                span.textContent = `🡳 Download Selected (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
             } else {
-                span.textContent = `🡳 Download Page (0/${totalPosts})`;
+                const allLockBadge = totalLockedPosts > 0 ? ' + 🔒' : '';
+                span.textContent = `🡳 Download All Page (${totalPosts} ${totalPosts === 1 ? 'post' : 'posts'} · ${totalResources}${allLockBadge})`;
             }
         };
 
@@ -8976,14 +9020,25 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 actionBtn.textContent = `✕ Cancel Page (${pageBatchState.finished}/${pageBatchState.total})`;
                 return;
             }
-            const { enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
-            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
-            if (enabledPosts === 0) {
+            const {
+                totalPosts,
+                totalResources,
+                totalLockedPosts,
+                enabledPosts,
+                selectedResources,
+                selectedLockedPosts,
+            } = getPageSelectionStats();
+            if (!totalPosts) {
                 actionBtn.disabled = true;
-                actionBtn.textContent = 'Select posts above (0 selected)';
-            } else {
+                actionBtn.textContent = 'No downloadable posts on page';
+            } else if (enabledPosts === 0) {
+                const allLockBadge = totalLockedPosts > 0 ? ' + 🔒' : '';
                 actionBtn.disabled = false;
-                actionBtn.textContent = `🡳 Download Selected (${enabledPosts} ${enabledPosts === 1 ? 'post' : 'posts'} · ${selectedResources}${lockBadge})`;
+                actionBtn.textContent = `🡳 Download All Page (${totalPosts} ${totalPosts === 1 ? 'post' : 'posts'} · ${totalResources}${allLockBadge})`;
+            } else {
+                const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+                actionBtn.disabled = false;
+                actionBtn.textContent = `🡳 Download Selected (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
             }
         };
 
@@ -9298,6 +9353,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-head" id="xfpd-q-head-bar">
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-page-btn" title="Enqueue all posts on this page">⬇ Page</button>
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Hide">✕</button>
                     </span>
@@ -9335,6 +9391,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 hudEl.querySelector('#xfpd-q-head-bar').addEventListener('click', e => {
                     if (e.target.closest('button')) return;
                     toggleExpand();
+                });
+                hudEl.querySelector('#xfpd-q-dl-page-btn').addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    enqueueAllPagePosts();
                 });
                 hudEl.querySelector('#xfpd-q-toggle-btn').addEventListener('click', e => {
                     e.preventDefault();
@@ -9399,9 +9460,20 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             hudEl.style.display = 'block';
             const titleEl = hudEl.querySelector('#xfpd-q-title-txt');
+            const dlPageHudBtn = hudEl.querySelector('#xfpd-q-dl-page-btn');
             const toggleBtn = hudEl.querySelector('#xfpd-q-toggle-btn');
             const topFill = hudEl.querySelector('#xfpd-q-top-fill');
             const bodyEl = hudEl.querySelector('#xfpd-q-body');
+
+            if (dlPageHudBtn) {
+                const pageDlPosts = parsedPosts.filter(isPostDownloadableOrLocked);
+                if (pageDlPosts.length > 0) {
+                    dlPageHudBtn.style.display = '';
+                    dlPageHudBtn.textContent = `⬇ Page (${pageDlPosts.length})`;
+                } else {
+                    dlPageHudBtn.style.display = 'none';
+                }
+            }
 
             const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
             hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
@@ -9504,25 +9576,32 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             syncVisiblePostsAndHud(xfpdReadQueueState());
         }, 700);
 
-        const runDownloadPageQueue = async () => {
-            const queue = selectedPosts.filter(s => s.enabled && s.post).map(s => s.post);
-            if (!queue.length) {
-                if (downloadPageTippy && typeof downloadPageTippy.show === 'function') {
-                    downloadPageTippy.show();
-                    pulsePostSelectionHeading();
-                }
-                return;
-            }
+        const enqueueAllPagePosts = () => {
+            const allOnPage = parsedPosts.filter(isPostDownloadableOrLocked);
+            if (!allOnPage.length) return;
+            const notYetDone = allOnPage.filter(
+                entry => !entry.btnDownloadPost || entry.btnDownloadPost.dataset.xfpdState !== 'done',
+            );
+            const targetList = notYetDone.length > 0 ? notYetDone : allOnPage;
+            enqueuePostsToBackgroundWorker(targetList);
+            updateDownloadPageButtonLabel();
+        };
 
+        const runDownloadPageQueue = async () => {
+            const checkedQueue = selectedPosts.filter(s => s.enabled && s.post).map(s => s.post);
             if (downloadPageTippy && typeof downloadPageTippy.hide === 'function') {
                 downloadPageTippy.hide();
             }
 
-            enqueuePostsToBackgroundWorker(queue);
-            // Reset page selection checkboxes cleanly so user sees they've been dispatched to the queue
-            selectedPosts.forEach(s => {
-                s.enabled = false;
-            });
+            if (checkedQueue.length > 0) {
+                enqueuePostsToBackgroundWorker(checkedQueue);
+                selectedPosts.forEach(s => {
+                    s.enabled = false;
+                });
+            } else {
+                enqueueAllPagePosts();
+            }
+
             updateDownloadPageButtonLabel();
             if (downloadPageTippy && downloadPageTippy.popper) {
                 setupDownloadPageForm(downloadPageTippy);

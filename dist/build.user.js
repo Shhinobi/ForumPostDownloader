@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.35
+// @version 3.36
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -3794,7 +3794,7 @@ const parsers = {
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}#xfpd-queue-hud{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 24px);background:rgba(28,28,32,.96);color:#eaeaea;border:1px solid rgba(61,183,199,.38);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px;z-index:2147483000;overflow:hidden;user-select:none;backdrop-filter:blur(6px);transition:opacity .15s ease,border-color .15s ease}#xfpd-queue-hud.xfpd-q-pill{width:auto;min-width:178px;max-width:265px;border-radius:999px;opacity:.86;box-shadow:0 4px 16px rgba(0,0,0,.45)}#xfpd-queue-hud.xfpd-q-pill:hover{opacity:1;border-color:#3DB7C7}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-head{padding:5px 11px}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-top-bar{display:none}#xfpd-queue-hud *{box-sizing:border-box}.xfpd-q-empty{font-size:11.5px;color:#9aa4af;line-height:1.4;padding:2px 0}.xfpd-q-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,.04);cursor:pointer}.xfpd-q-title{font-weight:700;font-size:12.5px;color:#3DB7C7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-ctrls{display:inline-flex;align-items:center;gap:4px}.xfpd-q-btn{padding:2px 6px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:rgba(255,255,255,.06);color:#ddd;font-size:11px;font-weight:600;cursor:pointer;line-height:1.2}.xfpd-q-btn:hover{background:rgba(61,183,199,.22);border-color:#3DB7C7;color:#fff}.xfpd-q-btn-danger:hover{background:rgba(217,83,79,.28);border-color:#d9534f;color:#ffb3b0}.xfpd-q-top-bar{height:3px;width:100%;background:rgba(255,255,255,.08)}.xfpd-q-top-fill{height:100%;width:0%;background:#3DB7C7;transition:width .18s ease}.xfpd-q-body{padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);max-height:320px;overflow-y:auto}.xfpd-q-active{padding:7px 8px;border-radius:6px;background:rgba(61,183,199,.09);border:1px solid rgba(61,183,199,.25);margin-bottom:8px}.xfpd-q-active-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-weight:700;font-size:12px;margin-bottom:3px}.xfpd-q-sub{font-size:11px;color:#b8c0c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px}.xfpd-q-pbar{height:4px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:3px}.xfpd-q-pbar>div{height:100%;transition:width .15s ease}.xfpd-q-sec-lbl{font-size:11px;font-weight:700;color:#9aa4af;margin:6px 0 4px;display:flex;justify-content:space-between;align-items:center}.xfpd-q-list{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}.xfpd-q-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.04);font-size:11.5px}.xfpd-q-item-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-foot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#a5b1bd;display:flex;align-items:center;justify-content:space-between;gap:6px}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}#xfpd-queue-hud{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 24px);background:rgba(28,28,32,.96);color:#eaeaea;border:1px solid rgba(61,183,199,.38);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px;z-index:2147483000;overflow:hidden;user-select:none;backdrop-filter:blur(6px);transition:opacity .15s ease,border-color .15s ease}#xfpd-queue-hud.xfpd-q-pill{width:auto;min-width:178px;max-width:340px;border-radius:999px;opacity:.9;box-shadow:0 4px 16px rgba(0,0,0,.45)}#xfpd-queue-hud.xfpd-q-pill:hover{opacity:1;border-color:#3DB7C7}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-head{padding:5px 11px}#xfpd-queue-hud.xfpd-q-pill .xfpd-q-top-bar{display:none}#xfpd-queue-hud *{box-sizing:border-box}.xfpd-q-empty{font-size:11.5px;color:#9aa4af;line-height:1.4;padding:2px 0}.xfpd-q-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,.04);cursor:pointer}.xfpd-q-title{font-weight:700;font-size:12.5px;color:#3DB7C7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-ctrls{display:inline-flex;align-items:center;gap:4px}.xfpd-q-btn{padding:2px 6px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:rgba(255,255,255,.06);color:#ddd;font-size:11px;font-weight:600;cursor:pointer;line-height:1.2}.xfpd-q-btn:hover{background:rgba(61,183,199,.22);border-color:#3DB7C7;color:#fff}.xfpd-q-btn-accent{border-color:rgba(61,183,199,.58);background:rgba(61,183,199,.16);color:#65d9e8}.xfpd-q-btn-accent:hover{background:#3DB7C7;border-color:#3DB7C7;color:#111}.xfpd-q-btn-danger:hover{background:rgba(217,83,79,.28);border-color:#d9534f;color:#ffb3b0}.xfpd-q-top-bar{height:3px;width:100%;background:rgba(255,255,255,.08)}.xfpd-q-top-fill{height:100%;width:0%;background:#3DB7C7;transition:width .18s ease}.xfpd-q-body{padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);max-height:320px;overflow-y:auto}.xfpd-q-active{padding:7px 8px;border-radius:6px;background:rgba(61,183,199,.09);border:1px solid rgba(61,183,199,.25);margin-bottom:8px}.xfpd-q-active-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-weight:700;font-size:12px;margin-bottom:3px}.xfpd-q-sub{font-size:11px;color:#b8c0c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px}.xfpd-q-pbar{height:4px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:3px}.xfpd-q-pbar>div{height:100%;transition:width .15s ease}.xfpd-q-sec-lbl{font-size:11px;font-weight:700;color:#9aa4af;margin:6px 0 4px;display:flex;justify-content:space-between;align-items:center}.xfpd-q-list{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}.xfpd-q-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.04);font-size:11.5px}.xfpd-q-item-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-foot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#a5b1bd;display:flex;align-items:center;justify-content:space-between;gap:6px}`,
     },
 };
 
@@ -12814,33 +12814,60 @@ const addDownloadPageButton = () => {
     downloadAllButton.setAttribute('id', 'download-page');
     downloadAllButton.setAttribute('href', '#');
     downloadAllButton.setAttribute('class', 'button--link button rippleButton');
+    downloadAllButton.style.borderColor = 'rgba(61, 183, 199, 0.55)';
 
     const buttonTextSpan = document.createElement('span');
     buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
-    buttonTextSpan.innerText = `🡳 Download Page`;
+    buttonTextSpan.innerText = `🡳 Download All Page`;
 
     downloadAllButton.appendChild(buttonTextSpan);
 
-    let buttonGroup =
-        h.element('.block--messages .block-outer .buttonGroup') ||
-        h.element('.buttonGroup');
+    // Strictly target the TOP .block-outer of .block--messages (never fall back to a hidden navbar menu
+    // or bottom .block-outer--after!). On 1-page threads where XenForo/SMG omits the top .block-outer,
+    // create a clean top .block-outer bar right above .block-container so the button is ALWAYS visible!
+    const messagesBlock =
+        h.element('.block.block--messages') ||
+        h.element('.block--messages') ||
+        (h.element('.js-post, article.message') && h.element('.js-post, article.message').closest('.block'));
 
-    // SocialMediaGirls omits .buttonGroup on guest/locked views or when only sort tabs are rendered.
-    if (!buttonGroup) {
-        const outerOpposite =
-            h.element('.block--messages .block-outer .block-outer-opposite') ||
-            h.element('.block--messages .block-outer');
-        if (outerOpposite) {
-            buttonGroup = document.createElement('div');
-            buttonGroup.setAttribute('class', 'buttonGroup');
-            buttonGroup.style.display = 'inline-block';
-            buttonGroup.style.marginRight = '6px';
-            outerOpposite.prepend(buttonGroup);
+    let topOuter =
+        (messagesBlock &&
+            (messagesBlock.querySelector(':scope > .block-outer:not(.block-outer--after)') ||
+                messagesBlock.querySelector('.block-outer:not(.block-outer--after)'))) ||
+        h.element('.block--messages .block-outer:not(.block-outer--after)');
+
+    if (!topOuter && messagesBlock) {
+        topOuter = document.createElement('div');
+        topOuter.className = 'block-outer';
+        topOuter.style.paddingBottom = '8px';
+        const opposite = document.createElement('div');
+        opposite.className = 'block-outer-opposite';
+        topOuter.appendChild(opposite);
+        messagesBlock.prepend(topOuter);
+    }
+
+    let buttonGroup = topOuter ? topOuter.querySelector('.buttonGroup') : null;
+    if (!buttonGroup && topOuter) {
+        let outerOpposite = topOuter.querySelector('.block-outer-opposite');
+        if (!outerOpposite) {
+            outerOpposite = document.createElement('div');
+            outerOpposite.className = 'block-outer-opposite';
+            topOuter.appendChild(outerOpposite);
         }
+        buttonGroup = document.createElement('div');
+        buttonGroup.setAttribute('class', 'buttonGroup');
+        buttonGroup.style.display = 'inline-block';
+        buttonGroup.style.marginRight = '6px';
+        outerOpposite.prepend(buttonGroup);
     }
 
     if (buttonGroup) {
         buttonGroup.prepend(downloadAllButton);
+    } else {
+        const pageAction = h.element('.p-title-pageAction') || h.element('.p-body-header');
+        if (pageAction) {
+            pageAction.prepend(downloadAllButton);
+        }
     }
 
     return downloadAllButton;
@@ -13779,21 +13806,30 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
         const getPageSelectionStats = () => {
             const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
+            let totalResourcesCount = 0;
+            let totalLockedPosts = 0;
             let enabledPostsCount = 0;
             let selectedResourcesCount = 0;
             let selectedLockedPosts = 0;
             downloadablePosts.forEach(p => {
+                const resCnt = getPostEnabledResourceCount(p);
+                const isLck = !!(p.parsedPost && p.parsedPost.hasLockedContent);
+                totalResourcesCount += resCnt;
+                if (isLck) totalLockedPosts++;
+
                 const sp = selectedPosts.find(s => s.post.parsedPost.postId === p.parsedPost.postId);
                 if (sp && sp.enabled) {
                     enabledPostsCount++;
-                    selectedResourcesCount += getPostEnabledResourceCount(p);
-                    if (p.parsedPost && p.parsedPost.hasLockedContent) {
+                    selectedResourcesCount += resCnt;
+                    if (isLck) {
                         selectedLockedPosts++;
                     }
                 }
             });
             return {
                 totalPosts: downloadablePosts.length,
+                totalResources: totalResourcesCount,
+                totalLockedPosts,
                 enabledPosts: enabledPostsCount,
                 selectedResources: selectedResourcesCount,
                 selectedLockedPosts,
@@ -13811,18 +13847,26 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             }
             if (customState === 'completed') {
                 btn.style.color = '#47ba24';
-                span.textContent = `✓ Page Downloaded (${pageBatchState.finished}/${pageBatchState.total})`;
+                span.textContent = `✓ Page Queued`;
                 return;
             }
             btn.style.color = '';
-            const { totalPosts, enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
-            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+            const {
+                totalPosts,
+                totalResources,
+                totalLockedPosts,
+                enabledPosts,
+                selectedResources,
+                selectedLockedPosts,
+            } = getPageSelectionStats();
             if (!totalPosts) {
-                span.textContent = '🡳 Download Page';
+                span.textContent = '🡳 Download All Page';
             } else if (enabledPosts > 0) {
-                span.textContent = `🡳 Download Page (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
+                const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+                span.textContent = `🡳 Download Selected (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
             } else {
-                span.textContent = `🡳 Download Page (0/${totalPosts})`;
+                const allLockBadge = totalLockedPosts > 0 ? ' + 🔒' : '';
+                span.textContent = `🡳 Download All Page (${totalPosts} ${totalPosts === 1 ? 'post' : 'posts'} · ${totalResources}${allLockBadge})`;
             }
         };
 
@@ -13835,14 +13879,25 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 actionBtn.textContent = `✕ Cancel Page (${pageBatchState.finished}/${pageBatchState.total})`;
                 return;
             }
-            const { enabledPosts, selectedResources, selectedLockedPosts } = getPageSelectionStats();
-            const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
-            if (enabledPosts === 0) {
+            const {
+                totalPosts,
+                totalResources,
+                totalLockedPosts,
+                enabledPosts,
+                selectedResources,
+                selectedLockedPosts,
+            } = getPageSelectionStats();
+            if (!totalPosts) {
                 actionBtn.disabled = true;
-                actionBtn.textContent = 'Select posts above (0 selected)';
-            } else {
+                actionBtn.textContent = 'No downloadable posts on page';
+            } else if (enabledPosts === 0) {
+                const allLockBadge = totalLockedPosts > 0 ? ' + 🔒' : '';
                 actionBtn.disabled = false;
-                actionBtn.textContent = `🡳 Download Selected (${enabledPosts} ${enabledPosts === 1 ? 'post' : 'posts'} · ${selectedResources}${lockBadge})`;
+                actionBtn.textContent = `🡳 Download All Page (${totalPosts} ${totalPosts === 1 ? 'post' : 'posts'} · ${totalResources}${allLockBadge})`;
+            } else {
+                const lockBadge = selectedLockedPosts > 0 ? ' + 🔒' : '';
+                actionBtn.disabled = false;
+                actionBtn.textContent = `🡳 Download Selected (${enabledPosts}/${totalPosts} · ${selectedResources}${lockBadge})`;
             }
         };
 
@@ -14157,6 +14212,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-head" id="xfpd-q-head-bar">
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-page-btn" title="Enqueue all posts on this page">⬇ Page</button>
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Hide">✕</button>
                     </span>
@@ -14194,6 +14250,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 hudEl.querySelector('#xfpd-q-head-bar').addEventListener('click', e => {
                     if (e.target.closest('button')) return;
                     toggleExpand();
+                });
+                hudEl.querySelector('#xfpd-q-dl-page-btn').addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    enqueueAllPagePosts();
                 });
                 hudEl.querySelector('#xfpd-q-toggle-btn').addEventListener('click', e => {
                     e.preventDefault();
@@ -14258,9 +14319,20 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             hudEl.style.display = 'block';
             const titleEl = hudEl.querySelector('#xfpd-q-title-txt');
+            const dlPageHudBtn = hudEl.querySelector('#xfpd-q-dl-page-btn');
             const toggleBtn = hudEl.querySelector('#xfpd-q-toggle-btn');
             const topFill = hudEl.querySelector('#xfpd-q-top-fill');
             const bodyEl = hudEl.querySelector('#xfpd-q-body');
+
+            if (dlPageHudBtn) {
+                const pageDlPosts = parsedPosts.filter(isPostDownloadableOrLocked);
+                if (pageDlPosts.length > 0) {
+                    dlPageHudBtn.style.display = '';
+                    dlPageHudBtn.textContent = `⬇ Page (${pageDlPosts.length})`;
+                } else {
+                    dlPageHudBtn.style.display = 'none';
+                }
+            }
 
             const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
             hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
@@ -14363,25 +14435,32 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             syncVisiblePostsAndHud(xfpdReadQueueState());
         }, 700);
 
-        const runDownloadPageQueue = async () => {
-            const queue = selectedPosts.filter(s => s.enabled && s.post).map(s => s.post);
-            if (!queue.length) {
-                if (downloadPageTippy && typeof downloadPageTippy.show === 'function') {
-                    downloadPageTippy.show();
-                    pulsePostSelectionHeading();
-                }
-                return;
-            }
+        const enqueueAllPagePosts = () => {
+            const allOnPage = parsedPosts.filter(isPostDownloadableOrLocked);
+            if (!allOnPage.length) return;
+            const notYetDone = allOnPage.filter(
+                entry => !entry.btnDownloadPost || entry.btnDownloadPost.dataset.xfpdState !== 'done',
+            );
+            const targetList = notYetDone.length > 0 ? notYetDone : allOnPage;
+            enqueuePostsToBackgroundWorker(targetList);
+            updateDownloadPageButtonLabel();
+        };
 
+        const runDownloadPageQueue = async () => {
+            const checkedQueue = selectedPosts.filter(s => s.enabled && s.post).map(s => s.post);
             if (downloadPageTippy && typeof downloadPageTippy.hide === 'function') {
                 downloadPageTippy.hide();
             }
 
-            enqueuePostsToBackgroundWorker(queue);
-            // Reset page selection checkboxes cleanly so user sees they've been dispatched to the queue
-            selectedPosts.forEach(s => {
-                s.enabled = false;
-            });
+            if (checkedQueue.length > 0) {
+                enqueuePostsToBackgroundWorker(checkedQueue);
+                selectedPosts.forEach(s => {
+                    s.enabled = false;
+                });
+            } else {
+                enqueueAllPagePosts();
+            }
+
             updateDownloadPageButtonLabel();
             if (downloadPageTippy && downloadPageTippy.popper) {
                 setupDownloadPageForm(downloadPageTippy);

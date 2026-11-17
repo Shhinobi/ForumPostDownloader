@@ -1,6 +1,6 @@
 {
   "name": "forum-post-downloader",
-  "version": "3.35.0",
+  "version": "3.36.0",
   "description": "Downloads images and videos from SimpCity and SocialMediaGirls XenForo forums across all popular hosts.",
   "scripts": {
     "build": "node build.js",
