@@ -21,6 +21,11 @@ function xfpdCloseTabHandle(tabOrPromise) {
 const JSZip =
     (typeof window !== 'undefined' && window.JSZip) ||
     (typeof globalThis !== 'undefined' && globalThis.JSZip);
+const xfpdSevenZipFactory =
+    (typeof SevenZip === 'function' && SevenZip) ||
+    (typeof window !== 'undefined' && typeof window.SevenZip === 'function' && window.SevenZip) ||
+    (typeof globalThis !== 'undefined' && typeof globalThis.SevenZip === 'function' && globalThis.SevenZip) ||
+    null;
 const tippy =
     (typeof window !== 'undefined' && window.tippy) ||
     (typeof globalThis !== 'undefined' && globalThis.tippy);

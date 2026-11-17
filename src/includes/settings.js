@@ -55,6 +55,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
+    extractArchives: true,
     contentDedup: true,
     smartMirrors: true,
     autoUnlockReaction: true,
@@ -142,6 +143,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
         folderLayout: preLayout,
         organizeMedia: preLayout === 'media',
         flatten: preLayout === 'flat',
+        extractArchives:
+            pre && typeof pre.extractArchives === 'boolean'
+                ? pre.extractArchives
+                : (normalized.skipDownload ? true : normalized.extractArchives),
         contentDedup:
             pre && typeof pre.contentDedup === 'boolean'
                 ? pre.contentDedup
@@ -658,6 +663,304 @@ async function xfpdComputeBlobFingerprint(blob) {
         return tag ? `s:${size}:${tag}` : '';
     } catch (e) {
         return '';
+    }
+}
+
+// --- In-Memory Archive Auto-Extractor (.zip / .rar RAR4+RAR5 / .7z / .tar.gz) -------------------
+const XFPD_MAX_EXTRACT_ARCHIVE_BYTES = 650 * 1024 * 1024; // 650 MB safe browser RAM ceiling
+const XFPD_7Z_WASM_URLS = [
+    'https://cdn.jsdelivr.net/npm/7z-wasm@1.2.0/7zz.wasm',
+    'https://unpkg.com/7z-wasm@1.2.0/7zz.wasm',
+];
+
+let xfpdCached7zWasmBinaryPromise = null;
+let xfpdDynamicSevenZipFactory = null;
+
+function xfpdIsMultiVolumePartName(fileName) {
+    const s = String(fileName || '').trim().toLowerCase();
+    if (!s) return false;
+    return (
+        /\.part0*\d+\.rar$/i.test(s) ||
+        /\.(?:r|z)\d{2,3}$/i.test(s) ||
+        /\.(?:7z|zip|rar)\.\d{3}$/i.test(s)
+    );
+}
+
+function xfpdIsNonMediaContainerZipExt(fileName) {
+    return /\.(?:docx|xlsx|pptx|odt|ods|odp|epub|apk|ipa|jar|xpi|cbz|cbr)$/i.test(String(fileName || '').trim());
+}
+
+function xfpdIsExtractableArchiveCandidate(fileName, contentTypeHint = '') {
+    const name = String(fileName || '').trim();
+    if (xfpdIsMultiVolumePartName(name) || xfpdIsNonMediaContainerZipExt(name)) return false;
+    if (/\.(?:zip|rar|7z|tar|tgz|tbz2|txz|tar\.(?:gz|bz2|xz|zst))$/i.test(name)) {
+        return true;
+    }
+    const ct = String(contentTypeHint || '').toLowerCase();
+    return /application\/(?:zip|x-zip-compressed|vnd\.rar|x-rar|x-rar-compressed|x-7z-compressed|x-tar)/i.test(ct);
+}
+
+function xfpdGuessMimeFromExt(extRaw) {
+    const e = String(extRaw || '').replace(/^\./, '').toLowerCase();
+    if (e === 'jpg' || e === 'jpeg' || e === 'jfif') return 'image/jpeg';
+    if (e === 'png') return 'image/png';
+    if (e === 'webp') return 'image/webp';
+    if (e === 'gif') return 'image/gif';
+    if (e === 'avif') return 'image/avif';
+    if (e === 'bmp') return 'image/bmp';
+    if (e === 'mp4' || e === 'm4v') return 'video/mp4';
+    if (e === 'webm') return 'video/webm';
+    if (e === 'mov') return 'video/quicktime';
+    if (e === 'mkv') return 'video/x-matroska';
+    if (e === 'avi') return 'video/x-msvideo';
+    if (e === 'ts' || e === 'm2ts') return 'video/mp2t';
+    return 'application/octet-stream';
+}
+
+function xfpdIsJunkArchiveEntryPath(relPath) {
+    const norm = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!norm || norm.endsWith('/')) return true;
+    const segs = norm.split('/').filter(Boolean);
+    if (!segs.length) return true;
+    if (segs.some(seg => seg === '__MACOSX' || seg === '.Spotlight-V100' || seg === '.Trashes')) return true;
+    const base = segs[segs.length - 1];
+    if (!base || base.startsWith('._')) return true;
+    const low = base.toLowerCase();
+    return low === '.ds_store' || low === 'thumbs.db' || low === 'desktop.ini';
+}
+
+async function xfpdInspectArchiveHeader(blob) {
+    if (!blob || typeof blob.size !== 'number' || blob.size < 8) {
+        return { kind: '', zipEncrypted: false };
+    }
+    try {
+        const headAb = await xfpdReadBlobArrayBuffer(blob.slice(0, 12));
+        const b = new Uint8Array(headAb);
+        if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) {
+            const flags = b[6] | (b[7] << 8);
+            return { kind: 'zip', zipEncrypted: (flags & 0x01) !== 0 };
+        }
+        if (b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21 && b[4] === 0x1a && b[5] === 0x07) {
+            return { kind: 'rar', zipEncrypted: false };
+        }
+        if (b[0] === 0x37 && b[1] === 0x7a && b[2] === 0xbc && b[3] === 0xaf && b[4] === 0x27 && b[5] === 0x1c) {
+            return { kind: '7z', zipEncrypted: false };
+        }
+    } catch (e) {}
+    return { kind: '', zipEncrypted: false };
+}
+
+async function xfpdLoad7zWasmResources() {
+    let factory =
+        xfpdSevenZipFactory ||
+        xfpdDynamicSevenZipFactory ||
+        (typeof SevenZip === 'function' ? SevenZip : null) ||
+        (typeof window !== 'undefined' && typeof window.SevenZip === 'function' ? window.SevenZip : null);
+
+    if (!factory) {
+        try {
+            const mod = await import('https://cdn.jsdelivr.net/npm/7z-wasm@1.2.0/7zz.es6.js');
+            factory = (mod && (mod.default || mod.SevenZip || mod)) || null;
+            if (typeof factory === 'function') xfpdDynamicSevenZipFactory = factory;
+        } catch (e) {}
+    }
+    if (typeof factory !== 'function') {
+        throw new Error('SevenZip WASM factory unavailable');
+    }
+
+    if (
+        typeof window !== 'undefined' &&
+        window.__XFPD_7Z_WASM_BINARY &&
+        typeof window.__XFPD_7Z_WASM_BINARY.byteLength === 'number' &&
+        window.__XFPD_7Z_WASM_BINARY.byteLength > 100000
+    ) {
+        return { factory, wasmBinary: window.__XFPD_7Z_WASM_BINARY };
+    }
+
+    if (!xfpdCached7zWasmBinaryPromise) {
+        xfpdCached7zWasmBinaryPromise = (async () => {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (fetchFn) {
+                for (const wasmUrl of XFPD_7Z_WASM_URLS) {
+                    try {
+                        const res = await fetchFn(wasmUrl, { mode: 'cors', credentials: 'omit' });
+                        if (res && res.ok) {
+                            const ab = await res.arrayBuffer();
+                            if (ab && ab.byteLength > 100000) return ab;
+                        }
+                    } catch (e) {}
+                }
+            }
+            throw new Error('Failed to fetch 7zz.wasm from CDN');
+        })().catch(err => {
+            xfpdCached7zWasmBinaryPromise = null;
+            throw err;
+        });
+    }
+
+    const wasmBinary = await xfpdCached7zWasmBinaryPromise;
+    return { factory, wasmBinary };
+}
+
+async function xfpdExtractArchiveBlob(blob, archiveName, candidatePasswords = [], _depth = 0) {
+    if (!blob || typeof blob.size !== 'number' || blob.size <= 0) {
+        return { ok: false, reason: 'empty_blob' };
+    }
+    if (blob.size > XFPD_MAX_EXTRACT_ARCHIVE_BYTES) {
+        return { ok: false, reason: 'too_large' };
+    }
+    if (xfpdIsMultiVolumePartName(archiveName) || xfpdIsNonMediaContainerZipExt(archiveName)) {
+        return { ok: false, reason: 'multipart_or_container' };
+    }
+
+    const headerInfo = await xfpdInspectArchiveHeader(blob);
+    const nameMatch = /\.(?:zip|rar|7z|tar|tgz|tbz2|txz|gz|bz2|xz)$/i.exec(String(archiveName || ''));
+    const archiveExt = headerInfo.kind || (nameMatch ? nameMatch[0].slice(1).toLowerCase() : '');
+    if (!archiveExt) {
+        return { ok: false, reason: 'not_archive' };
+    }
+
+    const sortAndFinalizeEntries = async (rawEntries, engineName) => {
+        rawEntries.sort((a, b) =>
+            a.relPath.localeCompare(b.relPath, undefined, { numeric: true, sensitivity: 'base' }),
+        );
+        // Unwrap 1-level nested archive (e.g. .tar.gz or a .zip/.rar packed inside an outer .rar/.zip)
+        if (
+            _depth < 1 &&
+            rawEntries.length === 1 &&
+            rawEntries[0].size <= XFPD_MAX_EXTRACT_ARCHIVE_BYTES &&
+            (xfpdIsExtractableArchiveCandidate(rawEntries[0].basename) || /\.tar$/i.test(rawEntries[0].basename))
+        ) {
+            const nestedRes = await xfpdExtractArchiveBlob(
+                rawEntries[0].blob,
+                rawEntries[0].basename,
+                candidatePasswords,
+                _depth + 1,
+            );
+            if (nestedRes && nestedRes.ok && nestedRes.entries && nestedRes.entries.length > 0) {
+                return nestedRes;
+            }
+        }
+        return { ok: true, engine: engineName, entries: rawEntries };
+    };
+
+    // Tier 1: Zero-network fast path via JSZip for standard unencrypted .zip archives
+    if (headerInfo.kind === 'zip' && !headerInfo.zipEncrypted && typeof JSZip === 'function' && typeof JSZip.loadAsync === 'function') {
+        try {
+            const z = await JSZip.loadAsync(blob);
+            const extracted = [];
+            const fileKeys = Object.keys(z.files || {});
+            for (const k of fileKeys) {
+                const entry = z.files[k];
+                if (!entry || entry.dir) continue;
+                const relPath = String(entry.name || k).replace(/\\/g, '/').replace(/^\/+/, '');
+                if (xfpdIsJunkArchiveEntryPath(relPath)) continue;
+                const u8 = await entry.async('uint8array');
+                if (!u8 || u8.byteLength === 0) continue;
+                const base = relPath.split('/').pop();
+                const dotIdx = base.lastIndexOf('.');
+                const ext = dotIdx > 0 ? base.slice(dotIdx + 1).toLowerCase() : '';
+                const mime = xfpdGuessMimeFromExt(ext);
+                extracted.push({
+                    relPath,
+                    basename: base,
+                    ext,
+                    mime,
+                    size: u8.byteLength,
+                    blob: new Blob([u8], { type: mime }),
+                });
+            }
+            if (extracted.length > 0) {
+                return await sortAndFinalizeEntries(extracted, 'jszip');
+            }
+        } catch (e) {
+            // Encrypted, Deflate64, LZMA, or Zstd ZIP -> fall through seamlessly to Tier 2 (7z-wasm)
+        }
+    }
+
+    // Tier 2: Universal 7-Zip 24.09 WASM engine (.rar RAR4+RAR5, .7z, encrypted .zip/.rar/.7z, .tar/.gz/.xz)
+    try {
+        const { factory, wasmBinary } = await xfpdLoad7zWasmResources();
+        const archiveAb = await xfpdReadBlobArrayBuffer(blob);
+        const archiveU8 = new Uint8Array(archiveAb);
+
+        const pwCandidates = [''];
+        for (const rawPw of candidatePasswords || []) {
+            const p = String(rawPw || '').trim();
+            if (p && !pwCandidates.includes(p)) pwCandidates.push(p);
+        }
+
+        const inputName = `/in.${archiveExt || 'bin'}`;
+
+        for (const pw of pwCandidates) {
+            let exitCode = 0;
+            const sz = await factory({
+                wasmBinary,
+                print: () => {},
+                printErr: () => {},
+                quit: code => {
+                    exitCode = typeof code === 'number' ? code : 2;
+                },
+            });
+
+            sz.FS.mkdir('/out');
+            sz.FS.writeFile(inputName, archiveU8);
+
+            try {
+                const ret = sz.callMain(['x', '-y', `-p${pw}`, '-o/out', inputName]);
+                if (typeof ret === 'number') exitCode = ret;
+            } catch (err) {
+                exitCode = err && typeof err.status === 'number' ? err.status : 2;
+            }
+
+            if (exitCode >= 2) {
+                // Fatal error / wrong password -> try next password candidate!
+                continue;
+            }
+
+            const walkMemFs = dir => {
+                const items = [];
+                for (const name of sz.FS.readdir(dir)) {
+                    if (name === '.' || name === '..') continue;
+                    const full = `${dir}/${name}`;
+                    const st = sz.FS.stat(full);
+                    if (sz.FS.isDir(st.mode)) {
+                        items.push(...walkMemFs(full));
+                    } else if (st.size > 0) {
+                        const relPath = full.slice(5).replace(/^\/+/, '');
+                        if (!xfpdIsJunkArchiveEntryPath(relPath)) {
+                            const bytes = sz.FS.readFile(full);
+                            const copy = new Uint8Array(bytes.byteLength);
+                            copy.set(bytes);
+                            const base = relPath.split('/').pop();
+                            const dotIdx = base.lastIndexOf('.');
+                            const ext = dotIdx > 0 ? base.slice(dotIdx + 1).toLowerCase() : '';
+                            const mime = xfpdGuessMimeFromExt(ext);
+                            items.push({
+                                relPath,
+                                basename: base,
+                                ext,
+                                mime,
+                                size: copy.byteLength,
+                                blob: new Blob([copy], { type: mime }),
+                            });
+                        }
+                    }
+                }
+                return items;
+            };
+
+            const extracted = walkMemFs('/out');
+            if (extracted.length > 0) {
+                return await sortAndFinalizeEntries(extracted, '7z-wasm');
+            }
+        }
+
+        return { ok: false, reason: 'extract_failed_or_locked' };
+    } catch (err) {
+        return { ok: false, reason: String((err && err.message) || err || 'wasm_error') };
     }
 }
 

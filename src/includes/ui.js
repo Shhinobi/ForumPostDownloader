@@ -300,6 +300,12 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(
+                        `${idPrefix}-extract-archives`,
+                        'Auto-Extract Archives (.zip/.rar/.7z)',
+                        skipDl ? false : currentSettings.extractArchives !== false,
+                        skipDl,
+                    ),
+                    ui.forms.createCheckbox(
                         `${idPrefix}-content-dedup`,
                         'Smart Dedup (Byte Hash + URL)',
                         skipDl ? false : currentSettings.contentDedup !== false,
@@ -374,6 +380,7 @@ const ui = {
                     if (cnt > 0) clearDedupBtn.textContent = `Clear Dedup (${cnt})`;
                 }
 
+                setCb('extract-archives', skipDl ? false : settingsObj.extractArchives !== false, skipDl);
                 setCb('content-dedup', skipDl ? false : settingsObj.contentDedup !== false, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
@@ -508,6 +515,18 @@ const ui = {
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
+                bindOne('extract-archives', e => {
+                    ensurePreSkip();
+                    settingsObj.extractArchives = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.extractArchives = settingsObj.extractArchives;
+                    }
+                    notify(
+                        { extractArchives: settingsObj.extractArchives, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['extractArchives'],
+                    );
+                });
+
                 bindOne('content-dedup', e => {
                     ensurePreSkip();
                     settingsObj.contentDedup = !!e.target.checked;
@@ -551,6 +570,7 @@ const ui = {
                             folderLayout: curLayout,
                             organizeMedia: curLayout === 'media',
                             flatten: curLayout === 'flat',
+                            extractArchives: settingsObj.extractArchives !== false,
                             contentDedup: settingsObj.contentDedup !== false,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
@@ -566,6 +586,7 @@ const ui = {
                         settingsObj.folderLayout = restoredLayout;
                         settingsObj.organizeMedia = restoredLayout === 'media';
                         settingsObj.flatten = restoredLayout === 'flat';
+                        settingsObj.extractArchives = settingsObj.preSkipDownload.extractArchives !== false;
                         settingsObj.contentDedup = settingsObj.preSkipDownload.contentDedup !== false;
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
@@ -576,13 +597,14 @@ const ui = {
                             skipDownload: settingsObj.skipDownload,
                             folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
+                            extractArchives: settingsObj.extractArchives,
                             contentDedup: settingsObj.contentDedup,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'folderLayout', 'organizeMedia', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'extractArchives', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },

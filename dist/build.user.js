@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.34
+// @version 3.35
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -27,6 +27,7 @@
 // @require https://unpkg.com/tippy.js@6
 // @require https://unpkg.com/file-saver@2.0.4/dist/FileSaver.min.js
 // @require https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js
+// @require https://cdn.jsdelivr.net/npm/7z-wasm@1.2.0/7zz.umd.js
 // @require https://raw.githubusercontent.com/geraintluff/sha256/gh-pages/sha256.min.js
 // @connect self
 // @connect simpcity.su
@@ -186,6 +187,11 @@ function xfpdCloseTabHandle(tabOrPromise) {
 const JSZip =
     (typeof window !== 'undefined' && window.JSZip) ||
     (typeof globalThis !== 'undefined' && globalThis.JSZip);
+const xfpdSevenZipFactory =
+    (typeof SevenZip === 'function' && SevenZip) ||
+    (typeof window !== 'undefined' && typeof window.SevenZip === 'function' && window.SevenZip) ||
+    (typeof globalThis !== 'undefined' && typeof globalThis.SevenZip === 'function' && globalThis.SevenZip) ||
+    null;
 const tippy =
     (typeof window !== 'undefined' && window.tippy) ||
     (typeof globalThis !== 'undefined' && globalThis.tippy);
@@ -351,6 +357,7 @@ const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
+    extractArchives: true,
     contentDedup: true,
     smartMirrors: true,
     autoUnlockReaction: true,
@@ -438,6 +445,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
         folderLayout: preLayout,
         organizeMedia: preLayout === 'media',
         flatten: preLayout === 'flat',
+        extractArchives:
+            pre && typeof pre.extractArchives === 'boolean'
+                ? pre.extractArchives
+                : (normalized.skipDownload ? true : normalized.extractArchives),
         contentDedup:
             pre && typeof pre.contentDedup === 'boolean'
                 ? pre.contentDedup
@@ -954,6 +965,304 @@ async function xfpdComputeBlobFingerprint(blob) {
         return tag ? `s:${size}:${tag}` : '';
     } catch (e) {
         return '';
+    }
+}
+
+// --- In-Memory Archive Auto-Extractor (.zip / .rar RAR4+RAR5 / .7z / .tar.gz) -------------------
+const XFPD_MAX_EXTRACT_ARCHIVE_BYTES = 650 * 1024 * 1024; // 650 MB safe browser RAM ceiling
+const XFPD_7Z_WASM_URLS = [
+    'https://cdn.jsdelivr.net/npm/7z-wasm@1.2.0/7zz.wasm',
+    'https://unpkg.com/7z-wasm@1.2.0/7zz.wasm',
+];
+
+let xfpdCached7zWasmBinaryPromise = null;
+let xfpdDynamicSevenZipFactory = null;
+
+function xfpdIsMultiVolumePartName(fileName) {
+    const s = String(fileName || '').trim().toLowerCase();
+    if (!s) return false;
+    return (
+        /\.part0*\d+\.rar$/i.test(s) ||
+        /\.(?:r|z)\d{2,3}$/i.test(s) ||
+        /\.(?:7z|zip|rar)\.\d{3}$/i.test(s)
+    );
+}
+
+function xfpdIsNonMediaContainerZipExt(fileName) {
+    return /\.(?:docx|xlsx|pptx|odt|ods|odp|epub|apk|ipa|jar|xpi|cbz|cbr)$/i.test(String(fileName || '').trim());
+}
+
+function xfpdIsExtractableArchiveCandidate(fileName, contentTypeHint = '') {
+    const name = String(fileName || '').trim();
+    if (xfpdIsMultiVolumePartName(name) || xfpdIsNonMediaContainerZipExt(name)) return false;
+    if (/\.(?:zip|rar|7z|tar|tgz|tbz2|txz|tar\.(?:gz|bz2|xz|zst))$/i.test(name)) {
+        return true;
+    }
+    const ct = String(contentTypeHint || '').toLowerCase();
+    return /application\/(?:zip|x-zip-compressed|vnd\.rar|x-rar|x-rar-compressed|x-7z-compressed|x-tar)/i.test(ct);
+}
+
+function xfpdGuessMimeFromExt(extRaw) {
+    const e = String(extRaw || '').replace(/^\./, '').toLowerCase();
+    if (e === 'jpg' || e === 'jpeg' || e === 'jfif') return 'image/jpeg';
+    if (e === 'png') return 'image/png';
+    if (e === 'webp') return 'image/webp';
+    if (e === 'gif') return 'image/gif';
+    if (e === 'avif') return 'image/avif';
+    if (e === 'bmp') return 'image/bmp';
+    if (e === 'mp4' || e === 'm4v') return 'video/mp4';
+    if (e === 'webm') return 'video/webm';
+    if (e === 'mov') return 'video/quicktime';
+    if (e === 'mkv') return 'video/x-matroska';
+    if (e === 'avi') return 'video/x-msvideo';
+    if (e === 'ts' || e === 'm2ts') return 'video/mp2t';
+    return 'application/octet-stream';
+}
+
+function xfpdIsJunkArchiveEntryPath(relPath) {
+    const norm = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!norm || norm.endsWith('/')) return true;
+    const segs = norm.split('/').filter(Boolean);
+    if (!segs.length) return true;
+    if (segs.some(seg => seg === '__MACOSX' || seg === '.Spotlight-V100' || seg === '.Trashes')) return true;
+    const base = segs[segs.length - 1];
+    if (!base || base.startsWith('._')) return true;
+    const low = base.toLowerCase();
+    return low === '.ds_store' || low === 'thumbs.db' || low === 'desktop.ini';
+}
+
+async function xfpdInspectArchiveHeader(blob) {
+    if (!blob || typeof blob.size !== 'number' || blob.size < 8) {
+        return { kind: '', zipEncrypted: false };
+    }
+    try {
+        const headAb = await xfpdReadBlobArrayBuffer(blob.slice(0, 12));
+        const b = new Uint8Array(headAb);
+        if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) {
+            const flags = b[6] | (b[7] << 8);
+            return { kind: 'zip', zipEncrypted: (flags & 0x01) !== 0 };
+        }
+        if (b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21 && b[4] === 0x1a && b[5] === 0x07) {
+            return { kind: 'rar', zipEncrypted: false };
+        }
+        if (b[0] === 0x37 && b[1] === 0x7a && b[2] === 0xbc && b[3] === 0xaf && b[4] === 0x27 && b[5] === 0x1c) {
+            return { kind: '7z', zipEncrypted: false };
+        }
+    } catch (e) {}
+    return { kind: '', zipEncrypted: false };
+}
+
+async function xfpdLoad7zWasmResources() {
+    let factory =
+        xfpdSevenZipFactory ||
+        xfpdDynamicSevenZipFactory ||
+        (typeof SevenZip === 'function' ? SevenZip : null) ||
+        (typeof window !== 'undefined' && typeof window.SevenZip === 'function' ? window.SevenZip : null);
+
+    if (!factory) {
+        try {
+            const mod = await import('https://cdn.jsdelivr.net/npm/7z-wasm@1.2.0/7zz.es6.js');
+            factory = (mod && (mod.default || mod.SevenZip || mod)) || null;
+            if (typeof factory === 'function') xfpdDynamicSevenZipFactory = factory;
+        } catch (e) {}
+    }
+    if (typeof factory !== 'function') {
+        throw new Error('SevenZip WASM factory unavailable');
+    }
+
+    if (
+        typeof window !== 'undefined' &&
+        window.__XFPD_7Z_WASM_BINARY &&
+        typeof window.__XFPD_7Z_WASM_BINARY.byteLength === 'number' &&
+        window.__XFPD_7Z_WASM_BINARY.byteLength > 100000
+    ) {
+        return { factory, wasmBinary: window.__XFPD_7Z_WASM_BINARY };
+    }
+
+    if (!xfpdCached7zWasmBinaryPromise) {
+        xfpdCached7zWasmBinaryPromise = (async () => {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (fetchFn) {
+                for (const wasmUrl of XFPD_7Z_WASM_URLS) {
+                    try {
+                        const res = await fetchFn(wasmUrl, { mode: 'cors', credentials: 'omit' });
+                        if (res && res.ok) {
+                            const ab = await res.arrayBuffer();
+                            if (ab && ab.byteLength > 100000) return ab;
+                        }
+                    } catch (e) {}
+                }
+            }
+            throw new Error('Failed to fetch 7zz.wasm from CDN');
+        })().catch(err => {
+            xfpdCached7zWasmBinaryPromise = null;
+            throw err;
+        });
+    }
+
+    const wasmBinary = await xfpdCached7zWasmBinaryPromise;
+    return { factory, wasmBinary };
+}
+
+async function xfpdExtractArchiveBlob(blob, archiveName, candidatePasswords = [], _depth = 0) {
+    if (!blob || typeof blob.size !== 'number' || blob.size <= 0) {
+        return { ok: false, reason: 'empty_blob' };
+    }
+    if (blob.size > XFPD_MAX_EXTRACT_ARCHIVE_BYTES) {
+        return { ok: false, reason: 'too_large' };
+    }
+    if (xfpdIsMultiVolumePartName(archiveName) || xfpdIsNonMediaContainerZipExt(archiveName)) {
+        return { ok: false, reason: 'multipart_or_container' };
+    }
+
+    const headerInfo = await xfpdInspectArchiveHeader(blob);
+    const nameMatch = /\.(?:zip|rar|7z|tar|tgz|tbz2|txz|gz|bz2|xz)$/i.exec(String(archiveName || ''));
+    const archiveExt = headerInfo.kind || (nameMatch ? nameMatch[0].slice(1).toLowerCase() : '');
+    if (!archiveExt) {
+        return { ok: false, reason: 'not_archive' };
+    }
+
+    const sortAndFinalizeEntries = async (rawEntries, engineName) => {
+        rawEntries.sort((a, b) =>
+            a.relPath.localeCompare(b.relPath, undefined, { numeric: true, sensitivity: 'base' }),
+        );
+        // Unwrap 1-level nested archive (e.g. .tar.gz or a .zip/.rar packed inside an outer .rar/.zip)
+        if (
+            _depth < 1 &&
+            rawEntries.length === 1 &&
+            rawEntries[0].size <= XFPD_MAX_EXTRACT_ARCHIVE_BYTES &&
+            (xfpdIsExtractableArchiveCandidate(rawEntries[0].basename) || /\.tar$/i.test(rawEntries[0].basename))
+        ) {
+            const nestedRes = await xfpdExtractArchiveBlob(
+                rawEntries[0].blob,
+                rawEntries[0].basename,
+                candidatePasswords,
+                _depth + 1,
+            );
+            if (nestedRes && nestedRes.ok && nestedRes.entries && nestedRes.entries.length > 0) {
+                return nestedRes;
+            }
+        }
+        return { ok: true, engine: engineName, entries: rawEntries };
+    };
+
+    // Tier 1: Zero-network fast path via JSZip for standard unencrypted .zip archives
+    if (headerInfo.kind === 'zip' && !headerInfo.zipEncrypted && typeof JSZip === 'function' && typeof JSZip.loadAsync === 'function') {
+        try {
+            const z = await JSZip.loadAsync(blob);
+            const extracted = [];
+            const fileKeys = Object.keys(z.files || {});
+            for (const k of fileKeys) {
+                const entry = z.files[k];
+                if (!entry || entry.dir) continue;
+                const relPath = String(entry.name || k).replace(/\\/g, '/').replace(/^\/+/, '');
+                if (xfpdIsJunkArchiveEntryPath(relPath)) continue;
+                const u8 = await entry.async('uint8array');
+                if (!u8 || u8.byteLength === 0) continue;
+                const base = relPath.split('/').pop();
+                const dotIdx = base.lastIndexOf('.');
+                const ext = dotIdx > 0 ? base.slice(dotIdx + 1).toLowerCase() : '';
+                const mime = xfpdGuessMimeFromExt(ext);
+                extracted.push({
+                    relPath,
+                    basename: base,
+                    ext,
+                    mime,
+                    size: u8.byteLength,
+                    blob: new Blob([u8], { type: mime }),
+                });
+            }
+            if (extracted.length > 0) {
+                return await sortAndFinalizeEntries(extracted, 'jszip');
+            }
+        } catch (e) {
+            // Encrypted, Deflate64, LZMA, or Zstd ZIP -> fall through seamlessly to Tier 2 (7z-wasm)
+        }
+    }
+
+    // Tier 2: Universal 7-Zip 24.09 WASM engine (.rar RAR4+RAR5, .7z, encrypted .zip/.rar/.7z, .tar/.gz/.xz)
+    try {
+        const { factory, wasmBinary } = await xfpdLoad7zWasmResources();
+        const archiveAb = await xfpdReadBlobArrayBuffer(blob);
+        const archiveU8 = new Uint8Array(archiveAb);
+
+        const pwCandidates = [''];
+        for (const rawPw of candidatePasswords || []) {
+            const p = String(rawPw || '').trim();
+            if (p && !pwCandidates.includes(p)) pwCandidates.push(p);
+        }
+
+        const inputName = `/in.${archiveExt || 'bin'}`;
+
+        for (const pw of pwCandidates) {
+            let exitCode = 0;
+            const sz = await factory({
+                wasmBinary,
+                print: () => {},
+                printErr: () => {},
+                quit: code => {
+                    exitCode = typeof code === 'number' ? code : 2;
+                },
+            });
+
+            sz.FS.mkdir('/out');
+            sz.FS.writeFile(inputName, archiveU8);
+
+            try {
+                const ret = sz.callMain(['x', '-y', `-p${pw}`, '-o/out', inputName]);
+                if (typeof ret === 'number') exitCode = ret;
+            } catch (err) {
+                exitCode = err && typeof err.status === 'number' ? err.status : 2;
+            }
+
+            if (exitCode >= 2) {
+                // Fatal error / wrong password -> try next password candidate!
+                continue;
+            }
+
+            const walkMemFs = dir => {
+                const items = [];
+                for (const name of sz.FS.readdir(dir)) {
+                    if (name === '.' || name === '..') continue;
+                    const full = `${dir}/${name}`;
+                    const st = sz.FS.stat(full);
+                    if (sz.FS.isDir(st.mode)) {
+                        items.push(...walkMemFs(full));
+                    } else if (st.size > 0) {
+                        const relPath = full.slice(5).replace(/^\/+/, '');
+                        if (!xfpdIsJunkArchiveEntryPath(relPath)) {
+                            const bytes = sz.FS.readFile(full);
+                            const copy = new Uint8Array(bytes.byteLength);
+                            copy.set(bytes);
+                            const base = relPath.split('/').pop();
+                            const dotIdx = base.lastIndexOf('.');
+                            const ext = dotIdx > 0 ? base.slice(dotIdx + 1).toLowerCase() : '';
+                            const mime = xfpdGuessMimeFromExt(ext);
+                            items.push({
+                                relPath,
+                                basename: base,
+                                ext,
+                                mime,
+                                size: copy.byteLength,
+                                blob: new Blob([copy], { type: mime }),
+                            });
+                        }
+                    }
+                }
+                return items;
+            };
+
+            const extracted = walkMemFs('/out');
+            if (extracted.length > 0) {
+                return await sortAndFinalizeEntries(extracted, '7z-wasm');
+            }
+        }
+
+        return { ok: false, reason: 'extract_failed_or_locked' };
+    } catch (err) {
+        return { ok: false, reason: String((err && err.message) || err || 'wasm_error') };
     }
 }
 
@@ -3791,6 +4100,12 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(
+                        `${idPrefix}-extract-archives`,
+                        'Auto-Extract Archives (.zip/.rar/.7z)',
+                        skipDl ? false : currentSettings.extractArchives !== false,
+                        skipDl,
+                    ),
+                    ui.forms.createCheckbox(
                         `${idPrefix}-content-dedup`,
                         'Smart Dedup (Byte Hash + URL)',
                         skipDl ? false : currentSettings.contentDedup !== false,
@@ -3865,6 +4180,7 @@ const ui = {
                     if (cnt > 0) clearDedupBtn.textContent = `Clear Dedup (${cnt})`;
                 }
 
+                setCb('extract-archives', skipDl ? false : settingsObj.extractArchives !== false, skipDl);
                 setCb('content-dedup', skipDl ? false : settingsObj.contentDedup !== false, skipDl);
                 setCb('generate-links', skipDl ? true : settingsObj.generateLinks, skipDl);
                 setCb('generate-log', settingsObj.generateLog, false);
@@ -3999,6 +4315,18 @@ const ui = {
                     notify({ videoQuality: settingsObj.videoQuality }, ['videoQuality']);
                 });
 
+                bindOne('extract-archives', e => {
+                    ensurePreSkip();
+                    settingsObj.extractArchives = !!e.target.checked;
+                    if (!settingsObj.skipDownload) {
+                        settingsObj.preSkipDownload.extractArchives = settingsObj.extractArchives;
+                    }
+                    notify(
+                        { extractArchives: settingsObj.extractArchives, preSkipDownload: { ...settingsObj.preSkipDownload } },
+                        ['extractArchives'],
+                    );
+                });
+
                 bindOne('content-dedup', e => {
                     ensurePreSkip();
                     settingsObj.contentDedup = !!e.target.checked;
@@ -4042,6 +4370,7 @@ const ui = {
                             folderLayout: curLayout,
                             organizeMedia: curLayout === 'media',
                             flatten: curLayout === 'flat',
+                            extractArchives: settingsObj.extractArchives !== false,
                             contentDedup: settingsObj.contentDedup !== false,
                             skipDuplicates: !!settingsObj.skipDuplicates,
                             generateLinks: !!settingsObj.generateLinks,
@@ -4057,6 +4386,7 @@ const ui = {
                         settingsObj.folderLayout = restoredLayout;
                         settingsObj.organizeMedia = restoredLayout === 'media';
                         settingsObj.flatten = restoredLayout === 'flat';
+                        settingsObj.extractArchives = settingsObj.preSkipDownload.extractArchives !== false;
                         settingsObj.contentDedup = settingsObj.preSkipDownload.contentDedup !== false;
                         settingsObj.skipDuplicates = !!settingsObj.preSkipDownload.skipDuplicates;
                         settingsObj.generateLinks = !!settingsObj.preSkipDownload.generateLinks;
@@ -4067,13 +4397,14 @@ const ui = {
                             skipDownload: settingsObj.skipDownload,
                             folderLayout: settingsObj.folderLayout,
                             organizeMedia: settingsObj.organizeMedia,
+                            extractArchives: settingsObj.extractArchives,
                             contentDedup: settingsObj.contentDedup,
                             flatten: settingsObj.flatten,
                             skipDuplicates: settingsObj.skipDuplicates,
                             generateLinks: settingsObj.generateLinks,
                             preSkipDownload: { ...settingsObj.preSkipDownload },
                         },
-                        ['skipDownload', 'folderLayout', 'organizeMedia', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
+                        ['skipDownload', 'folderLayout', 'organizeMedia', 'extractArchives', 'contentDedup', 'flatten', 'skipDuplicates', 'generateLinks'],
                     );
                 });
             },
@@ -8890,7 +9221,15 @@ const downloadPost = async (parsedPost, parsedHosts, enabledHostsCB, resolvers, 
     let completed = 0;
     let succeededCount = 0;
     let failedCount = 0;
-    const zip = new JSZip();
+    const zip =
+        typeof JSZip === 'function'
+            ? new JSZip()
+            : {
+                  file() {},
+                  async generateAsync() {
+                      return new Blob();
+                  },
+              };
     let zipFileCount = 0;
     let resolved = [];
 
@@ -9599,7 +9938,16 @@ try {
         return sanitizeSegFn(`${postTag} - ${trimmedLbl}`, postTag);
     };
 
-    const buildTargetRelativePath = ({ basename, folderName, seqIndex, contentType, hostCategory, sanitizeSegFn, sanitizePathFn }) => {
+    const buildTargetRelativePath = ({
+        basename,
+        folderName,
+        seqIndex,
+        subSeqTag = '',
+        contentType,
+        hostCategory,
+        sanitizeSegFn,
+        sanitizePathFn,
+    }) => {
         const layout = resolveEffectiveLayout();
 
         if (layout === 'media' || layout === 'post' || layout === 'post-media') {
@@ -9633,7 +9981,8 @@ try {
                 stem = `${shortAlbum} - ${stem}`;
             }
 
-            const filePrefix = layout === 'media' ? `${postTag}_${seqTag}` : seqTag;
+            const basePrefix = layout === 'media' ? `${postTag}_${seqTag}` : seqTag;
+            const filePrefix = subSeqTag ? `${basePrefix}_${subSeqTag}` : basePrefix;
             stem = sanitizeSegFn(stem || 'file');
             const maxStemLen = Math.max(24, 155 - filePrefix.length - (ext ? ext.length + 4 : 3));
             if (stem.length > maxStemLen) {
@@ -10704,6 +11053,31 @@ if (tmp.length) {
 
                         const folder = folderName || '';
                         const directContentType = String((meta && (meta.contentType || meta.content_type)) || '');
+
+                        // If Auto-Extract Archives is enabled and this direct item is a single-volume archive within our
+                        // safe RAM ceiling (<= 650 MB; <= 500 MB on Bunkr MV3), reroute to the Blob path for extraction!
+                        const maxArchiveBlobBytes = isBunkr
+                            ? Math.min(XFPD_MAX_EXTRACT_ARCHIVE_BYTES, BUNKR_DIRECT_MIN_BYTES)
+                            : XFPD_MAX_EXTRACT_ARCHIVE_BYTES;
+                        if (
+                            postSettings.extractArchives !== false &&
+                            resource &&
+                            !resource._skipDirectForArchive &&
+                            xfpdIsExtractableArchiveCandidate(basename, directContentType) &&
+                            sizeBytes > 0 &&
+                            sizeBytes <= maxArchiveBlobBytes
+                        ) {
+                            resource.forceDirect = false;
+                            resource._skipDirectForArchive = true;
+                            log.post.info(
+                                postId,
+                                `::Archive candidate (${Math.round(sizeBytes / 1024 / 1024)}MB) -> fetching via Blob for auto-extraction::: ${basename}`,
+                                postNumber,
+                            );
+                            startDownload(resource, pass);
+                            return;
+                        }
+
                         let fn = buildTargetRelativePath({
                             basename,
                             folderName: folder,
@@ -11028,13 +11402,16 @@ GM_download(dlOpts);
 
 
                 // Forced DIRECT (used by Filester album policy: mixed albums, unzipped mixed/video-only, etc.)
-                if (resource && resource.forceDirect) {
+                if (resource && resource.forceDirect && !resource._skipDirectForArchive) {
                     log.post.info(postId, `::Forced DIRECT (skip blob/ZIP)::: ${url}`, postNumber);
                     setTimeout(() => startDirectDownload(), TURBO_DIRECT_DELAY_MS);
                     return;
                 }
 
-                const isPixeldrainList = isPixeldrain && /pixeldrain\.com\/l\//i.test(String(original || ''));
+                const isPixeldrainList =
+                    isPixeldrain &&
+                    /pixeldrain\.com\/l\//i.test(String(original || '')) &&
+                    !(resource && resource._skipDirectForArchive);
                 if (isPixeldrainList) {
                     log.post.info(postId, `::Pixeldrain list (/l/) -> DIRECT (skip blob)::: ${url}`, postNumber);
                     setTimeout(() => startDirectDownload(), TURBO_DIRECT_DELAY_MS);
@@ -11714,6 +12091,18 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 case 'video/mp2t':
                                     ext = 'ts';
                                     break;
+                                case 'application/zip':
+                                case 'application/x-zip-compressed':
+                                    ext = 'zip';
+                                    break;
+                                case 'application/vnd.rar':
+                                case 'application/x-rar':
+                                case 'application/x-rar-compressed':
+                                    ext = 'rar';
+                                    break;
+                                case 'application/x-7z-compressed':
+                                    ext = '7z';
+                                    break;
                                 default:
                                     ext = 'unknown';
                             }
@@ -11722,7 +12111,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                             }
                         }
 
-                        // Content-level byte deduplication (catches identical photos/videos even with completely different filenames or hosts!)
+                        // Content-level byte deduplication (catches identical photos/videos/archives even with different filenames or hosts!)
                         let blobFingerprint = '';
                         if (useContentDedup && fileBlob && typeof fileBlob.size === 'number' && fileBlob.size > 0) {
                             blobFingerprint = await xfpdComputeBlobFingerprint(fileBlob);
@@ -11745,12 +12134,192 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 });
                                 return;
                             }
-                            if (blobFingerprint) {
-                                xfpdMarkSeenThreadHash(blobFingerprint, activeThreadKey);
+                        }
+
+                        // Auto-Extract Archives (.zip / .rar RAR4+RAR5 / .7z / .tar.gz): unpack photos & videos directly into
+                        // Photos/ and Videos/ with per-file SHA-256 deduplication instead of saving the raw archive!
+                        if (
+                            postSettings.extractArchives !== false &&
+                            fileBlob &&
+                            typeof fileBlob.size === 'number' &&
+                            fileBlob.size > 0 &&
+                            fileBlob.size <= XFPD_MAX_EXTRACT_ARCHIVE_BYTES &&
+                            !xfpdIsMultiVolumePartName(basename) &&
+                            !xfpdIsNonMediaContainerZipExt(basename)
+                        ) {
+                            let isArchiveBlob = xfpdIsExtractableArchiveCandidate(basename, rawMime);
+                            if (!isArchiveBlob && (!ext || ext === 'unknown' || ext === 'bin' || rawMime === 'application/octet-stream')) {
+                                const magic = await xfpdInspectArchiveHeader(fileBlob);
+                                if (magic && magic.kind) isArchiveBlob = true;
+                            }
+
+                            if (isArchiveBlob) {
+                                h.ui.setElProps(statusLabel, { color: '#3DB7C7' });
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 📦 Extracting ${h.limit(basename, 42)}...`);
+
+                                const extractRes = await xfpdExtractArchiveBlob(
+                                    fileBlob,
+                                    basename,
+                                    parsedPost && Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers : [],
+                                );
+
+                                if (isCancelled()) {
+                                    notifyBatchStep();
+                                    return;
+                                }
+
+                                if (extractRes && extractRes.ok && Array.isArray(extractRes.entries) && extractRes.entries.length > 0) {
+                                    const rawArchiveStem = ext ? h.fnNoExt(basename) : basename;
+                                    const archiveLabel = cleanAlbumLabel(rawArchiveStem) || sanitizeWinSegment(rawArchiveStem, '');
+                                    const subWidth = Math.max(2, String(extractRes.entries.length).length);
+                                    const titleClean = sanitizeWinSegment(threadTitle);
+                                    const effectiveLay = resolveEffectiveLayout();
+                                    const saveTasks = [];
+                                    let savedFromArchive = 0;
+                                    let dedupedFromArchive = 0;
+
+                                    for (let idx = 0; idx < extractRes.entries.length; idx++) {
+                                        if (isCancelled()) {
+                                            notifyBatchStep();
+                                            return;
+                                        }
+                                        const item = extractRes.entries[idx];
+                                        if (useContentDedup) {
+                                            const itemFp = await xfpdComputeBlobFingerprint(item.blob);
+                                            if (itemFp && xfpdHasSeenThreadHash(itemFp, activeThreadKey)) {
+                                                dedupedFromArchive++;
+                                                log.post.info(
+                                                    postId,
+                                                    `::Skipped duplicate extracted file (identical byte hash)::: ${item.basename} ::in:: ${basename}`,
+                                                    postNumber,
+                                                );
+                                                continue;
+                                            }
+                                            if (itemFp) {
+                                                xfpdMarkSeenThreadHash(itemFp, activeThreadKey);
+                                            }
+                                        }
+
+                                        const subSeqTag = String(idx + 1).padStart(subWidth, '0');
+                                        const itemStemLow = String(h.fnNoExt(item.basename) || '').toLowerCase();
+                                        const archLow = String(archiveLabel || '').toLowerCase();
+                                        const decoratedBase =
+                                            archiveLabel &&
+                                            ['media', 'post', 'post-media'].includes(effectiveLay) &&
+                                            !itemStemLow.includes(archLow.slice(0, Math.min(12, archLow.length)))
+                                                ? `${archiveLabel} - ${item.basename}`
+                                                : item.basename;
+
+                                        let entryFn = buildTargetRelativePath({
+                                            basename: decoratedBase,
+                                            folderName: folderName || archiveLabel,
+                                            seqIndex: resource && resource._seqIndex,
+                                            subSeqTag,
+                                            contentType: item.mime,
+                                            hostCategory: '',
+                                            sanitizeSegFn: sanitizeWinSegment,
+                                            sanitizePathFn: sanitizeWinPath,
+                                        });
+                                        entryFn = ensureUniquePath(entryFn);
+                                        savedFromArchive++;
+
+                                        if (zippedForThis) {
+                                            zip.file(entryFn, item.blob);
+                                            zipFileCount++;
+                                        } else {
+                                            const entrySaveFF = `${titleClean} #${postNumber} - ${ensureUniqueFlatName(entryFn.replace(/\//g, ' - '))}`;
+                                            const entrySavePath = `${titleClean}/${entryFn}`;
+                                            const entrySaveName = isFF ? entrySaveFF : entrySavePath;
+                                            saveTasks.push({ blob: item.blob, saveName: entrySaveName, relFn: entryFn });
+                                        }
+                                    }
+
+                                    // Dispatch extracted files to disk with bounded concurrency (6 at a time) so Chrome's
+                                    // download manager never drops items on 100+ file archives!
+                                    if (saveTasks.length > 0) {
+                                        let tCursor = 0;
+                                        const saveWorker = async () => {
+                                            while (!isCancelled() && tCursor < saveTasks.length) {
+                                                const task = saveTasks[tCursor++];
+                                                if (!task) continue;
+                                                await new Promise(resolveSave => {
+                                                    const bUrl = URL.createObjectURL(task.blob);
+                                                    let settled = false;
+                                                    const doneSave = () => {
+                                                        if (settled) return;
+                                                        settled = true;
+                                                        setTimeout(() => {
+                                                            try { URL.revokeObjectURL(bUrl); } catch (e) {}
+                                                        }, 1000);
+                                                        resolveSave();
+                                                    };
+                                                    const safetyTimer = setTimeout(doneSave, 15000);
+                                                    try {
+                                                        GM_download({
+                                                            url: bUrl,
+                                                            name: task.saveName,
+                                                            onload: () => {
+                                                                clearTimeout(safetyTimer);
+                                                                doneSave();
+                                                            },
+                                                            onerror: err => {
+                                                                clearTimeout(safetyTimer);
+                                                                console.warn('[XFPD] Error saving extracted file:', task.relFn, err);
+                                                                doneSave();
+                                                            },
+                                                            ontimeout: () => {
+                                                                clearTimeout(safetyTimer);
+                                                                doneSave();
+                                                            },
+                                                        });
+                                                    } catch (e) {
+                                                        clearTimeout(safetyTimer);
+                                                        doneSave();
+                                                    }
+                                                });
+                                            }
+                                        };
+                                        const poolSize = Math.min(6, saveTasks.length);
+                                        const pool = [];
+                                        for (let w = 0; w < poolSize; w++) pool.push(saveWorker());
+                                        await Promise.all(pool);
+                                    }
+
+                                    if (useContentDedup) {
+                                        if (blobFingerprint) xfpdMarkSeenThreadHash(blobFingerprint, activeThreadKey);
+                                        const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                        if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                    }
+
+                                    log.separator(postId);
+                                    log.post.info(
+                                        postId,
+                                        `::Extracted archive (${extractRes.engine})::: ${basename} -> ${savedFromArchive} saved, ${dedupedFromArchive} dupes skipped`,
+                                        postNumber,
+                                    );
+
+                                    finishBatchItem(savedFromArchive === 0 && dedupedFromArchive > 0 ? 'dedup' : true);
+                                    h.ui.setText(
+                                        statusLabel,
+                                        `${completed} / ${totalDownloadable} (📦 unpacked ${savedFromArchive}${dedupedFromArchive ? `, ${dedupedFromArchive} dupes` : ''}) 🢒 ${ellipsedUrl}`,
+                                    );
+                                    h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                    h.ui.setElProps(totalPB, {
+                                        width: `${(completed / totalDownloadable) * 100}%`,
+                                    });
+                                    return;
+                                }
+
+                                log.post.info(
+                                    postId,
+                                    `::Archive not extracted (${(extractRes && extractRes.reason) || 'unsupported/locked'}) -> saving archive in Archives/::: ${basename}`,
+                                    postNumber,
+                                );
                             }
                         }
 
                         if (useContentDedup) {
+                            if (blobFingerprint) xfpdMarkSeenThreadHash(blobFingerprint, activeThreadKey);
                             const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
                             if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
                         }
