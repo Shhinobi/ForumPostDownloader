@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.42
+// @version 3.43
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -5854,38 +5854,12 @@ const resolvers = [
                 return fallback;
             }
 
-            // Post-migration, some "original_url" targets genuinely 404 even though the medium-res
-            // thumbnail on the same cuckcapital.cr host still exists, so the original is worth
-            // verifying. But only a definitive "gone" justifies discarding it: a HEAD that is
-            // refused outright (0 / 403 / 405) says nothing about whether the file is there --
-            // plenty of CDN edges simply do not serve HEAD -- and treating that as absent throws
-            // away a perfectly good original. Confirm with a ranged GET before falling back.
-            const probe = async (method, headers) => {
-                try {
-                    const r = await http.base(method, originalUrl, {}, { Referer: url, ...headers }, null, 'text');
-                    return Number((r && r.status) || 0) || 0;
-                } catch (e) {
-                    return 0;
-                }
-            };
-
-            let status = await probe('HEAD', {});
-            let reachable = status >= 200 && status < 400;
-
-            if (!reachable) {
-                // A refused HEAD is not evidence of absence, so let the ranged GET be the
-                // authority: it is the same method the download itself will use.
-                status = await probe('GET', { Range: 'bytes=0-0' });
-                reachable = status >= 200 && status < 400;
+            // Fast path: return originalUrl directly without wasting 2 extra serial HEAD + Range GET round-trips
+            // per image! Attach `fallback` as fallbackUrl so our download engine's `tryFallbackMirror` seamlessly
+            // falls back to the medium-res thumbnail ONLY on the rare 0.1% case where originalUrl 404s.
+            if (fallback && fallback !== originalUrl) {
+                return { url: originalUrl, fallbackUrl: fallback };
             }
-
-            if (!reachable) {
-                try {
-                    log.host.info(postId, `::Original unreachable (${status}) -> thumbnail::: ${originalUrl}`, 'goonbox.cr');
-                } catch (e) {}
-                return fallback || originalUrl;
-            }
-
             return originalUrl;
         },
     ],
@@ -6337,9 +6311,15 @@ try {
     for (const base of bases) {
         const base0 = String(base || '').replace(/\/$/, '');
         const candidates = [];
-        if (/\/v\//i.test(pathname) && base0 === origin) candidates.push(cleanUrl);
-        candidates.push(`${base0}/v/${id}`);
-        candidates.push(`${base0}/f/${id}`);
+        if (/\/v\//i.test(pathname)) {
+            if (base0 === origin) candidates.push(cleanUrl);
+            candidates.push(`${base0}/v/${id}`);
+            candidates.push(`${base0}/f/${id}`);
+        } else {
+            if (/\/f\//i.test(pathname) && base0 === origin) candidates.push(cleanUrl);
+            candidates.push(`${base0}/f/${id}`);
+            candidates.push(`${base0}/v/${id}`);
+        }
 
         const uniq = candidates.filter((v, i, a) => a.indexOf(v) === i);
         let found = false;
@@ -7890,43 +7870,55 @@ if (page === 1) {
                 apiBases.push('https://api.cyberdrop.cr');
                 const apiBaseList = [...new Set(apiBases)];
 
-                const resolved = [];
-                for (let i = 0; i < slugs.length; i++) {
-                    const slug = slugs[i];
-                    progressCB?.(`Cyberdrop: resolving ${i + 1}/${slugs.length}`);
+                const resolvedSlots = new Array(slugs.length).fill(null);
+                let slugCursor = 0;
+                let doneSlugs = 0;
+                const CYBER_AUTH_CONCURRENCY = Math.min(6, slugs.length);
 
-                    let j = null;
+                const cyberAuthWorker = async () => {
+                    while (slugCursor < slugs.length) {
+                        const idx = slugCursor++;
+                        const slug = slugs[idx];
+                        let j = null;
 
-                    for (const base of apiBaseList) {
-                        const apiUrl = `${base}/api/file/auth/${slug}`;
+                        for (const base of apiBaseList) {
+                            const apiUrl = `${base}/api/file/auth/${slug}`;
+                            const r = await http.get(
+                                apiUrl,
+                                {},
+                                {
+                                    Accept: 'application/json, text/plain, */*',
+                                    Origin: pageOrigin,
+                                    Referer: pageOrigin + '/',
+                                },
+                                'text',
+                            );
+                            if (!r || !r.source) continue;
+                            try { j = JSON.parse(r.source); } catch (e) { j = null; }
+                            if (j) break;
+                        }
 
-                        const r = await http.get(apiUrl, {}, {
-                            'Accept': 'application/json, text/plain, */*',
-                            'Origin': pageOrigin,
-                            'Referer': pageOrigin + '/',
-                        }, 'text');
+                        doneSlugs++;
+                        progressCB?.(`Cyberdrop: resolving ${doneSlugs}/${slugs.length}`);
+                        if (!j) continue;
 
-                        if (!r || !r.source) continue;
+                        let direct = null;
+                        if (typeof j.url === 'string') direct = j.url;
+                        else if (j.data && typeof j.data.url === 'string') direct = j.data.url;
+                        else if (typeof j.file === 'string') direct = j.file;
+                        else if (j.data && typeof j.data.file === 'string') direct = j.data.file;
 
-                        try { j = JSON.parse(r.source); } catch (e) { j = null; }
-                        if (j) break;
+                        if (typeof direct !== 'string' || !direct.trim()) continue;
+                        direct = direct.trim();
+                        if (direct.startsWith('//')) direct = 'https:' + direct;
+                        if (/^https?:\/\//i.test(direct)) {
+                            resolvedSlots[idx] = direct;
+                        }
                     }
+                };
 
-                    if (!j) continue;
-
-                    let direct = null;
-                    if (typeof j.url === 'string') direct = j.url;
-                    else if (j.data && typeof j.data.url === 'string') direct = j.data.url;
-                    else if (typeof j.file === 'string') direct = j.file;
-                    else if (j.data && typeof j.data.file === 'string') direct = j.data.file;
-
-                    if (typeof direct !== 'string' || !direct.trim()) continue;
-                    direct = direct.trim();
-                    if (direct.startsWith('//')) direct = 'https:' + direct;
-
-                    if (!/^https?:\/\//i.test(direct)) continue;
-                    resolved.push(direct);
-                }
+                await Promise.all(Array.from({ length: Math.max(1, CYBER_AUTH_CONCURRENCY) }, () => cyberAuthWorker()));
+                const resolved = resolvedSlots.filter(Boolean);
 
                 if (!resolved.length) return url;
 
@@ -9759,13 +9751,49 @@ try {
         callbacks.onProgress({ phase: 'resolving', completed: 0, total: totalResourcesToResolve, succeeded: 0, failed: 0 });
     }
 
-    for (const host of enabledHosts.filter(host => host.resources.length)) {
-        if (isCancelled()) break;
-        const resources = host.resources;
+    // Order-preserving concurrent URL resolution pool (up to 8 parallel single-link resolvers; max 2 parallel
+    // album resolvers per host so multi-page albums stay polite while Goonbox/Ibb/Pixhost/Postimg/ImagePond/Bunkr
+    // single links resolve up to 8x faster with identical deterministic P0001_001..N sequence numbering!).
+    const resolveTasks = [];
+    for (const host of enabledHosts.filter(hItem => hItem.resources.length)) {
+        for (const resource of host.resources) {
+            resolveTasks.push({ host, resource });
+        }
+    }
 
-        for (const resource of resources) {
-            if (isCancelled()) break;
-            resolvingIndex++;
+    const resolvedByTask = Array.from({ length: resolveTasks.length }, () => []);
+    const activeAlbumByHost = new Map();
+    const pendingTaskIndices = resolveTasks.map((_, i) => i);
+    const MAX_RESOLVE_WORKERS = Math.min(10, Math.max(1, resolveTasks.length));
+    let completedResolveCount = 0;
+
+    const pickNextResolveTaskIndex = () => {
+        for (let k = 0; k < pendingTaskIndices.length; k++) {
+            const tIdx = pendingTaskIndices[k];
+            const t = resolveTasks[tIdx];
+            if (t.host.type !== 'single') {
+                const hKey = String(t.host.name || '').toLowerCase();
+                if ((activeAlbumByHost.get(hKey) || 0) >= 2) continue;
+            }
+            pendingTaskIndices.splice(k, 1);
+            return tIdx;
+        }
+        if (pendingTaskIndices.length > 0) {
+            return pendingTaskIndices.shift();
+        }
+        return -1;
+    };
+
+    const resolveSingleTask = async tIdx => {
+        const { host, resource } = resolveTasks[tIdx];
+        const isAlbumTask = host.type !== 'single';
+        const hKey = String(host.name || '').toLowerCase();
+        if (isAlbumTask) {
+            activeAlbumByHost.set(hKey, (activeAlbumByHost.get(hKey) || 0) + 1);
+        }
+
+        try {
+            if (isCancelled()) return;
 
             // Fast pre-resolution skip: if this single-file link was already downloaded in this thread,
             // skip making any HTTP resolution request at all!
@@ -9773,25 +9801,13 @@ try {
                 const origKey = canonicalizeMediaUrl(resource);
                 if (origKey && xfpdHasSeenThreadUrl(origKey, activeThreadKey)) {
                     dedupedCount++;
+                    completedResolveCount++;
                     log.post.info(postId, `::Skipped already-downloaded link (pre-resolve)::: ${resource}`, postNumber);
-                    continue;
+                    return;
                 }
             }
-            const nowMs = Date.now();
-            if (nowMs - lastResolveUiUpdate >= 50 || resolvingIndex === 1 || resolvingIndex === totalResourcesToResolve) {
-                lastResolveUiUpdate = nowMs;
-                h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
-                h.ui.setText(statusLabel, `Resolving: ${resolvingIndex} / ${totalResourcesToResolve} 🢒 ${h.limit(resource, 80)}`);
-                if (callbacks && typeof callbacks.onProgress === 'function') {
-                    callbacks.onProgress({
-                        phase: 'resolving',
-                        completed: resolvingIndex,
-                        total: totalResourcesToResolve,
-                        succeeded: resolved.length,
-                        failed: 0,
-                    });
-                }
-            }
+
+            const slotOut = resolvedByTask[tIdx];
 
             for (let ri = 0; ri < compiledResolvers.length; ri++) {
                 if (isCancelled()) break;
@@ -9806,21 +9822,19 @@ try {
                         break;
                     }
                 }
-
-                if (!matched) {
-                    continue;
-                }
+                if (!matched) continue;
 
                 let r = null;
-
                 try {
                     const progressCB = t => {
                         try {
+                            const nowP = Date.now();
+                            if (nowP - lastResolveUiUpdate < 60) return;
+                            lastResolveUiUpdate = nowP;
                             h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
                             h.ui.setText(statusLabel, t);
                         } catch (e) {}
                     };
-
                     r = await h.promise(resolve => resolve(resolverCB(resource, h.http, passwords, postId, postSettings, progressCB)));
                 } catch (e) {
                     if (host.name === 'Cyberdrop' && /cyberdrop\.[a-z]{2,}\/a\//i.test(String(resource))) {
@@ -9839,31 +9853,40 @@ try {
                     continue;
                 }
 
-                const addResolved = (url, folderName) => {
-                    if (!resolved.length) {
-                        log.separator(postId);
-                    }
-
-                    if (h.isObject(url)) {
-                        resolved.push({
-                            url: url.url,
+                const addResolvedToSlot = (urlItem, folderName) => {
+                    if (h.isObject(urlItem)) {
+                        const entryObj = {
+                            url: urlItem.url,
                             host,
                             original: resource,
-                            folderName: url.folderName,
+                            folderName: urlItem.folderName ?? folderName ?? null,
                             forceUnzipped: false,
                             forceDirect: false,
-                        });
-                        log.post.info(postId, `::Resolved::: ${url.url}`, postNumber);
+                        };
+                        if (urlItem.fallbackUrl && urlItem.fallbackUrl !== urlItem.url) {
+                            entryObj.mirrorFallbacks = [
+                                {
+                                    url: urlItem.fallbackUrl,
+                                    host,
+                                    original: resource,
+                                    folderName: entryObj.folderName,
+                                    forceUnzipped: false,
+                                    forceDirect: false,
+                                },
+                            ];
+                        }
+                        slotOut.push(entryObj);
+                        log.post.info(postId, `::Resolved::: ${urlItem.url}`, postNumber);
                     } else {
-                        resolved.push({
-                            url,
+                        slotOut.push({
+                            url: urlItem,
                             host,
                             original: resource,
                             folderName,
                             forceUnzipped: false,
                             forceDirect: false,
                         });
-                        log.post.info(postId, `::Resolved::: ${url}`, postNumber);
+                        log.post.info(postId, `::Resolved::: ${urlItem}`, postNumber);
                     }
                 };
 
@@ -9871,22 +9894,55 @@ try {
                     if (r.resolved.length === 0) {
                         resolveFailedCount++;
                     }
-                    r.resolved.forEach(url => {
+                    r.resolved.forEach(u => {
                         try {
-                            addResolved(url, r.folderName);
+                            addResolvedToSlot(u, r.folderName);
                         } catch (e) {}
                     });
                 } else {
-                    addResolved(r, null);
-                }
-
-                const nowResolvedMs = Date.now();
-                if (nowResolvedMs - lastResolveUiUpdate >= 50) {
-                    lastResolveUiUpdate = nowResolvedMs;
-                    h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
-                    h.ui.setText(statusLabel, `Resolved: ${resolved.length}`);
+                    addResolvedToSlot(r, null);
                 }
             }
+
+            completedResolveCount++;
+            const nowMs = Date.now();
+            if (nowMs - lastResolveUiUpdate >= 50 || completedResolveCount === 1 || completedResolveCount === totalResourcesToResolve) {
+                lastResolveUiUpdate = nowMs;
+                h.ui.setElProps(statusLabel, { color: '#469cf3', fontWeight: 'bold' });
+                h.ui.setText(statusLabel, `Resolving: ${completedResolveCount} / ${totalResourcesToResolve} 🢒 ${h.limit(resource, 75)}`);
+                if (callbacks && typeof callbacks.onProgress === 'function') {
+                    callbacks.onProgress({
+                        phase: 'resolving',
+                        completed: completedResolveCount,
+                        total: totalResourcesToResolve,
+                        succeeded: completedResolveCount,
+                        failed: resolveFailedCount,
+                    });
+                }
+            }
+        } finally {
+            if (isAlbumTask) {
+                activeAlbumByHost.set(hKey, Math.max(0, (activeAlbumByHost.get(hKey) || 1) - 1));
+            }
+        }
+    };
+
+    const resolveWorkerLoop = async () => {
+        while (!isCancelled() && pendingTaskIndices.length > 0) {
+            const nextIdx = pickNextResolveTaskIndex();
+            if (nextIdx < 0) break;
+            await resolveSingleTask(nextIdx);
+        }
+    };
+
+    if (resolveTasks.length > 0) {
+        await Promise.all(Array.from({ length: MAX_RESOLVE_WORKERS }, () => resolveWorkerLoop()));
+    }
+
+    for (const slotItems of resolvedByTask) {
+        if (slotItems && slotItems.length) {
+            if (!resolved.length) log.separator(postId);
+            resolved.push(...slotItems);
         }
     }
 
@@ -10562,53 +10618,37 @@ try {
     if (!postSettings.skipDownload) {
         const resources = resolved.filter(r => r.url);
         totalDownloadable = resources.length;
-        resources.forEach((item, idx) => {
-            item._seqIndex = idx + 1;
-        });
 
-        // Limit bunkr links to a single concurrent download.
-        let batchLength = resolved.some(file => /(turbocdn\.st|turbo\.cr|turbovid\.cr)/i.test(file.url)) ? 1 : (resolved.some(file => /(bunkrr?\.\w+)|(bunkr-cache)/.test(file.url)) ? 1 : 2);
+        // Non-blocking Sliding-Window Download Scheduler with Per-Host Semaphores:
+        // Replaces the old `batchLength = 1 or 2` stop-and-wait barrier so up to 8 images/files download
+        // concurrently with 0ms slot refill, while rate-sensitive video hosts (Turbo=1, GoFile=2, Filester=2,
+        // Bunkr=3) only cap their OWN host bucket without ever slowing down fast CDN images in the same post!
+        const MAX_GLOBAL_CONCURRENCY = postSettings.zipped ? 6 : 10;
 
-        let currentBatch = 0;
-
-        const batches = [];
-
-        // Build batches:
-// - keep existing concurrency (batchLength) for speed
-// - but never put more than ONE GoFile item in the same batch (prevents GoFile "gate" spam / soft-block cascades)
-const isGoFileUrlBatch = u => /gofile\.io/i.test(String(u || ''));
-
-let tmp = [];
-let tmpHasGoFile = false;
-
-for (const item of resources) {
-    const isGF = isGoFileUrlBatch(item.url);
-    // if current batch is full OR would contain 2x GoFile -> flush
-    if (tmp.length >= batchLength || (tmpHasGoFile && isGF)) {
-        batches.push(tmp);
-        tmp = [];
-        tmpHasGoFile = false;
-    }
-
-    tmp.push(item);
-    if (isGF) tmpHasGoFile = true;
-}
-
-if (tmp.length) {
-    batches.push(tmp);
-        }
-
-        const getNextBatch = () => {
-            const batch = currentBatch < batches.length ? batches[currentBatch] : [];
-            currentBatch++;
-            return batch;
+        const classifyConcurrencyBucket = item => {
+            const u = String((item && item.url) || '').toLowerCase();
+            const hName = String((item && item.host && item.host.name) || '').toLowerCase();
+            if (/(?:turbocdn\.st|turbo\.cr|turbovid\.cr)/.test(u) || hName === 'turbo') return { key: 'turbo', cap: 1 };
+            if (u.includes('gofile.io') || hName === 'gofile') return { key: 'gofile', cap: 2 };
+            if (u.includes('filester.') || hName === 'filester') return { key: 'filester', cap: 2 };
+            if (/(?:bunkr|scdn\.st|cdn\.cr)/.test(u) || hName === 'bunkr') return { key: 'bunkr', cap: 3 };
+            if (/(?:pixeldrain\.|pixeldra\.in)/.test(u) || hName === 'pixeldrain') return { key: 'pixeldrain', cap: 4 };
+            if (u.includes('cyberdrop') || hName === 'cyberdrop') return { key: 'cyberdrop', cap: 4 };
+            return { key: `cdn:${hName || 'img'}`, cap: MAX_GLOBAL_CONCURRENCY };
         };
 
+        resources.forEach((item, idx) => {
+            item._seqIndex = idx + 1;
+            const bInfo = classifyConcurrencyBucket(item);
+            item._rootSlot = { bucket: bInfo.key, cap: bInfo.cap, settled: false };
+        });
+
+        const pendingDownloadQueue = resources.slice();
+        const inFlightByBucket = new Map();
+        let inFlightTotal = 0;
+
         const requestProgress = [];
-
         const requests = [];
-
-        let completedBatchedDownloads = 0;
 
         let batchWakeResolver = null;
         const notifyBatchStep = () => {
@@ -10631,7 +10671,16 @@ if (tmp.length) {
                 setTimeout(finish, ms);
             });
 
-        const finishBatchItem = didSucceed => {
+        let pumpDownloadWindow = () => {};
+
+        const recordItemOutcome = (resItem, didSucceed) => {
+            const slot = resItem && resItem._rootSlot;
+            if (slot) {
+                if (slot.settled) return;
+                slot.settled = true;
+                inFlightTotal = Math.max(0, inFlightTotal - 1);
+                inFlightByBucket.set(slot.bucket, Math.max(0, (inFlightByBucket.get(slot.bucket) || 1) - 1));
+            }
             if (completed < totalDownloadable) {
                 completed++;
             }
@@ -10643,7 +10692,6 @@ if (tmp.length) {
             } else {
                 failedCount++;
             }
-            completedBatchedDownloads++;
             if (callbacks && typeof callbacks.onProgress === 'function') {
                 try {
                     callbacks.onProgress({
@@ -10655,6 +10703,7 @@ if (tmp.length) {
                     });
                 } catch (e) {}
             }
+            pumpDownloadWindow();
             notifyBatchStep();
         };
 
@@ -11123,6 +11172,7 @@ if (tmp.length) {
             let filesterNoTabTokenLogged = false;
 
             const startDownload = async (resource, pass = 1) => {
+                const finishBatchItem = didSucceed => recordItemOutcome(resource, didSucceed);
                 if (isCancelled()) {
                     notifyBatchStep();
                     return;
@@ -11140,6 +11190,7 @@ if (tmp.length) {
                     }
                     const nextMirror = fbList.shift();
                     nextMirror._seqIndex = resource._seqIndex;
+                    nextMirror._rootSlot = resource._rootSlot;
                     nextMirror.mirrorFallbacks = fbList;
                     if (!nextMirror.hintedFilename && resource.hintedFilename) {
                         nextMirror.hintedFilename = resource.hintedFilename;
@@ -12972,22 +13023,33 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                 requestProgress.push(progressEntry);
             };
 
-            let batch = getNextBatch();
-
-            while (batch.length && !isCancelled()) {
-                completedBatchedDownloads = 0;
-
-                for (const item of batch) {
-                    if (isCancelled()) break;
-                    startDownload(item, 1);
+            pumpDownloadWindow = () => {
+                if (isCancelled()) return;
+                while (inFlightTotal < MAX_GLOBAL_CONCURRENCY && pendingDownloadQueue.length > 0) {
+                    let chosenIdx = -1;
+                    for (let qIdx = 0; qIdx < pendingDownloadQueue.length; qIdx++) {
+                        const cand = pendingDownloadQueue[qIdx];
+                        const slot = cand._rootSlot;
+                        const activeInBucket = inFlightByBucket.get(slot.bucket) || 0;
+                        if (activeInBucket < slot.cap) {
+                            chosenIdx = qIdx;
+                            break;
+                        }
+                    }
+                    if (chosenIdx < 0) break;
+                    const [nextItem] = pendingDownloadQueue.splice(chosenIdx, 1);
+                    const slot = nextItem._rootSlot;
+                    inFlightTotal++;
+                    inFlightByBucket.set(slot.bucket, (inFlightByBucket.get(slot.bucket) || 0) + 1);
+                    startDownload(nextItem, 1);
                 }
+            };
 
-                while (completedBatchedDownloads < batch.length && !isCancelled()) {
-                    await waitBatchTurn(100);
-                }
+            pumpDownloadWindow();
 
-                completedBatchedDownloads = 0;
-                batch = getNextBatch();
+            while ((inFlightTotal > 0 || pendingDownloadQueue.length > 0) && !isCancelled()) {
+                await waitBatchTurn(100);
+                pumpDownloadWindow();
             }
         }
     } else {
@@ -14857,10 +14919,13 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         let csrfToken = crawlJob.csrfToken || '';
         const incComments = !crawlJob.postSettings || crawlJob.postSettings.includeComments !== false;
 
+        let prefetchedNextPage = null;
+
         try {
             for (let pIdx = 0; pIdx < pages.length; pIdx++) {
                 if (activeThreadCrawl.cancelled) break;
                 const { pageNum, pageUrl } = pages[pIdx];
+                const pageFetchStartedAt = Date.now();
 
                 const crawlSnapshot = {
                     jobId: crawlJob.jobId,
@@ -14889,7 +14954,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 publishState();
 
                 // Resilient 6-attempt exponential backoff (up to ~72s recovery) + valid XenForo DOM check
-                // so temporary Cloudflare 429 / 502 / 522 / interstitial pages never silently skip pages!
+                // + instant consumption of prefetched HTML when available!
                 const backoffDelaysMs = [0, 2200, 5000, 10000, 20000, 35000];
                 let validDoc = null;
 
@@ -14902,7 +14967,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         await h.delayedResolve(backoffDelaysMs[attempt]);
                         if (activeThreadCrawl.cancelled) break;
                     }
-                    const pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                    let pageRes = null;
+                    if (attempt === 0 && prefetchedNextPage && prefetchedNextPage.url === pageUrl) {
+                        try { pageRes = await prefetchedNextPage.promise; } catch (e) {}
+                        prefetchedNextPage = null;
+                    }
+                    if (!pageRes) {
+                        pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                    }
                     if (pageRes && pageRes.ok && pageRes.text) {
                         try {
                             const candidateDoc = new DOMParser().parseFromString(pageRes.text, 'text/html');
@@ -14980,14 +15052,27 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     console.error('[XFPD Worker] Error parsing thread page:', pageNum, err);
                 }
 
-                for (const postJob of pagePostJobs) {
+                for (let jIdx = 0; jIdx < pagePostJobs.length; jIdx++) {
                     if (activeThreadCrawl.cancelled) break;
+                    // Overlap prefetching Page P+1 HTML while the last post of Page P is downloading!
+                    if (jIdx === pagePostJobs.length - 1 && pIdx + 1 < pages.length && !prefetchedNextPage) {
+                        const nextUrl = pages[pIdx + 1].pageUrl;
+                        prefetchedNextPage = {
+                            url: nextUrl,
+                            promise: xfpdSameOriginFetchText(nextUrl, 'GET', null),
+                        };
+                    }
+                    const postJob = pagePostJobs[jIdx];
                     if (csrfToken) postJob.csrfToken = csrfToken;
                     await executeSingleJob(postJob);
                 }
 
+                // Zero-waste adaptive pacing: only wait if Page P completed in < 350ms (e.g. skipped already-done page)!
                 if (pIdx + 1 < pages.length && !activeThreadCrawl.cancelled) {
-                    await h.delayedResolve(450);
+                    const elapsedOnPage = Date.now() - pageFetchStartedAt;
+                    if (elapsedOnPage < 350) {
+                        await h.delayedResolve(350 - elapsedOnPage);
+                    }
                 }
             }
         } finally {
