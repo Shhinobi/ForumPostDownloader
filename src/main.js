@@ -749,14 +749,18 @@ const resolvers = [
                     return null;
                 }
 
+                const albumOrigin = (() => {
+                    try { return new URL(url).origin; } catch (e) { return 'https://jpg6.su'; }
+                })();
+
                 const attemptWithPassword = async password => {
                     const { source, dom } = await http.post(
                         url,
-                        `auth_token=${authToken}&content-password=${password}`,
+                        `auth_token=${encodeURIComponent(authToken)}&content-password=${encodeURIComponent(password)}`,
                         {},
                         {
                             Referer: url,
-                            Origin: 'https://jpg6.su',
+                            Origin: albumOrigin,
                             'Content-Type': 'application/x-www-form-urlencoded',
                         },
                     );
@@ -764,8 +768,6 @@ const resolvers = [
                 };
 
                 let authenticated = false;
-
-                spoilers = ['ramona'];
 
                 for (const spoiler of spoilers) {
                     const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
@@ -827,11 +829,44 @@ const resolvers = [
     [[/i\.ibb\.co\/[a-zA-Z0-9-_.]+/, /:!([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/], url => url],
     [
         [/([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
-        async (url, http) => {
+        async (url, http, spoilers, postId) => {
             const albumId = url.replace(/\?.*/, '').split('/').reverse()[0];
-            const { source, dom } = await http.get(url);
-            const imageCount = Number(dom.querySelector('span[data-text="image-count"]').innerText);
-            const pageCount = Math.ceil(imageCount / 32);
+            let { source, dom } = await http.get(url);
+
+            if (source && h.contains('Please enter your password to continue', source)) {
+                const pwToken = dom?.querySelector('input[name="auth_token"]')?.getAttribute('value') || h.re.match(/(?<=auth_token=").*?(?=")/i, source);
+                if (!pwToken || !spoilers || !spoilers.length) {
+                    log.host.error(postId, `::Password required for ibb.co album::: ${url}`, 'ibb.co');
+                    return null;
+                }
+                let unlocked = false;
+                for (const sp of spoilers) {
+                    const { source: src, dom: d } = await http.post(
+                        url,
+                        `auth_token=${encodeURIComponent(pwToken)}&content-password=${encodeURIComponent(sp.trim())}`,
+                        {},
+                        {
+                            Referer: url,
+                            Origin: new URL(url).origin,
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    if (src && !h.contains('Please enter your password to continue', src)) {
+                        source = src;
+                        dom = d;
+                        unlocked = true;
+                        break;
+                    }
+                }
+                if (!unlocked) {
+                    log.host.error(postId, `::Could not unlock password-protected ibb.co album::: ${url}`, 'ibb.co');
+                    return null;
+                }
+            }
+
+            const countEl = dom && dom.querySelector('span[data-text="image-count"]');
+            const imageCount = Number((countEl && (countEl.innerText || countEl.textContent)) || 0) || 0;
+            const pageCount = Math.max(1, Math.ceil(imageCount / 32));
             const authToken = h.re.match(/(?<=auth_token=").*?(?=")/i, source);
 
             const fetchPageData = async (albumId, page, seekEnd, authToken) => {
@@ -1837,8 +1872,23 @@ if (page === 1) {
 
                         log.host.info(postId, `::Trying with ${spoilers.length} available password(s)::`, 'gofile.io');
 
+                    const computeSha256Hex = async str => {
+                        const fn =
+                            (typeof sha256 === 'function' && sha256) ||
+                            (typeof window !== 'undefined' && typeof window.sha256 === 'function' && window.sha256);
+                        if (fn) return String(fn(String(str)));
+                        const subtle =
+                            (typeof crypto !== 'undefined' && crypto && crypto.subtle) ||
+                            (typeof window !== 'undefined' && window.crypto && window.crypto.subtle);
+                        if (subtle && typeof subtle.digest === 'function') {
+                            const buf = await subtle.digest('SHA-256', new TextEncoder().encode(String(str)));
+                            return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+                        }
+                        return '';
+                    };
+
                     for (const spoiler of spoilers) {
-                        const hash = sha256(spoiler);
+                        const hash = await computeSha256Hex(spoiler);
                     const attempt = await apiContents(id, hash);
 
                     if (attempt && attempt.status === 'ok') {

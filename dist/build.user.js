@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.39
+// @version 3.40
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -3657,28 +3657,100 @@ function xfpdCleanContentFragmentClone(fragmentClone) {
     return fragmentClone;
 }
 
+function xfpdNodeToLinePreservingText(rootNode) {
+    if (!rootNode) return '';
+    try {
+        const clone = rootNode.cloneNode(true);
+        if (clone.querySelectorAll) {
+            clone.querySelectorAll('script, style, .bbCodeBlock--unfurl, .js-unfurl').forEach(el => el.remove());
+            clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            clone.querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6').forEach(blk => {
+                blk.prepend('\n');
+                blk.append('\n');
+            });
+        }
+        return String(clone.textContent || '');
+    } catch (e) {
+        return String(rootNode.innerText || rootNode.textContent || '');
+    }
+}
+
 function xfpdExtractSpoilersFromFragment(fragmentClone) {
     if (!fragmentClone || !fragmentClone.querySelectorAll) return [];
-    const textVal = fragmentClone.innerText || fragmentClone.textContent || '';
-    return [...fragmentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content')]
-        .filter(s => !s.querySelector('.bbCodeBlock--unfurl'))
-        .concat([...fragmentClone.querySelectorAll('.bbCodeInlineSpoiler')].filter(s => !s.querySelector('.bbCodeBlock--unfurl')))
-        .map(s => s.innerText || s.textContent || '')
-        .concat(
-            h.re
-                .matchAll(/(?<=pw|pass|passwd|password)(\s:|:)?\s+?[a-zA-Z0-9~!@#$%^&*()_+{}|:'"<>?\/,;.]+/gis, textVal)
-                .map(s => s.trim()),
-        )
-        .map(s =>
-            s
-                .trim()
-                .replace(/^:/, '')
-                .replace(/\bp:\b/i, '')
-                .replace(/\bpw:\b/i, '')
-                .replace(/\bkey:\b/i, '')
-                .trim(),
-        )
-        .filter(s => s !== '');
+
+    const out = [];
+    const seen = new Set();
+    const pushCandidate = raw => {
+        if (!raw) return;
+        let s = String(raw).replace(/\r/g, '').trim();
+        if (!s || /^https?:\/\//i.test(s) || s.length > 120) return;
+
+        // Strip common password prefixes: "PW is Ridley", "pw: misterjones", "password = abc", "senha: 123", etc.
+        const stripped = s
+            .replace(/^(?:the\s+)?(?:pw|p\/w|pass(?:word|wd)?|key|code|pin|senha)\s*(?::|=|-|–|—|\bis\b|\bé\b)\s*/i, '')
+            .replace(/^(?:pw|p|key)\s*:\s*/i, '')
+            .trim();
+
+        const addOne = val => {
+            const v = String(val || '').trim();
+            if (!v || v.length > 100 || /^https?:\/\//i.test(v)) return;
+            if (!seen.has(v)) {
+                seen.add(v);
+                out.push(v);
+            }
+        };
+
+        addOne(stripped);
+
+        // Unwrap surrounding quotes/brackets/parens if present (e.g. "Ridley", 'misterjones', [pass123], misterjones))
+        const unwrapped = stripped
+            .replace(/^["'`«“‘\[({]+/, '')
+            .replace(/["'`»”’\])}.;,!]+$/, '')
+            .trim();
+        if (unwrapped && unwrapped !== stripped) {
+            addOne(unwrapped);
+        }
+
+        // If trailing commentary followed the password on the same line (e.g. "misterjones (enjoy!)"), also add first token
+        if (/\s/.test(unwrapped)) {
+            const firstTok = unwrapped.split(/\s+/)[0].replace(/[.,;!)}\]]+$/, '');
+            if (firstTok && !/^(?:is|é|the|none|no|n\/a)$/i.test(firstTok)) {
+                addOne(firstTok);
+            }
+        }
+
+        // Also keep raw spoiler text if it differed and had no prefix (in case the literal password contained "key" etc.)
+        if (stripped !== s && !/\s/.test(s)) {
+            addOne(s);
+        }
+    };
+
+    // 1) Explicit BBCode spoilers ([SPOILER] & [ISPOILER])
+    const spoilerNodes = [
+        ...fragmentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content'),
+        ...fragmentClone.querySelectorAll('.bbCodeInlineSpoiler'),
+    ].filter(s => !s.querySelector('.bbCodeBlock--unfurl'));
+
+    for (const spNode of spoilerNodes) {
+        const spText = xfpdNodeToLinePreservingText(spNode);
+        for (const line of spText.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed) pushCandidate(trimmed);
+        }
+    }
+
+    // 2) Plain-text password lines in post/comment body (preserving <br> line breaks so next paragraph never glues on!)
+    const bodyText = xfpdNodeToLinePreservingText(fragmentClone);
+    const pwLineRe =
+        /(?:^|[\s([{-])(?:the\s+)?(?:pw|p\/w|pass(?:word|wd)?|key|senha)(?:\s*(?::|=|-|–|—|\bis\b|\bé\b)\s*|\s+)(?!required\b|protected\b|needed\b|please\b|here\b|below\b|above\b)([^\r\n]+)/gi;
+    let m;
+    while ((m = pwLineRe.exec(bodyText)) !== null) {
+        if (m[1]) {
+            pushCandidate(m[1]);
+        }
+    }
+
+    return out;
 }
 
 const parsers = {
@@ -5770,14 +5842,18 @@ const resolvers = [
                     return null;
                 }
 
+                const albumOrigin = (() => {
+                    try { return new URL(url).origin; } catch (e) { return 'https://jpg6.su'; }
+                })();
+
                 const attemptWithPassword = async password => {
                     const { source, dom } = await http.post(
                         url,
-                        `auth_token=${authToken}&content-password=${password}`,
+                        `auth_token=${encodeURIComponent(authToken)}&content-password=${encodeURIComponent(password)}`,
                         {},
                         {
                             Referer: url,
-                            Origin: 'https://jpg6.su',
+                            Origin: albumOrigin,
                             'Content-Type': 'application/x-www-form-urlencoded',
                         },
                     );
@@ -5785,8 +5861,6 @@ const resolvers = [
                 };
 
                 let authenticated = false;
-
-                spoilers = ['ramona'];
 
                 for (const spoiler of spoilers) {
                     const { source: src, dom: d } = await attemptWithPassword(spoiler.trim());
@@ -5848,11 +5922,44 @@ const resolvers = [
     [[/i\.ibb\.co\/[a-zA-Z0-9-_.]+/, /:!([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/], url => url],
     [
         [/([a-z](\d+)?\.)?ibb.co\/album\/[a-zA-Z0-9_.-]+/],
-        async (url, http) => {
+        async (url, http, spoilers, postId) => {
             const albumId = url.replace(/\?.*/, '').split('/').reverse()[0];
-            const { source, dom } = await http.get(url);
-            const imageCount = Number(dom.querySelector('span[data-text="image-count"]').innerText);
-            const pageCount = Math.ceil(imageCount / 32);
+            let { source, dom } = await http.get(url);
+
+            if (source && h.contains('Please enter your password to continue', source)) {
+                const pwToken = dom?.querySelector('input[name="auth_token"]')?.getAttribute('value') || h.re.match(/(?<=auth_token=").*?(?=")/i, source);
+                if (!pwToken || !spoilers || !spoilers.length) {
+                    log.host.error(postId, `::Password required for ibb.co album::: ${url}`, 'ibb.co');
+                    return null;
+                }
+                let unlocked = false;
+                for (const sp of spoilers) {
+                    const { source: src, dom: d } = await http.post(
+                        url,
+                        `auth_token=${encodeURIComponent(pwToken)}&content-password=${encodeURIComponent(sp.trim())}`,
+                        {},
+                        {
+                            Referer: url,
+                            Origin: new URL(url).origin,
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                    );
+                    if (src && !h.contains('Please enter your password to continue', src)) {
+                        source = src;
+                        dom = d;
+                        unlocked = true;
+                        break;
+                    }
+                }
+                if (!unlocked) {
+                    log.host.error(postId, `::Could not unlock password-protected ibb.co album::: ${url}`, 'ibb.co');
+                    return null;
+                }
+            }
+
+            const countEl = dom && dom.querySelector('span[data-text="image-count"]');
+            const imageCount = Number((countEl && (countEl.innerText || countEl.textContent)) || 0) || 0;
+            const pageCount = Math.max(1, Math.ceil(imageCount / 32));
             const authToken = h.re.match(/(?<=auth_token=").*?(?=")/i, source);
 
             const fetchPageData = async (albumId, page, seekEnd, authToken) => {
@@ -6858,8 +6965,23 @@ if (page === 1) {
 
                         log.host.info(postId, `::Trying with ${spoilers.length} available password(s)::`, 'gofile.io');
 
+                    const computeSha256Hex = async str => {
+                        const fn =
+                            (typeof sha256 === 'function' && sha256) ||
+                            (typeof window !== 'undefined' && typeof window.sha256 === 'function' && window.sha256);
+                        if (fn) return String(fn(String(str)));
+                        const subtle =
+                            (typeof crypto !== 'undefined' && crypto && crypto.subtle) ||
+                            (typeof window !== 'undefined' && window.crypto && window.crypto.subtle);
+                        if (subtle && typeof subtle.digest === 'function') {
+                            const buf = await subtle.digest('SHA-256', new TextEncoder().encode(String(str)));
+                            return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+                        }
+                        return '';
+                    };
+
                     for (const spoiler of spoilers) {
-                        const hash = sha256(spoiler);
+                        const hash = await computeSha256Hex(spoiler);
                     const attempt = await apiContents(id, hash);
 
                     if (attempt && attempt.status === 'ok') {

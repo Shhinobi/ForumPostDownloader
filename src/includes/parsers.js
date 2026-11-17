@@ -403,28 +403,100 @@ function xfpdCleanContentFragmentClone(fragmentClone) {
     return fragmentClone;
 }
 
+function xfpdNodeToLinePreservingText(rootNode) {
+    if (!rootNode) return '';
+    try {
+        const clone = rootNode.cloneNode(true);
+        if (clone.querySelectorAll) {
+            clone.querySelectorAll('script, style, .bbCodeBlock--unfurl, .js-unfurl').forEach(el => el.remove());
+            clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+            clone.querySelectorAll('p, div, li, tr, h1, h2, h3, h4, h5, h6').forEach(blk => {
+                blk.prepend('\n');
+                blk.append('\n');
+            });
+        }
+        return String(clone.textContent || '');
+    } catch (e) {
+        return String(rootNode.innerText || rootNode.textContent || '');
+    }
+}
+
 function xfpdExtractSpoilersFromFragment(fragmentClone) {
     if (!fragmentClone || !fragmentClone.querySelectorAll) return [];
-    const textVal = fragmentClone.innerText || fragmentClone.textContent || '';
-    return [...fragmentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content')]
-        .filter(s => !s.querySelector('.bbCodeBlock--unfurl'))
-        .concat([...fragmentClone.querySelectorAll('.bbCodeInlineSpoiler')].filter(s => !s.querySelector('.bbCodeBlock--unfurl')))
-        .map(s => s.innerText || s.textContent || '')
-        .concat(
-            h.re
-                .matchAll(/(?<=pw|pass|passwd|password)(\s:|:)?\s+?[a-zA-Z0-9~!@#$%^&*()_+{}|:'"<>?\/,;.]+/gis, textVal)
-                .map(s => s.trim()),
-        )
-        .map(s =>
-            s
-                .trim()
-                .replace(/^:/, '')
-                .replace(/\bp:\b/i, '')
-                .replace(/\bpw:\b/i, '')
-                .replace(/\bkey:\b/i, '')
-                .trim(),
-        )
-        .filter(s => s !== '');
+
+    const out = [];
+    const seen = new Set();
+    const pushCandidate = raw => {
+        if (!raw) return;
+        let s = String(raw).replace(/\r/g, '').trim();
+        if (!s || /^https?:\/\//i.test(s) || s.length > 120) return;
+
+        // Strip common password prefixes: "PW is Ridley", "pw: misterjones", "password = abc", "senha: 123", etc.
+        const stripped = s
+            .replace(/^(?:the\s+)?(?:pw|p\/w|pass(?:word|wd)?|key|code|pin|senha)\s*(?::|=|-|–|—|\bis\b|\bé\b)\s*/i, '')
+            .replace(/^(?:pw|p|key)\s*:\s*/i, '')
+            .trim();
+
+        const addOne = val => {
+            const v = String(val || '').trim();
+            if (!v || v.length > 100 || /^https?:\/\//i.test(v)) return;
+            if (!seen.has(v)) {
+                seen.add(v);
+                out.push(v);
+            }
+        };
+
+        addOne(stripped);
+
+        // Unwrap surrounding quotes/brackets/parens if present (e.g. "Ridley", 'misterjones', [pass123], misterjones))
+        const unwrapped = stripped
+            .replace(/^["'`«“‘\[({]+/, '')
+            .replace(/["'`»”’\])}.;,!]+$/, '')
+            .trim();
+        if (unwrapped && unwrapped !== stripped) {
+            addOne(unwrapped);
+        }
+
+        // If trailing commentary followed the password on the same line (e.g. "misterjones (enjoy!)"), also add first token
+        if (/\s/.test(unwrapped)) {
+            const firstTok = unwrapped.split(/\s+/)[0].replace(/[.,;!)}\]]+$/, '');
+            if (firstTok && !/^(?:is|é|the|none|no|n\/a)$/i.test(firstTok)) {
+                addOne(firstTok);
+            }
+        }
+
+        // Also keep raw spoiler text if it differed and had no prefix (in case the literal password contained "key" etc.)
+        if (stripped !== s && !/\s/.test(s)) {
+            addOne(s);
+        }
+    };
+
+    // 1) Explicit BBCode spoilers ([SPOILER] & [ISPOILER])
+    const spoilerNodes = [
+        ...fragmentClone.querySelectorAll('.bbCodeBlock--spoiler > .bbCodeBlock-content'),
+        ...fragmentClone.querySelectorAll('.bbCodeInlineSpoiler'),
+    ].filter(s => !s.querySelector('.bbCodeBlock--unfurl'));
+
+    for (const spNode of spoilerNodes) {
+        const spText = xfpdNodeToLinePreservingText(spNode);
+        for (const line of spText.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed) pushCandidate(trimmed);
+        }
+    }
+
+    // 2) Plain-text password lines in post/comment body (preserving <br> line breaks so next paragraph never glues on!)
+    const bodyText = xfpdNodeToLinePreservingText(fragmentClone);
+    const pwLineRe =
+        /(?:^|[\s([{-])(?:the\s+)?(?:pw|p\/w|pass(?:word|wd)?|key|senha)(?:\s*(?::|=|-|–|—|\bis\b|\bé\b)\s*|\s+)(?!required\b|protected\b|needed\b|please\b|here\b|below\b|above\b)([^\r\n]+)/gi;
+    let m;
+    while ((m = pwLineRe.exec(bodyText)) !== null) {
+        if (m[1]) {
+            pushCandidate(m[1]);
+        }
+    }
+
+    return out;
 }
 
 const parsers = {
