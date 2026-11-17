@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.32
+// @version 3.33
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -161,6 +161,7 @@
 // @grant GM_log
 // @grant GM_openInTab
 // @grant GM_cookie
+// @grant window.close
 
 // ==/UserScript==
 // --- tab handle helper (Tampermonkey can return either a Tab object or a Promise<Tab>) ---
@@ -948,6 +949,244 @@ async function xfpdComputeBlobFingerprint(blob) {
     } catch (e) {
         return '';
     }
+}
+
+// --- Background Worker Queue IPC (Persistent Cross-Tab Download Queue) --------------------------
+const XFPD_WORKER_PARAM = 'xfpd_worker';
+const XFPD_WORKER_VAL = '1';
+const XFPD_K_QUEUE_CMD = 'xfpd_q_cmds';
+const XFPD_K_QUEUE_STATE = 'xfpd_q_state';
+const XFPD_K_WORKER_SPAWN = 'xfpd_q_spawning';
+
+const XFPD_WORKER_HEARTBEAT_MS = 1500;
+const XFPD_WORKER_ALIVE_TTL_MS = 5500;
+const XFPD_WORKER_IDLE_CLOSE_MS = 4500;
+
+let xfpdQueueCmdMirror = '';
+let xfpdQueueStateMirror = '';
+let xfpdQueueListenersBound = false;
+let xfpdSpawnedWorkerHandle = null;
+let xfpdCmdSeq = 0;
+
+const xfpdQueueStateSubscribers = new Set();
+const xfpdQueueCmdSubscribers = new Set();
+
+function xfpdIsWorkerTab() {
+    try {
+        return new URLSearchParams(location.search).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
+    } catch (e) {
+        return false;
+    }
+}
+
+function xfpdDefaultQueueState() {
+    return {
+        workerId: '',
+        workerHeartbeat: 0,
+        workerClosing: false,
+        ackCmdIds: [],
+        active: null,
+        queued: [],
+        history: [],
+        _updatedAt: 0,
+    };
+}
+
+function xfpdBindQueueStorageListeners() {
+    if (xfpdQueueListenersBound) return;
+    xfpdQueueListenersBound = true;
+
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+
+    if (addListener) {
+        try {
+            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => {
+                xfpdQueueStateMirror = String(newV || '');
+                const st = xfpdReadQueueState();
+                if (st.workerClosing && xfpdSpawnedWorkerHandle) {
+                    try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
+                    xfpdSpawnedWorkerHandle = null;
+                }
+                xfpdQueueStateSubscribers.forEach(cb => {
+                    try { cb(st); } catch (e) {}
+                });
+            });
+        } catch (e) {}
+
+        try {
+            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => {
+                xfpdQueueCmdMirror = String(newV || '');
+                xfpdQueueCmdSubscribers.forEach(cb => {
+                    try { cb(); } catch (e) {}
+                });
+            });
+        } catch (e) {}
+    }
+}
+
+function xfpdReadRawGmOrLs(key, mirrorStr = '') {
+    const candidates = [];
+    if (mirrorStr) {
+        const p = xfpdParsePrefsJson(mirrorStr);
+        if (p) candidates.push(p);
+    }
+    try {
+        if (typeof GM_getValue === 'function') {
+            const p = xfpdParsePrefsJson(GM_getValue(key, ''));
+            if (p) candidates.push(p);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            const p = xfpdParsePrefsJson(localStorage.getItem(key));
+            if (p) candidates.push(p);
+        }
+    } catch (e) {}
+
+    let best = null;
+    for (const c of candidates) {
+        if (!best || (Number(c._updatedAt || 0) || 0) > (Number(best._updatedAt || 0) || 0)) {
+            best = c;
+        }
+    }
+    return best;
+}
+
+function xfpdReadQueueState() {
+    xfpdBindQueueStorageListeners();
+    const raw = xfpdReadRawGmOrLs(XFPD_K_QUEUE_STATE, xfpdQueueStateMirror);
+    if (!raw || typeof raw !== 'object') return xfpdDefaultQueueState();
+    return {
+        workerId: String(raw.workerId || ''),
+        workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
+        workerClosing: !!raw.workerClosing,
+        ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
+        active: raw.active && typeof raw.active === 'object' ? raw.active : null,
+        queued: Array.isArray(raw.queued) ? raw.queued : [],
+        history: Array.isArray(raw.history) ? raw.history : [],
+        _updatedAt: Number(raw._updatedAt || 0) || 0,
+    };
+}
+
+function xfpdWriteQueueState(stateObj) {
+    const prev = xfpdReadQueueState();
+    const payload = {
+        ...xfpdDefaultQueueState(),
+        ...stateObj,
+        _updatedAt: Math.max(Date.now(), (Number(prev._updatedAt || 0) || 0) + 1),
+    };
+    const rawStr = JSON.stringify(payload);
+    xfpdQueueStateMirror = rawStr;
+    xfpdWriteStoredObject(XFPD_K_QUEUE_STATE, payload);
+    xfpdQueueStateSubscribers.forEach(cb => {
+        try { cb(payload); } catch (e) {}
+    });
+    return payload;
+}
+
+function xfpdIsQueueWorkerAlive(stateSnapshot = null) {
+    const st = stateSnapshot || xfpdReadQueueState();
+    return !st.workerClosing && st.workerHeartbeat > 0 && Date.now() - st.workerHeartbeat < XFPD_WORKER_ALIVE_TTL_MS;
+}
+
+function xfpdSendQueueCommand(type, payload = {}) {
+    xfpdBindQueueStorageListeners();
+    const state = xfpdReadQueueState();
+    const ackSet = new Set(state.ackCmdIds || []);
+    const existingObj = xfpdReadRawGmOrLs(XFPD_K_QUEUE_CMD, xfpdQueueCmdMirror);
+    const existingCmds = existingObj && Array.isArray(existingObj.cmds) ? existingObj.cmds : [];
+
+    // Keep only unacknowledged recent commands (< 5 min old) so the command log stays tiny!
+    const now = Date.now();
+    const pendingCmds = existingCmds.filter(c => c && c.id && !ackSet.has(c.id) && now - (Number(c.ts) || 0) < 300000);
+
+    const cmdId = `cmd_${now}_${Math.random().toString(36).slice(2, 7)}_${++xfpdCmdSeq}`;
+    pendingCmds.push({
+        id: cmdId,
+        type: String(type),
+        payload,
+        ts: now,
+    });
+
+    const nextBox = {
+        _updatedAt: Math.max(now, (Number((existingObj && existingObj._updatedAt) || 0) || 0) + 1),
+        cmds: pendingCmds,
+    };
+    xfpdQueueCmdMirror = JSON.stringify(nextBox);
+    xfpdWriteStoredObject(XFPD_K_QUEUE_CMD, nextBox);
+    xfpdQueueCmdSubscribers.forEach(cb => {
+        try { cb(); } catch (e) {}
+    });
+    return cmdId;
+}
+
+function xfpdReadPendingQueueCommands(processedIdsSet) {
+    const box = xfpdReadRawGmOrLs(XFPD_K_QUEUE_CMD, xfpdQueueCmdMirror);
+    if (!box || !Array.isArray(box.cmds)) return [];
+    return box.cmds.filter(c => c && c.id && !processedIdsSet.has(c.id));
+}
+
+function xfpdOnQueueStateChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueueStateSubscribers.add(cb);
+    return () => xfpdQueueStateSubscribers.delete(cb);
+}
+
+function xfpdOnQueueCommand(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueueCmdSubscribers.add(cb);
+    return () => xfpdQueueCmdSubscribers.delete(cb);
+}
+
+function xfpdBuildWorkerUrl() {
+    try {
+        const u = new URL(location.href);
+        u.hash = '';
+        u.searchParams.set(XFPD_WORKER_PARAM, XFPD_WORKER_VAL);
+        return u.href;
+    } catch (e) {
+        const base = String(location.href || '').split('#')[0];
+        return `${base}${base.includes('?') ? '&' : '?'}${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
+    }
+}
+
+function xfpdEnsureQueueWorkerTab() {
+    if (xfpdIsWorkerTab()) return true;
+    if (xfpdIsQueueWorkerAlive()) return true;
+
+    let spawnUntil = 0;
+    try {
+        spawnUntil = Number(GM_getValue(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
+    } catch (e) {}
+    if (Date.now() < spawnUntil) {
+        return true;
+    }
+
+    if (typeof GM_openInTab !== 'function') {
+        return false;
+    }
+
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(XFPD_K_WORKER_SPAWN, Date.now() + 7000);
+        }
+    } catch (e) {}
+
+    try {
+        const workerUrl = xfpdBuildWorkerUrl();
+        const handle = GM_openInTab(workerUrl, { active: false, insert: true, setParent: true });
+        if (handle) {
+            xfpdSpawnedWorkerHandle = handle;
+            return true;
+        }
+    } catch (e) {}
+    return false;
 }
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
@@ -3145,7 +3384,7 @@ const parsers = {
 
 const styles = {
     tippy: {
-        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}`,
+        theme: `.tippy-box[data-theme~=transparent]{background-color:transparent}.tippy-box[data-theme~=transparent]>.tippy-arrow{width:14px;height:14px}.tippy-box[data-theme~=transparent][data-placement^=top]>.tippy-arrow:before{border-width:7px 7px 0;border-top-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=bottom]>.tippy-arrow:before{border-width:0 7px 7px;border-bottom-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=left]>.tippy-arrow:before{border-width:7px 0 7px 7px;border-left-color:#3f3f3f}.tippy-box[data-theme~=transparent][data-placement^=right]>.tippy-arrow:before{border-width:7px 7px 7px 0;border-right-color:#3f3f3f}.tippy-box[data-theme~=transparent]>.tippy-backdrop{background-color:transparent;}.tippy-box[data-theme~=transparent]>.tippy-svg-arrow{fill:gainsboro}.menu-content{border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.45);border:1px solid rgba(128,128,128,.22)}.menu-content label.iconic:has(input:disabled){opacity:.45;cursor:not-allowed}#downloader-page-posts-list::-webkit-scrollbar,.menu-content::-webkit-scrollbar{width:6px}#downloader-page-posts-list::-webkit-scrollbar-thumb,.menu-content::-webkit-scrollbar-thumb{background:rgba(61,183,199,.45);border-radius:3px}.xfpd-settings-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px;margin-bottom:4px}.xfpd-scope-actions{display:inline-flex;align-items:center;gap:4px}.xfpd-scope-badge{font-size:10.5px;font-weight:600;opacity:.8}.xfpd-mini-btn{padding:1px 5px;border:1px solid rgba(61,183,199,.45);border-radius:3px;background:transparent;color:#3DB7C7;font-size:10.5px;font-weight:600;cursor:pointer;line-height:1.3}.xfpd-mini-btn:hover{background:rgba(61,183,199,.16)}.xfpd-select-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 8px 6px}.xfpd-select-label{font-size:12.5px;opacity:.92;white-space:nowrap}.xfpd-select{flex:1;max-width:170px;padding:3px 6px;border-radius:4px;border:1px solid rgba(128,128,128,.38);background:rgba(0,0,0,.22);color:inherit;font-size:12px;cursor:pointer;outline:none}.xfpd-select:disabled{opacity:.45;cursor:not-allowed}.xfpd-select option{background:#242323;color:#e8e8e8}.xfpd-action-btn{display:block;width:100%;margin:8px 0 4px;padding:6px 10px;border:none;border-radius:4px;background:#2b8a97;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;text-align:center;transition:background .15s ease,opacity .15s ease}.xfpd-action-btn:hover:not(:disabled){background:#35a4b3}.xfpd-action-btn:disabled{opacity:.5;cursor:not-allowed}.xfpd-copy-log-btn{margin-left:8px;padding:1px 6px;border:1px solid rgba(61,183,199,.5);border-radius:3px;background:transparent;color:#3DB7C7;font-size:11px;font-weight:600;cursor:pointer}.xfpd-copy-log-btn:hover{background:rgba(61,183,199,.15)}@keyframes xfpdPulseHighlight{0%,100%{color:#3DB7C7}50%{color:#ffae42}}.xfpd-pulse-highlight{animation:xfpdPulseHighlight .35s ease 2}#xfpd-queue-hud{position:fixed;right:18px;bottom:18px;width:340px;max-width:calc(100vw - 24px);background:rgba(28,28,32,.96);color:#eaeaea;border:1px solid rgba(61,183,199,.38);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:12.5px;z-index:2147483000;overflow:hidden;user-select:none;backdrop-filter:blur(6px)}#xfpd-queue-hud *{box-sizing:border-box}.xfpd-q-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:rgba(255,255,255,.04);cursor:pointer}.xfpd-q-title{font-weight:700;font-size:12.5px;color:#3DB7C7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-ctrls{display:inline-flex;align-items:center;gap:4px}.xfpd-q-btn{padding:2px 6px;border:1px solid rgba(255,255,255,.18);border-radius:4px;background:rgba(255,255,255,.06);color:#ddd;font-size:11px;font-weight:600;cursor:pointer;line-height:1.2}.xfpd-q-btn:hover{background:rgba(61,183,199,.22);border-color:#3DB7C7;color:#fff}.xfpd-q-btn-danger:hover{background:rgba(217,83,79,.28);border-color:#d9534f;color:#ffb3b0}.xfpd-q-top-bar{height:3px;width:100%;background:rgba(255,255,255,.08)}.xfpd-q-top-fill{height:100%;width:0%;background:#3DB7C7;transition:width .18s ease}.xfpd-q-body{padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);max-height:320px;overflow-y:auto}.xfpd-q-active{padding:7px 8px;border-radius:6px;background:rgba(61,183,199,.09);border:1px solid rgba(61,183,199,.25);margin-bottom:8px}.xfpd-q-active-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-weight:700;font-size:12px;margin-bottom:3px}.xfpd-q-sub{font-size:11px;color:#b8c0c8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:5px}.xfpd-q-pbar{height:4px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:3px}.xfpd-q-pbar>div{height:100%;transition:width .15s ease}.xfpd-q-sec-lbl{font-size:11px;font-weight:700;color:#9aa4af;margin:6px 0 4px;display:flex;justify-content:space-between;align-items:center}.xfpd-q-list{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:4px}.xfpd-q-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.04);font-size:11.5px}.xfpd-q-item-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.xfpd-q-foot{margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08);font-size:11px;color:#a5b1bd;display:flex;align-items:center;justify-content:space-between;gap:6px}`,
     },
 };
 
@@ -8779,6 +9018,10 @@ try {
     // 1) If a post includes both single preview links AND an album link resolving to the exact same media,
     //    prefer the album entry (preserving album sequence & album metadata) and drop the duplicate preview.
     // 2) Deduplicate identical canonical URLs within the post and (when running Download Page) across selected posts.
+    const activeThreadKey =
+        parsedPost && parsedPost.threadKey ? String(parsedPost.threadKey) : xfpdGetCurrentThreadKey();
+    const threadTitle =
+        parsedPost && parsedPost.threadTitle ? String(parsedPost.threadTitle) : parsers.thread.parseTitle();
     const useContentDedup = postSettings.contentDedup !== false;
     let dedupedCount = 0;
     let runtimeDedupedCount = 0;
@@ -8809,7 +9052,7 @@ try {
                 key &&
                 (postSeen.has(key) ||
                     (sharedSeen && sharedSeen.has(key)) ||
-                    (useContentDedup && typeof xfpdHasSeenThreadUrl === 'function' && xfpdHasSeenThreadUrl(key)))
+                    (useContentDedup && typeof xfpdHasSeenThreadUrl === 'function' && xfpdHasSeenThreadUrl(key, activeThreadKey)))
             ) {
                 dedupedCount++;
                 log.post.info(postId, `::Skipped already-downloaded media URL::: ${item.url}`, postNumber);
@@ -9387,8 +9630,6 @@ try {
     log.separator(postId);
     log.post.info(postId, `::Found ${totalDownloadable} resource(s)::`, postNumber);
     log.separator(postId);
-
-    const threadTitle = parsers.thread.parseTitle();
 
     let customFilename = postSettings.output.find(o => o.postId === postId)?.value;
 
@@ -10489,7 +10730,7 @@ if (tmp.length) {
                                 }
                             } catch (e) {}
 
-                            if (directFingerprint && xfpdHasSeenThreadHash(directFingerprint)) {
+                            if (directFingerprint && xfpdHasSeenThreadHash(directFingerprint, activeThreadKey)) {
                                 usedPaths.delete(fn);
                                 log.post.info(
                                     postId,
@@ -10531,8 +10772,8 @@ if (tmp.length) {
                             onload: () => {
                                 if (useContentDedup) {
                                     const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
-                                    if (cKey) xfpdMarkSeenThreadUrl(cKey);
-                                    if (directFingerprint) xfpdMarkSeenThreadHash(directFingerprint);
+                                    if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                    if (directFingerprint) xfpdMarkSeenThreadHash(directFingerprint, activeThreadKey);
                                 }
                                 finishBatchItem(true);
 
@@ -11351,7 +11592,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 notifyBatchStep();
                                 return;
                             }
-                            if (blobFingerprint && xfpdHasSeenThreadHash(blobFingerprint)) {
+                            if (blobFingerprint && xfpdHasSeenThreadHash(blobFingerprint, activeThreadKey)) {
                                 log.separator(postId);
                                 log.post.info(
                                     postId,
@@ -11367,13 +11608,13 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                 return;
                             }
                             if (blobFingerprint) {
-                                xfpdMarkSeenThreadHash(blobFingerprint);
+                                xfpdMarkSeenThreadHash(blobFingerprint, activeThreadKey);
                             }
                         }
 
                         if (useContentDedup) {
                             const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
-                            if (cKey) xfpdMarkSeenThreadUrl(cKey);
+                            if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
                         }
 
                         const original = basename;
@@ -11782,6 +12023,7 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                 postSettings.skipDownload ? totalDownloadable : succeededCount,
                 failedCount,
                 dedupedCount,
+                postLastLogs.get(postId) || '',
             );
     }
     } finally {
@@ -12093,21 +12335,581 @@ async function cyberdrop_helper(apiUrl) {
 const parsedPosts = [];
 const selectedPosts = [];
 
+let xfpdLocalQueueEngineStarted = false;
+
+function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
+    if (xfpdLocalQueueEngineStarted) return;
+
+    const initialCheck = xfpdReadQueueState();
+    if (isDedicatedWorkerTab && xfpdIsQueueWorkerAlive(initialCheck)) {
+        try { window.close(); } catch (e) {}
+        return;
+    }
+
+    xfpdLocalQueueEngineStarted = true;
+    const workerId = `wrk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const processedCmdIds = new Set(Array.isArray(initialCheck.ackCmdIds) ? initialCheck.ackCmdIds : []);
+    const ackQueue = Array.isArray(initialCheck.ackCmdIds) ? initialCheck.ackCmdIds.slice(-180) : [];
+    const pendingJobs = [];
+    let history = Array.isArray(initialCheck.history) ? initialCheck.history.slice(0, 30) : [];
+    let activeJobSummary = null;
+    let activeCancelController = null;
+    let pumping = false;
+    let idleCloseTimer = null;
+    let workerStatusDom = null;
+
+    const cancelIdleClose = () => {
+        if (idleCloseTimer) {
+            clearTimeout(idleCloseTimer);
+            idleCloseTimer = null;
+        }
+    };
+
+    const summarizeQueuedJob = j => ({
+        jobId: j.jobId,
+        threadKey: j.threadKey,
+        threadTitle: j.threadTitle,
+        postId: j.postId,
+        postNumber: j.postNumber,
+        postCaption: j.postCaption || '',
+        resourceCount: Number(j.initialResourceCount || 0) || 0,
+        hasLock: !!j.hasLockedContent,
+    });
+
+    const publishState = (extra = {}) => {
+        const st = xfpdWriteQueueState({
+            workerId,
+            workerHeartbeat: Date.now(),
+            workerClosing: false,
+            ackCmdIds: ackQueue.slice(-200),
+            active: activeJobSummary ? { ...activeJobSummary } : null,
+            queued: pendingJobs.map(summarizeQueuedJob),
+            history: history.slice(0, 30),
+            ...extra,
+        });
+        if (workerStatusDom) {
+            const actTxt = st.active
+                ? `Active: ${st.active.threadTitle} · Post #${st.active.postNumber} — ${st.active.statusText || st.active.phase}`
+                : 'Idle (waiting for tasks...)';
+            workerStatusDom.textContent = `${actTxt} | Queued: ${st.queued.length} | Completed: ${st.history.length}`;
+        }
+        return st;
+    };
+
+    if (isDedicatedWorkerTab) {
+        const mountWorkerDashboard = () => {
+            try {
+                document.title = '📥 XFPD Download Worker';
+                if (document.body) {
+                    document.body.style.cssText =
+                        'margin:0;padding:32px;background:#141518;color:#e4e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+                    document.body.innerHTML = `
+                      <div style="max-width:680px;margin:0 auto;padding:24px;border-radius:10px;background:#1e2025;border:1px solid rgba(61,183,199,.35);">
+                        <h2 style="margin:0 0 8px;color:#3DB7C7;font-size:18px;">📥 XenForoPostDownloader — Background Worker</h2>
+                        <p style="margin:0 0 14px;font-size:13px;color:#9aa4af;">
+                          Keep this background tab untouched while downloads run. It will close automatically once the queue finishes.
+                        </p>
+                        <div id="xfpd-worker-live-line" style="padding:10px 12px;border-radius:6px;background:#141518;font-family:monospace;font-size:12.5px;color:#47ba24;">
+                          Initializing worker...
+                        </div>
+                      </div>
+                    `;
+                    workerStatusDom = document.getElementById('xfpd-worker-live-line');
+                }
+            } catch (e) {}
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', mountWorkerDashboard, { once: true });
+        } else {
+            mountWorkerDashboard();
+        }
+    }
+
+    const maybeArmIdleClose = () => {
+        cancelIdleClose();
+        if (!isDedicatedWorkerTab) return;
+        if (activeJobSummary || pendingJobs.length > 0) return;
+        idleCloseTimer = setTimeout(() => {
+            const unacked = xfpdReadPendingQueueCommands(processedCmdIds);
+            if (unacked.length > 0 || activeJobSummary || pendingJobs.length > 0) {
+                drainCommands();
+                return;
+            }
+            clearInterval(heartbeatTimer);
+            clearInterval(cmdPollTimer);
+            xfpdWriteQueueState({
+                workerId: '',
+                workerHeartbeat: 0,
+                workerClosing: true,
+                ackCmdIds: ackQueue.slice(-200),
+                active: null,
+                queued: [],
+                history: history.slice(0, 30),
+            });
+            try { window.close(); } catch (e) {}
+        }, XFPD_WORKER_IDLE_CLOSE_MS);
+    };
+
+    const hydrateJobHints = hints => {
+        if (!hints || typeof hints !== 'object') return;
+        const applyPairs = (pairs, mapObj) => {
+            if (!Array.isArray(pairs) || !mapObj) return;
+            for (const pair of pairs) {
+                if (Array.isArray(pair) && pair.length >= 2 && pair[0] && pair[1]) {
+                    try { mapObj.set(String(pair[0]), String(pair[1])); } catch (e) {}
+                }
+            }
+        };
+        applyPairs(hints.linkNames, linkHintNameByUrl);
+        applyPairs(hints.bunkrNames, bunkrNameByUrl);
+        applyPairs(hints.goonboxThumbs, goonboxThumbByUrl);
+        applyPairs(hints.imagepondDirects, imagepondDirectByPageUrl);
+        applyPairs(hints.imagepondNames, imagepondNameByUrl);
+    };
+
+    const prepareRemotePostIfLockedOrCollapsed = async job => {
+        const incComments = !job.postSettings || job.postSettings.includeComments !== false;
+        const needsLockUnlock =
+            !!(job.hasMainLockedContent || (incComments && job.hasCommentLockedContent)) &&
+            (!job.postSettings || job.postSettings.autoUnlockReaction !== false || !job.parsedHosts.length);
+        const needsCommentsExpand = !!(incComments && job.hasCollapsedComments);
+
+        let reactedMainDuringUnlock = false;
+
+        if (!needsLockUnlock && !needsCommentsExpand) {
+            return { reactedMainDuringUnlock };
+        }
+
+        if (needsLockUnlock && Array.isArray(job.unlockReactUrls) && job.unlockReactUrls.length && job.csrfToken) {
+            activeJobSummary.phase = 'unlocking';
+            activeJobSummary.statusText = '🔓 Reacting to unlock hidden links...';
+            publishState();
+
+            for (const rUrl of job.unlockReactUrls) {
+                let reqUri = '/';
+                try {
+                    const pUrl = new URL(job.pageUrl);
+                    reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                } catch (e) {}
+                const bodyParams = new URLSearchParams({
+                    _xfToken: job.csrfToken,
+                    _xfRequestUri: reqUri,
+                    _xfWithData: '1',
+                    _xfResponseType: 'json',
+                }).toString();
+                const res = await xfpdSameOriginFetchText(rUrl, 'POST', bodyParams);
+                if (res && res.ok && job.completionReactUrl && rUrl === job.completionReactUrl) {
+                    reactedMainDuringUnlock = true;
+                }
+                await h.delayedResolve(150);
+            }
+        }
+
+        if (job.pageUrl) {
+            activeJobSummary.phase = 'unlocking';
+            activeJobSummary.statusText = '💬 Loading fresh post & comment links...';
+            publishState();
+
+            const pageRes = await xfpdSameOriginFetchText(job.pageUrl, 'GET', null);
+            if (pageRes && pageRes.ok && pageRes.text) {
+                try {
+                    const doc = new DOMParser().parseFromString(pageRes.text, 'text/html');
+                    const freshPostEl = doc.querySelector(`#js-post-${job.postId}, [data-content="post-${job.postId}"]`);
+                    if (freshPostEl) {
+                        // Expand collapsed comments inside detached freshPostEl if needed
+                        if (incComments) {
+                            for (let pass = 0; pass < 10; pass++) {
+                                const loaders = xfpdFindCollapsedCommentLoaders(freshPostEl);
+                                if (!loaders.length) break;
+                                const loaderLink = loaders[0];
+                                const rawHref = loaderLink.getAttribute('href') || '';
+                                if (!rawHref) break;
+                                let fetchUrl = '';
+                                try {
+                                    const u = new URL(rawHref, job.pageUrl);
+                                    u.searchParams.set('_xfWithData', '1');
+                                    u.searchParams.set('_xfResponseType', 'json');
+                                    fetchUrl = u.href;
+                                } catch (e) {
+                                    break;
+                                }
+                                const cRes = await xfpdSameOriginFetchText(fetchUrl, 'GET', null);
+                                const loaderRow = loaderLink.closest('.js-commentLoader, .message-responseRow') || loaderLink;
+                                if (cRes && cRes.ok && cRes.text) {
+                                    let htmlChunk = '';
+                                    try {
+                                        const pj = JSON.parse(cRes.text);
+                                        htmlChunk = String((pj && pj.html && pj.html.content) || '');
+                                    } catch (e) {
+                                        htmlChunk = cRes.text;
+                                    }
+                                    if (htmlChunk && htmlChunk.trim()) {
+                                        const targetContainer =
+                                            (loaderRow && loaderRow.parentElement) ||
+                                            freshPostEl.querySelector('.js-replyNewMessageContainer, .message-responses, .uw_fcs_comment_section');
+                                        if (targetContainer) {
+                                            const tmp = doc.createElement('div');
+                                            tmp.innerHTML = htmlChunk;
+                                            while (tmp.firstChild) {
+                                                targetContainer.appendChild(tmp.firstChild);
+                                            }
+                                        }
+                                    }
+                                }
+                                loaderRow.remove();
+                            }
+                        }
+
+                        const oppEl = freshPostEl.querySelector('.message-attribution-opposite');
+                        if (oppEl) {
+                            const reParsed = parsers.thread.parsePost(oppEl);
+                            if (reParsed) {
+                                const targetContent = incComments ? reParsed.content : reParsed.mainOnlyContent;
+                                const disabledKeys = new Set(
+                                    (job.parsedHosts || [])
+                                        .filter(hItem => !hItem.enabled)
+                                        .map(hItem => `${hItem.name}:${hItem.category}`),
+                                );
+                                const freshHosts = parsers.hosts.parseHosts(targetContent);
+                                freshHosts.forEach(hItem => {
+                                    if (disabledKeys.has(`${hItem.name}:${hItem.category}`)) {
+                                        hItem.enabled = false;
+                                    }
+                                });
+                                job.parsedHosts = freshHosts;
+                                job.postCaption = reParsed.postCaption || job.postCaption;
+                                job.spoilers = reParsed.spoilers || job.spoilers;
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
+
+        return { reactedMainDuringUnlock };
+    };
+
+    const executeSingleJob = async job => {
+        cancelIdleClose();
+        hydrateJobHints(job.hints);
+
+        activeCancelController = {
+            cancelled: false,
+            abortHandlers: new Set(),
+            cancel() {
+                this.cancelled = true;
+                this.abortHandlers.forEach(fn => {
+                    try { fn(); } catch (e) {}
+                });
+                this.abortHandlers.clear();
+            },
+        };
+
+        const enabledCount0 = (job.parsedHosts || [])
+            .filter(hItem => hItem.enabled && hItem.resources && hItem.resources.length)
+            .reduce((a, hItem) => a + hItem.resources.length, 0);
+
+        activeJobSummary = {
+            jobId: job.jobId,
+            threadKey: job.threadKey,
+            threadTitle: job.threadTitle,
+            postId: job.postId,
+            postNumber: job.postNumber,
+            postCaption: job.postCaption || '',
+            phase: 'starting',
+            completed: 0,
+            total: enabledCount0,
+            filePct: 0,
+            totalPct: 0,
+            statusText: 'Preparing...',
+        };
+        publishState();
+
+        let reactedMainDuringUnlock = false;
+        try {
+            const prep = await prepareRemotePostIfLockedOrCollapsed(job);
+            reactedMainDuringUnlock = !!(prep && prep.reactedMainDuringUnlock);
+        } catch (e) {}
+
+        if (activeCancelController.cancelled) {
+            history.unshift({
+                jobId: job.jobId,
+                threadKey: job.threadKey,
+                threadTitle: job.threadTitle,
+                postId: job.postId,
+                postNumber: job.postNumber,
+                status: 'cancelled',
+                succeeded: 0,
+                total: enabledCount0,
+                failed: 0,
+                deduped: 0,
+                errorLog: '',
+                finishedAt: Date.now(),
+            });
+            activeJobSummary = null;
+            activeCancelController = null;
+            publishState();
+            return;
+        }
+
+        const enabledHosts = (job.parsedHosts || []).filter(hItem => hItem.enabled && hItem.resources && hItem.resources.length);
+        const finalResourceTotal = enabledHosts.reduce((a, hItem) => a + hItem.resources.length, 0);
+        if (finalResourceTotal === 0) {
+            history.unshift({
+                jobId: job.jobId,
+                threadKey: job.threadKey,
+                threadTitle: job.threadTitle,
+                postId: job.postId,
+                postNumber: job.postNumber,
+                status: 'done',
+                succeeded: 0,
+                total: 0,
+                failed: 0,
+                deduped: 0,
+                errorLog: '',
+                finishedAt: Date.now(),
+            });
+            activeJobSummary = null;
+            activeCancelController = null;
+            publishState();
+            return;
+        }
+
+        activeJobSummary.total = finalResourceTotal;
+        publishState();
+
+        // Virtual statusUI elements observed with 150ms throttling to broadcast progress to HUD
+        const vStatus = document.createElement('span');
+        const vFilePB = document.createElement('div');
+        const vTotalPB = document.createElement('div');
+
+        let lastBroadcastAt = 0;
+        const syncVirtualDomProgress = (force = false) => {
+            if (!activeJobSummary) return;
+            const now = Date.now();
+            if (!force && now - lastBroadcastAt < 150) return;
+            lastBroadcastAt = now;
+            const txt = String(vStatus.textContent || '').replace(/Copy Log$/i, '').trim();
+            if (txt) activeJobSummary.statusText = txt;
+            const fPct = parseFloat(vFilePB.style.width || '0') || 0;
+            const tPct = parseFloat(vTotalPB.style.width || '0') || 0;
+            activeJobSummary.filePct = Math.max(0, Math.min(100, Math.round(fPct)));
+            activeJobSummary.totalPct = Math.max(0, Math.min(100, Math.round(tPct)));
+            publishState();
+        };
+
+        const progressPoll = setInterval(() => syncVirtualDomProgress(false), 180);
+
+        const virtualParsedPost = {
+            postId: job.postId,
+            postNumber: job.postNumber,
+            pageNumber: job.pageNumber || 1,
+            threadKey: job.threadKey,
+            threadTitle: job.threadTitle,
+            postCaption: job.postCaption || '',
+            spoilers: Array.isArray(job.spoilers) ? job.spoilers : [],
+            contentContainer: null,
+            footer: null,
+        };
+
+        let outcome = null;
+
+        try {
+            await downloadPost(
+                virtualParsedPost,
+                job.parsedHosts,
+                list => list.filter(hItem => hItem.enabled),
+                resolvers,
+                () => job.postSettings,
+                { status: vStatus, filePB: vFilePB, totalPB: vTotalPB },
+                {
+                    cancelController: activeCancelController,
+                    onProgress: ({ phase, completed, total }) => {
+                        if (!activeJobSummary) return;
+                        activeJobSummary.phase = phase;
+                        activeJobSummary.completed = completed;
+                        activeJobSummary.total = total;
+                        if (total > 0) {
+                            activeJobSummary.totalPct = Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+                        }
+                        syncVirtualDomProgress(false);
+                    },
+                    onCancel: (total, succeeded) => {
+                        outcome = {
+                            status: 'cancelled',
+                            total,
+                            succeeded,
+                            failed: 0,
+                            deduped: 0,
+                            errorLog: '',
+                        };
+                    },
+                    onComplete: (total, succeeded, failed = 0, deduped = 0, errorLog = '') => {
+                        let st = 'done';
+                        if (total === 0 && deduped > 0 && failed === 0) st = 'dedup';
+                        else if (failed > 0 && succeeded > 0) st = 'partial';
+                        else if (failed > 0 && succeeded === 0) st = 'failed';
+                        outcome = {
+                            status: st,
+                            total,
+                            succeeded,
+                            failed,
+                            deduped,
+                            errorLog: failed > 0 ? String(errorLog || '') : '',
+                        };
+                    },
+                },
+            );
+        } catch (err) {
+            console.error('[XFPD Worker] Job failed with exception:', err);
+            outcome = {
+                status: 'failed',
+                total: finalResourceTotal,
+                succeeded: 0,
+                failed: finalResourceTotal,
+                deduped: 0,
+                errorLog: String((err && err.stack) || err || ''),
+            };
+        } finally {
+            clearInterval(progressPoll);
+        }
+
+        // Trigger post-download thank-you reaction remotely if succeeded and not already reacted!
+        if (
+            outcome &&
+            outcome.succeeded > 0 &&
+            job.completionReactUrl &&
+            !reactedMainDuringUnlock &&
+            job.csrfToken
+        ) {
+            try {
+                let reqUri = '/';
+                try {
+                    const pUrl = new URL(job.pageUrl);
+                    reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                } catch (e) {}
+                const bodyParams = new URLSearchParams({
+                    _xfToken: job.csrfToken,
+                    _xfRequestUri: reqUri,
+                    _xfWithData: '1',
+                    _xfResponseType: 'json',
+                }).toString();
+                await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
+            } catch (e) {}
+        }
+
+        if (outcome) {
+            history = history.filter(hItem => !(hItem.threadKey === job.threadKey && hItem.postId === job.postId));
+            history.unshift({
+                jobId: job.jobId,
+                threadKey: job.threadKey,
+                threadTitle: job.threadTitle,
+                postId: job.postId,
+                postNumber: job.postNumber,
+                ...outcome,
+                finishedAt: Date.now(),
+            });
+            if (history.length > 30) history = history.slice(0, 30);
+        }
+
+        activeJobSummary = null;
+        activeCancelController = null;
+        publishState();
+    };
+
+    const pumpQueue = async () => {
+        if (pumping) return;
+        pumping = true;
+        cancelIdleClose();
+        try {
+            while (pendingJobs.length > 0) {
+                const nextJob = pendingJobs.shift();
+                if (!nextJob) continue;
+                await executeSingleJob(nextJob);
+            }
+        } finally {
+            pumping = false;
+            publishState();
+            maybeArmIdleClose();
+        }
+    };
+
+    const drainCommands = () => {
+        const cmds = xfpdReadPendingQueueCommands(processedCmdIds);
+        if (!cmds.length) return;
+
+        let mutated = false;
+        for (const cmd of cmds) {
+            processedCmdIds.add(cmd.id);
+            ackQueue.push(cmd.id);
+            if (ackQueue.length > 220) ackQueue.splice(0, ackQueue.length - 200);
+            mutated = true;
+
+            const p = cmd.payload || {};
+            if (cmd.type === 'enqueue' && Array.isArray(p.jobs)) {
+                for (const job of p.jobs) {
+                    if (!job || !job.postId) continue;
+                    const dupActive =
+                        activeJobSummary &&
+                        activeJobSummary.threadKey === job.threadKey &&
+                        activeJobSummary.postId === job.postId;
+                    const dupQueued = pendingJobs.some(
+                        q => q.threadKey === job.threadKey && q.postId === job.postId,
+                    );
+                    if (!dupActive && !dupQueued) {
+                        pendingJobs.push(job);
+                    }
+                }
+            } else if (cmd.type === 'cancel_job') {
+                const matchJob = item =>
+                    (p.jobId && item.jobId === p.jobId) ||
+                    (p.postId && item.postId === p.postId && (!p.threadKey || item.threadKey === p.threadKey));
+                if (activeJobSummary && matchJob(activeJobSummary) && activeCancelController) {
+                    activeCancelController.cancel();
+                } else {
+                    for (let i = pendingJobs.length - 1; i >= 0; i--) {
+                        if (matchJob(pendingJobs[i])) {
+                            pendingJobs.splice(i, 1);
+                        }
+                    }
+                }
+            } else if (cmd.type === 'cancel_all') {
+                pendingJobs.length = 0;
+                if (activeCancelController) {
+                    activeCancelController.cancel();
+                }
+            } else if (cmd.type === 'clear_history') {
+                history = [];
+            }
+        }
+
+        if (mutated) {
+            publishState();
+        }
+        if (pendingJobs.length > 0 && !pumping) {
+            pumpQueue();
+        } else if (!activeJobSummary && pendingJobs.length === 0) {
+            maybeArmIdleClose();
+        }
+    };
+
+    const heartbeatTimer = setInterval(() => {
+        publishState();
+    }, XFPD_WORKER_HEARTBEAT_MS);
+    const cmdPollTimer = setInterval(drainCommands, 300);
+    xfpdOnQueueCommand(drainCommands);
+
+    publishState();
+    drainCommands();
+}
+
 (function () {
     try { if (window.__XFPD_ABORT_MAIN) return; } catch (e) {}
 
-    // @match now covers gofile.io (required by GM_cookie for the accountToken sync -- see
-    // gofileSyncCookie), which also makes Tampermonkey inject/run this whole script on actual
-    // gofile.io page loads (e.g. the warm-up tab). None of the forum-post logic below applies
-    // there, so bail out immediately rather than doing pointless work (redgifs token fetch,
-    // style injection) on GoFile's own pages.
+    // @match covers gofile.io for GM_cookie sync; bail out on GoFile pages.
     try { if (/(^|\.)gofile\.io$/i.test(location.hostname)) return; } catch (e) {}
 
-    // Same deal for goonbox.cr, except this tab has a job to do: it is the helper tab opened by
-    // goonboxBridgeGet, and it is the only context where fetch() carries Goonbox's first-party
-    // cookies. Serve the bridge, then bail out of the forum-post logic exactly as above. Users who
-    // simply browse goonbox.cr also land here -- the bridge just idles, waiting for a request that
-    // never comes, until the tab is closed.
+    // Goonbox same-origin API helper tab.
     try {
         if (/(^|\.)goonbox\.cr$/i.test(location.hostname)) {
             try { goonboxBridgeServe(); } catch (e) {}
@@ -12122,6 +12924,12 @@ const selectedPosts = [];
             return message;
         }
     });
+
+    // Dedicated Background Worker Tab (`?xfpd_worker=1`): runs queue headlessly without forum UI overhead!
+    if (xfpdIsWorkerTab()) {
+        xfpdStartQueueEngine({ isDedicatedWorkerTab: true });
+        return;
+    }
 
     const onReady = cb => {
         if (document.readyState === 'loading') {
@@ -12258,21 +13066,445 @@ const selectedPosts = [];
             heading.classList.add('xfpd-pulse-highlight');
         };
 
-        const runDownloadPageQueue = async () => {
-            if (pageBatchState.running) {
-                pageBatchState.cancelled = true;
-                pageBatchState.activePostIds.forEach(pid => {
-                    const ctrl = activePostControllers.get(pid);
-                    if (ctrl) ctrl.cancel();
-                });
-                updateDownloadPageButtonLabel();
-                if (downloadPageTippy && downloadPageTippy.popper) {
-                    updatePageFormActionBtn(downloadPageTippy.popper);
+        const escapeHudHtml = s =>
+            String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+        let hudDismissedUntilCount = -1;
+        let hudExpanded = true;
+        try {
+            const savedHudExp = sessionStorage.getItem('xfpd_hud_expanded');
+            if (savedHudExp === '0') hudExpanded = false;
+        } catch (e) {}
+
+        const collectPostHintsSnapshot = postEntry => {
+            const { parsedPost, parsedHosts } = postEntry;
+            const linkNames = [];
+            const bunkrNames = [];
+            const goonboxThumbs = [];
+            const imagepondDirects = [];
+            const imagepondNames = [];
+
+            const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+
+            // Capture Bunkr visible filenames & Goonbox thumbs from live post DOM before user navigates away!
+            try {
+                const cc = parsedPost && parsedPost.contentContainer;
+                if (cc && cc.querySelectorAll) {
+                    cc.querySelectorAll('a[href]').forEach(a => {
+                        let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim().split(/[\s"'<>]/)[0];
+                        if (!href0) return;
+                        if (!/^https?:\/\//i.test(href0)) {
+                            try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
+                        }
+                        if (href0.endsWith('/')) href0 = href0.slice(0, -1);
+                        if (/bunkrr?r?\./i.test(href0) && !/scdn\.st\//i.test(href0)) {
+                            const txt = String(a.textContent || '').replace(/\s+/g, ' ').trim();
+                            if (txt && !/^https?:\/\//i.test(txt) && /\.[A-Za-z0-9]{1,8}$/.test(txt) && !xfpdLooksLikeCfFilenameHint(txt)) {
+                                bunkrNames.push([href0, txt]);
+                                bunkrNames.push([strip(href0), txt]);
+                            }
+                        }
+                        if (/goonbox\.cr\/img\//i.test(href0)) {
+                            const img = a.querySelector('img');
+                            const thumbUrl = img && (img.getAttribute('data-url') || img.getAttribute('src'));
+                            if (thumbUrl) {
+                                goonboxThumbs.push([strip(href0), thumbUrl]);
+                            }
+                        }
+                    });
                 }
+            } catch (e) {}
+
+            for (const host of parsedHosts || []) {
+                for (const resUrl of host.resources || []) {
+                    const sUrl = strip(resUrl);
+                    for (const k of [resUrl, sUrl]) {
+                        if (linkHintNameByUrl.has(k)) linkNames.push([k, linkHintNameByUrl.get(k)]);
+                        if (bunkrNameByUrl.has(k)) bunkrNames.push([k, bunkrNameByUrl.get(k)]);
+                        if (goonboxThumbByUrl.has(k)) goonboxThumbs.push([k, goonboxThumbByUrl.get(k)]);
+                        if (imagepondDirectByPageUrl.has(k)) {
+                            const dirU = imagepondDirectByPageUrl.get(k);
+                            imagepondDirects.push([k, dirU]);
+                            if (imagepondNameByUrl.has(dirU)) imagepondNames.push([dirU, imagepondNameByUrl.get(dirU)]);
+                        }
+                        if (imagepondNameByUrl.has(k)) imagepondNames.push([k, imagepondNameByUrl.get(k)]);
+                    }
+                }
+            }
+
+            return { linkNames, bunkrNames, goonboxThumbs, imagepondDirects, imagepondNames };
+        };
+
+        const serializePostEntryToJob = postEntry => {
+            const { parsedPost, parsedHosts } = postEntry;
+            const ps = postEntry.getSettingsCB();
+            const incComments = ps.includeComments !== false;
+            const tKey = xfpdGetCurrentThreadKey();
+            const tTitle = parsers.thread.parseTitle();
+            const pageUrl = String(location.href || '').split('#')[0];
+            const csrfToken = xfpdGetXenForoCsrfToken();
+
+            const messageEl =
+                parsedPost.messageEl ||
+                document.querySelector(`#js-post-${parsedPost.postId}, [data-content="post-${parsedPost.postId}"]`);
+
+            const unlockReactUrls = [];
+            let completionReactUrl = '';
+
+            if (messageEl) {
+                const mainReactLink = xfpdFindPostNativeReactLink(messageEl);
+                if (mainReactLink) {
+                    const alreadyMain =
+                        mainReactLink.classList.contains('has-reaction') ||
+                        !!messageEl.querySelector(':scope > footer .has-reaction, :scope > footer .smgReactionPill--reacted');
+                    if (!alreadyMain) {
+                        const rUrl = xfpdBuildPostReactUrl(mainReactLink.getAttribute('href') || '');
+                        completionReactUrl = rUrl;
+                        if (parsedPost.hasMainLockedContent) {
+                            unlockReactUrls.push(rUrl);
+                        }
+                    }
+                }
+
+                if (incComments && parsedPost.hasCommentLockedContent) {
+                    const commentEls = xfpdCollectPostCommentElements(messageEl);
+                    for (const cEl of commentEls) {
+                        const cClone = xfpdCleanContentFragmentClone(cEl.cloneNode(true));
+                        if (xfpdDetectLockedReactionContent(cEl, cClone, true)) {
+                            const cLink = xfpdFindNativeReactLinkInContainer(cEl, false);
+                            if (cLink && !cLink.classList.contains('has-reaction')) {
+                                const crUrl = xfpdBuildPostReactUrl(cLink.getAttribute('href') || '');
+                                if (crUrl) unlockReactUrls.push(crUrl);
+                            }
+                        }
+                    }
+                }
+            }
+
+            const clonedHosts = (parsedHosts || []).map(hItem => ({
+                id: hItem.id,
+                name: hItem.name,
+                type: hItem.type,
+                category: hItem.category,
+                enabled: !!hItem.enabled,
+                resources: Array.isArray(hItem.resources) ? hItem.resources.slice() : [],
+            }));
+
+            const initialResourceCount = clonedHosts
+                .filter(hItem => hItem.enabled && hItem.resources.length)
+                .reduce((a, hItem) => a + hItem.resources.length, 0);
+
+            return {
+                jobId: `job_${tKey || 'f'}_${parsedPost.postId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                threadKey: tKey,
+                threadTitle: tTitle,
+                pageUrl,
+                csrfToken,
+                postId: parsedPost.postId,
+                postNumber: parsedPost.postNumber,
+                pageNumber: parsedPost.pageNumber || 1,
+                postCaption: parsedPost.postCaption || '',
+                spoilers: Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers.slice() : [],
+                hasMainLockedContent: !!parsedPost.hasMainLockedContent,
+                hasCommentLockedContent: !!parsedPost.hasCommentLockedContent,
+                hasLockedContent: !!(parsedPost.hasMainLockedContent || (incComments && parsedPost.hasCommentLockedContent)),
+                hasCollapsedComments: !!(incComments && parsedPost.hasCollapsedComments),
+                unlockReactUrls,
+                completionReactUrl,
+                initialResourceCount,
+                parsedHosts: clonedHosts,
+                postSettings: JSON.parse(JSON.stringify(ps)),
+                hints: collectPostHintsSnapshot(postEntry),
+            };
+        };
+
+        const enqueuePostsToBackgroundWorker = entries => {
+            const list = (entries || []).filter(Boolean);
+            if (!list.length) return;
+            hudDismissedUntilCount = -1;
+            const jobs = list.map(serializePostEntryToJob);
+            const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
+
+            // Immediately show optimistic queued state on the clicked post buttons
+            list.forEach(entry => {
+                if (entry.btnDownloadPost) {
+                    entry.btnDownloadPost.dataset.xfpdState = 'queued';
+                    entry.btnDownloadPost.style.color = '#3DB7C7';
+                    entry.btnDownloadPost.innerHTML = '⏳ Queued · ✕';
+                }
+            });
+
+            const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+            if (!spawnedOrAlive) {
+                xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
                 return;
             }
 
-            const queue = selectedPosts.filter(s => s.enabled && s.post);
+            // Safety fallback: if popup/background tab was blocked and no worker claims the command within 3.5s,
+            // run the queue engine seamlessly in the current tab so downloads never stall!
+            setTimeout(() => {
+                const st = xfpdReadQueueState();
+                const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                    xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                }
+            }, 3500);
+        };
+
+        const syncVisiblePostsAndHud = stateSnapshot => {
+            const st = stateSnapshot || xfpdReadQueueState();
+            const curThreadKey = xfpdGetCurrentThreadKey();
+            const workerAlive = xfpdIsQueueWorkerAlive(st);
+            const active = workerAlive ? st.active : null;
+            const queued = workerAlive ? st.queued || [] : [];
+            const history = st.history || [];
+
+            // 1) Sync post buttons on the current page
+            parsedPosts.forEach(entry => {
+                const btn = entry.btnDownloadPost;
+                if (!btn) return;
+                const pid = entry.parsedPost.postId;
+
+                if (active && active.postId === pid && (!active.threadKey || active.threadKey === curThreadKey)) {
+                    btn.dataset.xfpdState = 'running';
+                    btn.style.color = '#e8a838';
+                    if (active.phase === 'unlocking') {
+                        btn.innerHTML = '⏳ Unlocking... (✕)';
+                    } else if (active.phase === 'resolving') {
+                        btn.innerHTML = `✕ Cancel (Resolving ${active.completed}/${active.total})`;
+                    } else {
+                        btn.innerHTML = `✕ Cancel (${active.completed}/${active.total})`;
+                    }
+                    return;
+                }
+
+                const qIdx = queued.findIndex(
+                    q => q.postId === pid && (!q.threadKey || q.threadKey === curThreadKey),
+                );
+                if (qIdx > -1) {
+                    btn.dataset.xfpdState = 'queued';
+                    btn.style.color = '#3DB7C7';
+                    btn.innerHTML = `⏳ Queued (#${qIdx + 1}) · ✕`;
+                    return;
+                }
+
+                const hist = history.find(
+                    hItem => hItem.postId === pid && (!hItem.threadKey || hItem.threadKey === curThreadKey),
+                );
+                if (hist) {
+                    if (hist.status === 'cancelled') {
+                        btn.dataset.xfpdState = 'idle';
+                        entry.updateIdleButtonLabel();
+                    } else {
+                        btn.dataset.xfpdState = 'done';
+                        if (hist.status === 'dedup') {
+                            btn.style.color = '#47ba24';
+                            btn.innerHTML = `✓ Deduplicated (${hist.deduped})`;
+                        } else if (hist.status === 'done') {
+                            btn.style.color = '#47ba24';
+                            btn.innerHTML = `✓ Downloaded (${hist.succeeded}/${hist.total || hist.succeeded})`;
+                        } else if (hist.status === 'partial') {
+                            btn.style.color = '#e8a838';
+                            btn.innerHTML = `⚠ Downloaded (${hist.succeeded}/${hist.total})`;
+                        } else {
+                            btn.style.color = '#d9534f';
+                            btn.innerHTML = `✕ Retry (0/${hist.total || 1})`;
+                        }
+                    }
+                    return;
+                }
+
+                if (btn.dataset.xfpdState === 'running' || btn.dataset.xfpdState === 'queued') {
+                    btn.dataset.xfpdState = 'idle';
+                    entry.updateIdleButtonLabel();
+                }
+            });
+
+            // 2) Render Floating Queue HUD (#xfpd-queue-hud)
+            const recentHistory = history.filter(hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000);
+            const isBusy = !!(active || queued.length > 0);
+            const shouldShowHud =
+                isBusy || (recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount);
+
+            let hudEl = document.getElementById('xfpd-queue-hud');
+            if (!shouldShowHud) {
+                if (hudEl) hudEl.style.display = 'none';
+                return;
+            }
+
+            if (!hudEl) {
+                hudEl = document.createElement('div');
+                hudEl.id = 'xfpd-queue-hud';
+                hudEl.setAttribute('data-xfpd-ui', '1');
+                hudEl.innerHTML = `
+                  <div class="xfpd-q-head" id="xfpd-q-head-bar">
+                    <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
+                    <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Close">✕</button>
+                    </span>
+                  </div>
+                  <div class="xfpd-q-top-bar"><div class="xfpd-q-top-fill" id="xfpd-q-top-fill"></div></div>
+                  <div class="xfpd-q-body" id="xfpd-q-body"></div>
+                `;
+                document.body.appendChild(hudEl);
+
+                const toggleExpand = () => {
+                    hudExpanded = !hudExpanded;
+                    try { sessionStorage.setItem('xfpd_hud_expanded', hudExpanded ? '1' : '0'); } catch (e) {}
+                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                };
+
+                hudEl.querySelector('#xfpd-q-head-bar').addEventListener('click', e => {
+                    if (e.target.closest('button')) return;
+                    toggleExpand();
+                });
+                hudEl.querySelector('#xfpd-q-toggle-btn').addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleExpand();
+                });
+                hudEl.querySelector('#xfpd-q-close-btn').addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const curSt = xfpdReadQueueState();
+                    const curBusy = xfpdIsQueueWorkerAlive(curSt) && !!(curSt.active || (curSt.queued && curSt.queued.length));
+                    if (curBusy) {
+                        xfpdSendQueueCommand('cancel_all', {});
+                    } else {
+                        const curRecent = (curSt.history || []).filter(
+                            hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000,
+                        );
+                        hudDismissedUntilCount = curRecent.length;
+                        hudEl.style.display = 'none';
+                    }
+                });
+
+                hudEl.querySelector('#xfpd-q-body').addEventListener('click', async e => {
+                    const cancelBtn = e.target.closest('[data-xfpd-cancel-job]');
+                    if (cancelBtn) {
+                        e.preventDefault();
+                        xfpdSendQueueCommand('cancel_job', { jobId: cancelBtn.getAttribute('data-xfpd-cancel-job') });
+                        return;
+                    }
+                    const clearHistBtn = e.target.closest('[data-xfpd-clear-hist]');
+                    if (clearHistBtn) {
+                        e.preventDefault();
+                        xfpdSendQueueCommand('clear_history', {});
+                        hudDismissedUntilCount = 0;
+                        hudEl.style.display = 'none';
+                        return;
+                    }
+                    const copyErrBtn = e.target.closest('[data-xfpd-copy-err]');
+                    if (copyErrBtn) {
+                        e.preventDefault();
+                        const jId = copyErrBtn.getAttribute('data-xfpd-copy-err');
+                        const curSt = xfpdReadQueueState();
+                        const hMatch = (curSt.history || []).find(x => x.jobId === jId);
+                        if (hMatch && hMatch.errorLog) {
+                            const ok = await copyTextToClipboard(hMatch.errorLog);
+                            copyErrBtn.textContent = ok ? 'Copied!' : 'Failed';
+                            setTimeout(() => {
+                                if (copyErrBtn.isConnected) copyErrBtn.textContent = 'Copy Log';
+                            }, 1500);
+                        }
+                    }
+                });
+            }
+
+            hudEl.style.display = 'block';
+            const titleEl = hudEl.querySelector('#xfpd-q-title-txt');
+            const toggleBtn = hudEl.querySelector('#xfpd-q-toggle-btn');
+            const topFill = hudEl.querySelector('#xfpd-q-top-fill');
+            const bodyEl = hudEl.querySelector('#xfpd-q-body');
+
+            const doneCount = recentHistory.filter(hItem => hItem.status !== 'cancelled').length;
+            const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length;
+
+            if (active) {
+                const curPostIdx = doneCount + 1;
+                const pct = active.totalPct || 0;
+                titleEl.style.color = '#3DB7C7';
+                titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts) · ${pct}%`;
+                topFill.style.background = '#3DB7C7';
+                topFill.style.width = `${pct}%`;
+            } else if (queued.length > 0) {
+                titleEl.style.color = '#3DB7C7';
+                titleEl.textContent = `⏳ Starting Queue (${queued.length} pending)...`;
+                topFill.style.background = '#3DB7C7';
+                topFill.style.width = '5%';
+            } else {
+                titleEl.style.color = '#47ba24';
+                titleEl.textContent = `✓ Queue Finished (${doneCount} ${doneCount === 1 ? 'post' : 'posts'})`;
+                topFill.style.background = '#47ba24';
+                topFill.style.width = '100%';
+            }
+
+            toggleBtn.textContent = hudExpanded ? '▼' : '▲';
+            bodyEl.style.display = hudExpanded ? 'block' : 'none';
+
+            if (!hudExpanded) return;
+
+            const parts = [];
+            if (active) {
+                parts.push(`
+                  <div class="xfpd-q-active">
+                    <div class="xfpd-q-active-top">
+                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">▶ ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 24))} · #${escapeHudHtml(active.postNumber)}</span>
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-job="${escapeHudHtml(active.jobId)}">Cancel</button>
+                    </div>
+                    <div class="xfpd-q-sub">${escapeHudHtml(active.statusText || active.phase || 'Working...')}</div>
+                    <div class="xfpd-q-pbar"><div style="width:${active.filePct || 0}%;background:#3DB7C7;"></div></div>
+                    <div class="xfpd-q-pbar"><div style="width:${active.totalPct || 0}%;background:#47ba24;"></div></div>
+                  </div>
+                `);
+            }
+
+            if (queued.length > 0) {
+                const rows = queued
+                    .map(
+                        q => `
+                      <div class="xfpd-q-item">
+                        <span class="xfpd-q-item-txt">• ${escapeHudHtml(h.limit(q.threadTitle || 'Thread', 22))} · #${escapeHudHtml(q.postNumber)} (${q.hasLock && !q.resourceCount ? '🔒' : q.resourceCount})</span>
+                        <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-job="${escapeHudHtml(q.jobId)}" title="Remove from queue">✕</button>
+                      </div>
+                    `,
+                    )
+                    .join('');
+                parts.push(`
+                  <div class="xfpd-q-sec-lbl"><span>⏳ In Queue (${queued.length})</span></div>
+                  <div class="xfpd-q-list">${rows}</div>
+                `);
+            }
+
+            if (recentHistory.length > 0) {
+                const totalSavedFiles = recentHistory.reduce((a, x) => a + (Number(x.succeeded) || 0), 0);
+                const totalDupes = recentHistory.reduce((a, x) => a + (Number(x.deduped) || 0), 0);
+                const lastFailed = recentHistory.find(x => x.failed > 0 && x.errorLog);
+                parts.push(`
+                  <div class="xfpd-q-foot">
+                    <span>✓ ${doneCount} done · ${totalSavedFiles} saved${totalDupes > 0 ? ` · ${totalDupes} dupes` : ''}</span>
+                    <span>
+                      ${lastFailed ? `<button type="button" class="xfpd-q-btn" data-xfpd-copy-err="${escapeHudHtml(lastFailed.jobId)}">Copy Log</button>` : ''}
+                      ${!isBusy ? `<button type="button" class="xfpd-q-btn" data-xfpd-clear-hist="1">Clear</button>` : ''}
+                    </span>
+                  </div>
+                `);
+            }
+
+            bodyEl.innerHTML = parts.join('');
+        };
+
+        xfpdOnQueueStateChange(st => {
+            syncVisiblePostsAndHud(st);
+            updateDownloadPageButtonLabel();
+        });
+        setInterval(() => {
+            syncVisiblePostsAndHud(xfpdReadQueueState());
+        }, 700);
+
+        const runDownloadPageQueue = async () => {
+            const queue = selectedPosts.filter(s => s.enabled && s.post).map(s => s.post);
             if (!queue.length) {
                 if (downloadPageTippy && typeof downloadPageTippy.show === 'function') {
                     downloadPageTippy.show();
@@ -12285,48 +13517,14 @@ const selectedPosts = [];
                 downloadPageTippy.hide();
             }
 
-            pageBatchState.running = true;
-            pageBatchState.cancelled = false;
-            pageBatchState.finished = 0;
-            pageBatchState.total = queue.length;
-            pageBatchState.activePostIds.clear();
+            enqueuePostsToBackgroundWorker(queue);
+            // Reset page selection checkboxes cleanly so user sees they've been dispatched to the queue
+            selectedPosts.forEach(s => {
+                s.enabled = false;
+            });
             updateDownloadPageButtonLabel();
-
-            const pageSeenMediaKeys = new Set();
-            let cursor = 0;
-            const worker = async () => {
-                while (!pageBatchState.cancelled && cursor < queue.length) {
-                    const item = queue[cursor++];
-                    if (!item || !item.post) continue;
-                    const pid = item.post.parsedPost.postId;
-                    pageBatchState.activePostIds.add(pid);
-                    try {
-                        await item.post.startPostDownload({ sharedSeenKeys: pageSeenMediaKeys });
-                    } catch (e) {
-                        console.error('[XFPD] Error in Download Page worker:', e);
-                    } finally {
-                        pageBatchState.activePostIds.delete(pid);
-                        if (!pageBatchState.cancelled) {
-                            pageBatchState.finished++;
-                            updateDownloadPageButtonLabel();
-                        }
-                    }
-                }
-            };
-
-            const workerCount = Math.min(XFPD_PAGE_CONCURRENCY, queue.length);
-            const workers = [];
-            for (let i = 0; i < workerCount; i++) {
-                workers.push(worker());
-            }
-            await Promise.all(workers);
-
-            const wasCancelled = pageBatchState.cancelled;
-            pageBatchState.running = false;
-            pageBatchState.activePostIds.clear();
-            updateDownloadPageButtonLabel(wasCancelled ? null : 'completed');
             if (downloadPageTippy && downloadPageTippy.popper) {
-                updatePageFormActionBtn(downloadPageTippy.popper);
+                setupDownloadPageForm(downloadPageTippy);
             }
         };
 
@@ -12946,57 +14144,33 @@ const selectedPosts = [];
                 },
             };
 
-            const startPostDownload = async (extraCallbacks = null) => {
+            const startPostDownload = () => {
+                const curSt = xfpdReadQueueState();
+                const curThreadKey = xfpdGetCurrentThreadKey();
+                const workerAlive = xfpdIsQueueWorkerAlive(curSt);
+
+                // If this post is currently active or queued in the background worker, clicking cancels it!
+                if (workerAlive) {
+                    const isAct =
+                        curSt.active &&
+                        curSt.active.postId === postId &&
+                        (!curSt.active.threadKey || curSt.active.threadKey === curThreadKey);
+                    const isQue = (curSt.queued || []).some(
+                        q => q.postId === postId && (!q.threadKey || q.threadKey === curThreadKey),
+                    );
+                    if (isAct || isQue) {
+                        xfpdSendQueueCommand('cancel_job', { threadKey: curThreadKey, postId });
+                        return;
+                    }
+                }
+
                 if (isPostProcessing(postId)) {
                     const ctrl = activePostControllers.get(postId);
                     if (ctrl) ctrl.cancel();
                     return;
                 }
-                btnDownloadPost.dataset.xfpdState = 'running';
-                btnDownloadPost.style.color = '#e8a838';
 
-                // 1) Expand collapsed ("View previous comments...") replies when Include Post Comments is ON!
-                if (postSettings.includeComments !== false && parsedPost.hasCollapsedComments) {
-                    btnDownloadPost.innerHTML = '💬 Loading comments...';
-                    try {
-                        await expandCollapsedPostComments(postEntry, statusText);
-                    } catch (e) {
-                        console.error('[XFPD] Error expanding post comments:', e);
-                    }
-                }
-
-                // 2) Automatically react & unlock hidden [HIDEREACT]/[HIDETHANKS] links (post & comments) before downloading!
-                if (hasActiveLock() && (postSettings.autoUnlockReaction !== false || parsedHosts.length === 0)) {
-                    btnDownloadPost.innerHTML = '⏳ Unlocking...';
-                    try {
-                        await unlockPostViaReaction(postEntry, statusText);
-                    } catch (e) {
-                        console.error('[XFPD] Error unlocking post reaction:', e);
-                    }
-                }
-
-                const enabledLen = getTotalDownloadableResourcesForPostCB(parsedHosts);
-                if (enabledLen === 0) {
-                    btnDownloadPost.dataset.xfpdState = 'done';
-                    btnDownloadPost.style.color = '#959595';
-                    btnDownloadPost.innerHTML = '✓ No Links (0)';
-                    h.ui.setElProps(statusText, { color: '#959595', fontWeight: 'normal' });
-                    h.ui.setText(statusText, 'No supported host links found.');
-                    h.show(statusText);
-                    return;
-                }
-
-                btnDownloadPost.innerHTML = `✕ Cancel (0/${enabledLen})`;
-                const mergedCallbacks = extraCallbacks ? { ...postDownloadCallbacks, ...extraCallbacks } : postDownloadCallbacks;
-                return downloadPost(
-                    parsedPost,
-                    parsedHosts,
-                    getEnabledHostsCB,
-                    resolvers,
-                    getSettingsCB,
-                    statusUI,
-                    mergedCallbacks,
-                );
+                enqueuePostsToBackgroundWorker([postEntry]);
             };
 
             const onFormSubmitCB = data => {
@@ -13034,6 +14208,7 @@ const selectedPosts = [];
                 refreshUnlockedDom,
                 recomputeHostsForSettings,
                 updateIdleButtonLabel,
+                btnDownloadPost,
                 tippyInstance: postTippyInstance,
             };
             if (existingIdx > -1) {
@@ -13077,6 +14252,7 @@ const selectedPosts = [];
         };
 
         scanPosts();
+        syncVisiblePostsAndHud(xfpdReadQueueState());
 
         // Watch for dynamically unlocked/inserted posts & comments (e.g. SMG [HIDEREACT]/[HIDETHANKS] or UW/FCS comment expansion).
         if (typeof MutationObserver !== 'undefined' && document.body) {

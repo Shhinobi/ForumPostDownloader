@@ -661,6 +661,244 @@ async function xfpdComputeBlobFingerprint(blob) {
     }
 }
 
+// --- Background Worker Queue IPC (Persistent Cross-Tab Download Queue) --------------------------
+const XFPD_WORKER_PARAM = 'xfpd_worker';
+const XFPD_WORKER_VAL = '1';
+const XFPD_K_QUEUE_CMD = 'xfpd_q_cmds';
+const XFPD_K_QUEUE_STATE = 'xfpd_q_state';
+const XFPD_K_WORKER_SPAWN = 'xfpd_q_spawning';
+
+const XFPD_WORKER_HEARTBEAT_MS = 1500;
+const XFPD_WORKER_ALIVE_TTL_MS = 5500;
+const XFPD_WORKER_IDLE_CLOSE_MS = 4500;
+
+let xfpdQueueCmdMirror = '';
+let xfpdQueueStateMirror = '';
+let xfpdQueueListenersBound = false;
+let xfpdSpawnedWorkerHandle = null;
+let xfpdCmdSeq = 0;
+
+const xfpdQueueStateSubscribers = new Set();
+const xfpdQueueCmdSubscribers = new Set();
+
+function xfpdIsWorkerTab() {
+    try {
+        return new URLSearchParams(location.search).get(XFPD_WORKER_PARAM) === XFPD_WORKER_VAL;
+    } catch (e) {
+        return false;
+    }
+}
+
+function xfpdDefaultQueueState() {
+    return {
+        workerId: '',
+        workerHeartbeat: 0,
+        workerClosing: false,
+        ackCmdIds: [],
+        active: null,
+        queued: [],
+        history: [],
+        _updatedAt: 0,
+    };
+}
+
+function xfpdBindQueueStorageListeners() {
+    if (xfpdQueueListenersBound) return;
+    xfpdQueueListenersBound = true;
+
+    const addListener =
+        (typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener : null) ||
+        (typeof window !== 'undefined' && typeof window.GM_addValueChangeListener === 'function'
+            ? window.GM_addValueChangeListener.bind(window)
+            : null);
+
+    if (addListener) {
+        try {
+            addListener(XFPD_K_QUEUE_STATE, (_name, _oldV, newV) => {
+                xfpdQueueStateMirror = String(newV || '');
+                const st = xfpdReadQueueState();
+                if (st.workerClosing && xfpdSpawnedWorkerHandle) {
+                    try { xfpdCloseTabHandle(xfpdSpawnedWorkerHandle); } catch (e) {}
+                    xfpdSpawnedWorkerHandle = null;
+                }
+                xfpdQueueStateSubscribers.forEach(cb => {
+                    try { cb(st); } catch (e) {}
+                });
+            });
+        } catch (e) {}
+
+        try {
+            addListener(XFPD_K_QUEUE_CMD, (_name, _oldV, newV) => {
+                xfpdQueueCmdMirror = String(newV || '');
+                xfpdQueueCmdSubscribers.forEach(cb => {
+                    try { cb(); } catch (e) {}
+                });
+            });
+        } catch (e) {}
+    }
+}
+
+function xfpdReadRawGmOrLs(key, mirrorStr = '') {
+    const candidates = [];
+    if (mirrorStr) {
+        const p = xfpdParsePrefsJson(mirrorStr);
+        if (p) candidates.push(p);
+    }
+    try {
+        if (typeof GM_getValue === 'function') {
+            const p = xfpdParsePrefsJson(GM_getValue(key, ''));
+            if (p) candidates.push(p);
+        }
+    } catch (e) {}
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            const p = xfpdParsePrefsJson(localStorage.getItem(key));
+            if (p) candidates.push(p);
+        }
+    } catch (e) {}
+
+    let best = null;
+    for (const c of candidates) {
+        if (!best || (Number(c._updatedAt || 0) || 0) > (Number(best._updatedAt || 0) || 0)) {
+            best = c;
+        }
+    }
+    return best;
+}
+
+function xfpdReadQueueState() {
+    xfpdBindQueueStorageListeners();
+    const raw = xfpdReadRawGmOrLs(XFPD_K_QUEUE_STATE, xfpdQueueStateMirror);
+    if (!raw || typeof raw !== 'object') return xfpdDefaultQueueState();
+    return {
+        workerId: String(raw.workerId || ''),
+        workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
+        workerClosing: !!raw.workerClosing,
+        ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
+        active: raw.active && typeof raw.active === 'object' ? raw.active : null,
+        queued: Array.isArray(raw.queued) ? raw.queued : [],
+        history: Array.isArray(raw.history) ? raw.history : [],
+        _updatedAt: Number(raw._updatedAt || 0) || 0,
+    };
+}
+
+function xfpdWriteQueueState(stateObj) {
+    const prev = xfpdReadQueueState();
+    const payload = {
+        ...xfpdDefaultQueueState(),
+        ...stateObj,
+        _updatedAt: Math.max(Date.now(), (Number(prev._updatedAt || 0) || 0) + 1),
+    };
+    const rawStr = JSON.stringify(payload);
+    xfpdQueueStateMirror = rawStr;
+    xfpdWriteStoredObject(XFPD_K_QUEUE_STATE, payload);
+    xfpdQueueStateSubscribers.forEach(cb => {
+        try { cb(payload); } catch (e) {}
+    });
+    return payload;
+}
+
+function xfpdIsQueueWorkerAlive(stateSnapshot = null) {
+    const st = stateSnapshot || xfpdReadQueueState();
+    return !st.workerClosing && st.workerHeartbeat > 0 && Date.now() - st.workerHeartbeat < XFPD_WORKER_ALIVE_TTL_MS;
+}
+
+function xfpdSendQueueCommand(type, payload = {}) {
+    xfpdBindQueueStorageListeners();
+    const state = xfpdReadQueueState();
+    const ackSet = new Set(state.ackCmdIds || []);
+    const existingObj = xfpdReadRawGmOrLs(XFPD_K_QUEUE_CMD, xfpdQueueCmdMirror);
+    const existingCmds = existingObj && Array.isArray(existingObj.cmds) ? existingObj.cmds : [];
+
+    // Keep only unacknowledged recent commands (< 5 min old) so the command log stays tiny!
+    const now = Date.now();
+    const pendingCmds = existingCmds.filter(c => c && c.id && !ackSet.has(c.id) && now - (Number(c.ts) || 0) < 300000);
+
+    const cmdId = `cmd_${now}_${Math.random().toString(36).slice(2, 7)}_${++xfpdCmdSeq}`;
+    pendingCmds.push({
+        id: cmdId,
+        type: String(type),
+        payload,
+        ts: now,
+    });
+
+    const nextBox = {
+        _updatedAt: Math.max(now, (Number((existingObj && existingObj._updatedAt) || 0) || 0) + 1),
+        cmds: pendingCmds,
+    };
+    xfpdQueueCmdMirror = JSON.stringify(nextBox);
+    xfpdWriteStoredObject(XFPD_K_QUEUE_CMD, nextBox);
+    xfpdQueueCmdSubscribers.forEach(cb => {
+        try { cb(); } catch (e) {}
+    });
+    return cmdId;
+}
+
+function xfpdReadPendingQueueCommands(processedIdsSet) {
+    const box = xfpdReadRawGmOrLs(XFPD_K_QUEUE_CMD, xfpdQueueCmdMirror);
+    if (!box || !Array.isArray(box.cmds)) return [];
+    return box.cmds.filter(c => c && c.id && !processedIdsSet.has(c.id));
+}
+
+function xfpdOnQueueStateChange(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueueStateSubscribers.add(cb);
+    return () => xfpdQueueStateSubscribers.delete(cb);
+}
+
+function xfpdOnQueueCommand(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdBindQueueStorageListeners();
+    xfpdQueueCmdSubscribers.add(cb);
+    return () => xfpdQueueCmdSubscribers.delete(cb);
+}
+
+function xfpdBuildWorkerUrl() {
+    try {
+        const u = new URL(location.href);
+        u.hash = '';
+        u.searchParams.set(XFPD_WORKER_PARAM, XFPD_WORKER_VAL);
+        return u.href;
+    } catch (e) {
+        const base = String(location.href || '').split('#')[0];
+        return `${base}${base.includes('?') ? '&' : '?'}${XFPD_WORKER_PARAM}=${XFPD_WORKER_VAL}`;
+    }
+}
+
+function xfpdEnsureQueueWorkerTab() {
+    if (xfpdIsWorkerTab()) return true;
+    if (xfpdIsQueueWorkerAlive()) return true;
+
+    let spawnUntil = 0;
+    try {
+        spawnUntil = Number(GM_getValue(XFPD_K_WORKER_SPAWN, 0) || 0) || 0;
+    } catch (e) {}
+    if (Date.now() < spawnUntil) {
+        return true;
+    }
+
+    if (typeof GM_openInTab !== 'function') {
+        return false;
+    }
+
+    try {
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(XFPD_K_WORKER_SPAWN, Date.now() + 7000);
+        }
+    } catch (e) {}
+
+    try {
+        const workerUrl = xfpdBuildWorkerUrl();
+        const handle = GM_openInTab(workerUrl, { active: false, insert: true, setParent: true });
+        if (handle) {
+            xfpdSpawnedWorkerHandle = handle;
+            return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
 const gofileNameById = new Map();
 const gofileNameByUrl = new Map();
