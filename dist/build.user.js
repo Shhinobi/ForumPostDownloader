@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.40
+// @version 3.41
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -1462,6 +1462,16 @@ function xfpdDefaultQueueState() {
         active: null,
         queued: [],
         history: [],
+        stats: {
+            postsDone: 0,
+            postsSkipped: 0,
+            filesSaved: 0,
+            filesDeduped: 0,
+            filesFailed: 0,
+            failedPostsCount: 0,
+            pagesScanned: 0,
+            startedAt: 0,
+        },
         _updatedAt: 0,
     };
 }
@@ -1576,6 +1586,8 @@ function xfpdReadQueueState() {
     xfpdBindQueueStorageListeners();
     const raw = xfpdReadRawGmOrLs(XFPD_K_QUEUE_STATE, xfpdQueueStateMirror);
     if (!raw || typeof raw !== 'object') return xfpdDefaultQueueState();
+    const defStats = xfpdDefaultQueueState().stats;
+    const rawStats = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
     return {
         workerId: String(raw.workerId || ''),
         workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
@@ -1585,6 +1597,16 @@ function xfpdReadQueueState() {
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
         queued: Array.isArray(raw.queued) ? raw.queued : [],
         history: Array.isArray(raw.history) ? raw.history : [],
+        stats: {
+            postsDone: Number(rawStats.postsDone || 0) || 0,
+            postsSkipped: Number(rawStats.postsSkipped || 0) || 0,
+            filesSaved: Number(rawStats.filesSaved || 0) || 0,
+            filesDeduped: Number(rawStats.filesDeduped || 0) || 0,
+            filesFailed: Number(rawStats.filesFailed || 0) || 0,
+            failedPostsCount: Number(rawStats.failedPostsCount || 0) || 0,
+            pagesScanned: Number(rawStats.pagesScanned || 0) || 0,
+            startedAt: Number(rawStats.startedAt || 0) || 0,
+        },
         _updatedAt: Number(raw._updatedAt || 0) || 0,
     };
 }
@@ -9611,6 +9633,7 @@ try {
         parsedPost && parsedPost.threadTitle ? String(parsedPost.threadTitle) : parsers.thread.parseTitle();
     const useContentDedup = postSettings.contentDedup !== false;
     let dedupedCount = 0;
+    let resolveFailedCount = 0;
 
     const canonicalizeMediaUrl = rawUrl => {
         const clean = String(rawUrl || '').trim().split('#')[0];
@@ -9711,6 +9734,7 @@ try {
                     if (host.name === 'Cyberdrop' && /cyberdrop\.[a-z]{2,}\/a\//i.test(String(resource))) {
                         continue;
                     }
+                    resolveFailedCount++;
                     log.post.error(postId, `::Error resolving::: ${resource}`, postNumber);
                     continue;
                 }
@@ -9718,6 +9742,7 @@ try {
                 if (isCancelled()) break;
 
                 if (h.isNullOrUndef(r)) {
+                    resolveFailedCount++;
                     log.post.error(postId, `::Could not resolve::: ${resource}`, postNumber);
                     continue;
                 }
@@ -9751,6 +9776,9 @@ try {
                 };
 
                 if (h.isArray(r.resolved)) {
+                    if (r.resolved.length === 0) {
+                        resolveFailedCount++;
+                    }
                     r.resolved.forEach(url => {
                         try {
                             addResolved(url, r.folderName);
@@ -13024,23 +13052,25 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
     } catch (e) {}
 
     const effectiveTargetTotal = Math.max(0, totalDownloadable - runtimeDedupedCount);
+    const totalFailedWithResolve = failedCount + resolveFailedCount;
+    const reportedTargetTotal = effectiveTargetTotal + resolveFailedCount;
 
     if (postSettings.skipDownload) {
         h.hide(statusLabel);
-    } else if (effectiveTargetTotal === 0 && dedupedCount > 0 && failedCount === 0) {
+    } else if (reportedTargetTotal === 0 && dedupedCount > 0 && totalFailedWithResolve === 0) {
         h.ui.setElProps(statusLabel, { color: '#47ba24', fontWeight: 'bold' });
         h.ui.setText(statusLabel, `All ${dedupedCount} item(s) already downloaded (duplicates skipped)`);
         h.show(statusLabel);
     } else if (totalDownloadable === 0 && totalResources > 0) {
         h.ui.setElProps(statusLabel, { color: '#d9534f', fontWeight: 'bold' });
-        h.ui.setText(statusLabel, `0 / ${totalResources} resolved`);
+        h.ui.setText(statusLabel, `0 / ${totalResources} resolved (dead/locked links)`);
         appendCopyLogButton(statusLabel, postId);
         h.show(statusLabel);
-    } else if (failedCount > 0 || succeededCount < effectiveTargetTotal) {
+    } else if (totalFailedWithResolve > 0 || succeededCount < effectiveTargetTotal) {
         h.ui.setElProps(statusLabel, { color: succeededCount > 0 ? '#e8a838' : '#d9534f', fontWeight: 'bold' });
         h.ui.setText(
             statusLabel,
-            `${succeededCount} / ${effectiveTargetTotal} downloaded${failedCount > 0 ? ` (${failedCount} failed)` : ''}${dedupedCount > 0 ? ` · ${dedupedCount} dupes skipped` : ''}`,
+            `${succeededCount} / ${reportedTargetTotal} downloaded${totalFailedWithResolve > 0 ? ` (${totalFailedWithResolve} failed)` : ''}${dedupedCount > 0 ? ` · ${dedupedCount} dupes skipped` : ''}`,
         );
         appendCopyLogButton(statusLabel, postId);
         h.show(statusLabel);
@@ -13056,9 +13086,9 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
         callbacks &&
             callbacks.onComplete &&
             callbacks.onComplete(
-                effectiveTargetTotal,
+                reportedTargetTotal,
                 postSettings.skipDownload ? totalDownloadable : succeededCount,
-                failedCount,
+                totalFailedWithResolve,
                 dedupedCount,
                 postLastLogs.get(postId) || '',
             );
@@ -13657,7 +13687,56 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     let pumping = false;
     let standbyMode = false;
     let idleCloseTimer = null;
-    let workerStatusDom = null;
+    let workerRefs = null;
+    let listRenderRevision = 1;
+    let lastRenderedRevision = 0;
+
+    const sessionStats = {
+        postsDone: Number(initialCheck.stats?.postsDone || 0) || 0,
+        postsSkipped: Number(initialCheck.stats?.postsSkipped || 0) || 0,
+        filesSaved: Number(initialCheck.stats?.filesSaved || 0) || 0,
+        filesDeduped: Number(initialCheck.stats?.filesDeduped || 0) || 0,
+        filesFailed: Number(initialCheck.stats?.filesFailed || 0) || 0,
+        failedPostsCount: Number(initialCheck.stats?.failedPostsCount || 0) || 0,
+        pagesScanned: Number(initialCheck.stats?.pagesScanned || 0) || 0,
+        startedAt: Number(initialCheck.stats?.startedAt || 0) || Date.now(),
+    };
+    const failedPostsRecords = [];
+    const deadLinksByHost = new Map();
+
+    const escHtml = s =>
+        String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+    const formatElapsed = startMs => {
+        if (!startMs) return '00:00';
+        const sec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        const hrs = Math.floor(sec / 3600);
+        const mins = Math.floor((sec % 3600) / 60);
+        const rem = sec % 60;
+        const pad = n => String(n).padStart(2, '0');
+        return hrs > 0 ? `${hrs}:${pad(mins)}:${pad(rem)}` : `${pad(mins)}:${pad(rem)}`;
+    };
+
+    const parseDeadLinksFromLog = errorLogText => {
+        const items = [];
+        const seenUrls = new Set();
+        const lines = String(errorLogText || '').split('\n');
+        for (const line of lines) {
+            if (!line.includes('[ERROR]')) continue;
+            const m = /\[ERROR\]\s*(?:\[[^\]]+\]\s*)?(.+?):\s*(https?:\/\/\S+)/i.exec(line);
+            if (!m) continue;
+            const reason = m[1].trim();
+            const deadUrl = m[2].trim();
+            if (seenUrls.has(deadUrl)) continue;
+            seenUrls.add(deadUrl);
+            let hostDomain = 'unknown';
+            try {
+                hostDomain = new URL(deadUrl).hostname.toLowerCase().replace(/^(?:www|cdn\d*|fs-\d+|store\d*|cache\d*)\./, '');
+            } catch (e) {}
+            items.push({ reason, url: deadUrl, host: hostDomain });
+        }
+        return items;
+    };
 
     const cancelIdleClose = () => {
         if (idleCloseTimer) {
@@ -13691,6 +13770,205 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         };
     };
 
+    const renderWorkerDashboard = st => {
+        if (!workerRefs) return;
+        const isStandbyNow = !st.active && st.queued.length === 0 && standbyMode;
+
+        // 1) Header status & timer
+        workerRefs.timer.textContent = `⏱ ${formatElapsed(sessionStats.startedAt)}`;
+        if (st.active) {
+            workerRefs.badge.style.background = 'rgba(71,186,36,.16)';
+            workerRefs.badge.style.color = '#5ce038';
+            workerRefs.badge.style.borderColor = 'rgba(71,186,36,.45)';
+            workerRefs.badge.textContent = '● Active Downloading';
+        } else if (isStandbyNow) {
+            workerRefs.badge.style.background = 'rgba(61,183,199,.14)';
+            workerRefs.badge.style.color = '#3DB7C7';
+            workerRefs.badge.style.borderColor = 'rgba(61,183,199,.4)';
+            workerRefs.badge.textContent = '💤 Standby (Ready)';
+        } else {
+            workerRefs.badge.style.background = 'rgba(255,255,255,.07)';
+            workerRefs.badge.style.color = '#a5b1bd';
+            workerRefs.badge.style.borderColor = 'rgba(255,255,255,.18)';
+            workerRefs.badge.textContent = '⏳ Idle';
+        }
+
+        // 2) 5 Cumulative KPI Cards
+        workerRefs.kpiPosts.textContent = String(sessionStats.postsDone);
+        workerRefs.kpiPostsSub.textContent =
+            sessionStats.postsSkipped > 0 ? `+${sessionStats.postsSkipped} already done skipped` : `${st.queued.length} queued`;
+        workerRefs.kpiSaved.textContent = String(sessionStats.filesSaved);
+        workerRefs.kpiDedup.textContent = String(sessionStats.filesDeduped);
+        workerRefs.kpiFailed.textContent = String(sessionStats.filesFailed);
+        workerRefs.kpiFailed.style.color = sessionStats.filesFailed > 0 ? '#ff6b6b' : '#7d8894';
+        workerRefs.kpiFailedCard.style.borderColor =
+            sessionStats.filesFailed > 0 ? 'rgba(255,107,107,.48)' : 'rgba(255,255,255,.09)';
+        workerRefs.kpiFailedSub.textContent =
+            sessionStats.failedPostsCount > 0
+                ? `across ${sessionStats.failedPostsCount} ${sessionStats.failedPostsCount === 1 ? 'post' : 'posts'}`
+                : '0 dead links detected';
+        workerRefs.kpiPages.textContent = String(sessionStats.pagesScanned);
+        workerRefs.kpiPagesSub.textContent =
+            st.active && st.active.threadCrawl
+                ? `crawl P.${st.active.threadCrawl.currentPage}/${st.active.threadCrawl.endPage}`
+                : 'pages crawled';
+
+        // 3) Live Active Task Panel
+        if (st.active) {
+            const act = st.active;
+            const tc = act.threadCrawl;
+            workerRefs.activeTitle.innerHTML = tc
+                ? `📚 <b>${escHtml(act.threadTitle || 'Thread')}</b> · Page ${tc.currentPage}/${tc.endPage}${
+                      act.postId ? ` · Post #${escHtml(act.postNumber)}` : ''
+                  }`
+                : `▶ <b>${escHtml(act.threadTitle || 'Thread')}</b> · Post #${escHtml(act.postNumber)}`;
+            workerRefs.activeStatus.textContent = act.statusText || act.phase || 'Working...';
+            workerRefs.fileFill.style.width = `${act.filePct || 0}%`;
+            workerRefs.totalFill.style.width = `${act.totalPct || 0}%`;
+            workerRefs.activeActions.style.display = 'inline-flex';
+            workerRefs.skipPostBtn.style.display = act.postId ? '' : 'none';
+            workerRefs.stopThreadBtn.style.display = tc ? '' : 'none';
+            if (tc && tc.pagesTotal > 0) {
+                const crawlPct = Math.min(100, Math.round(((tc.pagesDone + (act.totalPct || 0) / 100) / tc.pagesTotal) * 100));
+                workerRefs.crawlWrap.style.display = 'block';
+                workerRefs.crawlLbl.textContent = `Thread Crawl Progress: Page ${tc.currentPage} of ${tc.endPage} (${crawlPct}%)`;
+                workerRefs.crawlFill.style.width = `${crawlPct}%`;
+            } else {
+                workerRefs.crawlWrap.style.display = 'none';
+            }
+        } else {
+            workerRefs.activeTitle.textContent = isStandbyNow
+                ? '💤 Worker in zero-CPU standby — waiting for next task across any tab'
+                : 'No active download right now';
+            workerRefs.activeStatus.textContent = 'Ready.';
+            workerRefs.fileFill.style.width = '0%';
+            workerRefs.totalFill.style.width = '0%';
+            workerRefs.activeActions.style.display = 'none';
+            workerRefs.crawlWrap.style.display = 'none';
+        }
+
+        // 4) Lists (Failed/Dead Breakdown + Queue + History) — only rebuild DOM when revision changes!
+        if (lastRenderedRevision === listRenderRevision) return;
+        lastRenderedRevision = listRenderRevision;
+
+        // 4a) Failed / Dead Links Breakdown
+        workerRefs.deadCountBadge.textContent = `${sessionStats.filesFailed} dead links · ${failedPostsRecords.length} posts`;
+        if (deadLinksByHost.size > 0) {
+            const sortedHosts = [...deadLinksByHost.entries()].sort((a, b) => b[1] - a[1]);
+            workerRefs.hostPills.innerHTML = sortedHosts
+                .map(
+                    ([hostName, cnt]) =>
+                        `<span style="padding:2px 8px;border-radius:999px;background:rgba(255,107,107,.14);border:1px solid rgba(255,107,107,.35);color:#ff9b9b;font-size:11.5px;font-weight:600;">${escHtml(
+                            hostName,
+                        )}: ${cnt}</span>`,
+                )
+                .join('');
+            workerRefs.hostPills.style.display = 'flex';
+        } else {
+            workerRefs.hostPills.style.display = 'none';
+        }
+
+        if (failedPostsRecords.length === 0) {
+            workerRefs.failedList.innerHTML = `<div style="color:#7d8894;font-size:12.5px;padding:6px 0;">✓ Zero failed or dead links in this session.</div>`;
+            workerRefs.copyAllDeadBtn.style.display = 'none';
+        } else {
+            workerRefs.copyAllDeadBtn.style.display = '';
+            workerRefs.failedList.innerHTML = failedPostsRecords
+                .map(rec => {
+                    const postLink = rec.pageUrl && rec.postId ? `${rec.pageUrl.split('#')[0]}#post-${rec.postId}` : '';
+                    const deadPreview = rec.deadItems
+                        .slice(0, 6)
+                        .map(
+                            d =>
+                                `<div style="font-family:monospace;font-size:11px;color:#d99a9a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">• [${escHtml(
+                                    d.reason,
+                                )}] ${escHtml(d.url)}</div>`,
+                        )
+                        .join('');
+                    const moreCount = rec.deadItems.length > 6 ? `<div style="font-size:11px;color:#9aa4af;">+ ${rec.deadItems.length - 6} more in post log...</div>` : '';
+                    return `
+                      <div style="padding:9px 11px;border-radius:7px;background:#15171b;border:1px solid rgba(255,107,107,.24);display:flex;flex-direction:column;gap:5px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                          <span style="font-weight:700;font-size:12.5px;color:#f1f3f5;">
+                            ${escHtml(h.limit(rec.threadTitle || 'Thread', 36))} · <span style="color:#ff8787;">Post #${escHtml(rec.postNumber)}</span>
+                            ${rec.pageNumber ? `<span style="color:#8b95a1;font-weight:500;">(P.${rec.pageNumber})</span>` : ''}
+                          </span>
+                          <span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;">
+                            <span style="color:#47ba24;">✓ ${rec.succeeded} saved</span>
+                            <span style="color:#ff6b6b;font-weight:700;">✕ ${rec.failed} failed/dead</span>
+                            ${rec.deduped > 0 ? `<span style="color:#3DB7C7;">⚡ ${rec.deduped} dupes</span>` : ''}
+                            ${
+                                postLink
+                                    ? `<a href="${escHtml(postLink)}" target="_blank" rel="noopener" style="padding:2px 7px;border-radius:4px;border:1px solid rgba(61,183,199,.45);color:#3DB7C7;text-decoration:none;font-weight:600;">↗ Open Post</a>`
+                                    : ''
+                            }
+                            ${
+                                rec.errorLog
+                                    ? `<button type="button" data-wrk-copy-log="${escHtml(rec.jobId)}" style="padding:2px 7px;border-radius:4px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.06);color:#e4e7eb;cursor:pointer;font-size:11px;font-weight:600;">Copy Log</button>`
+                                    : ''
+                            }
+                          </span>
+                        </div>
+                        ${deadPreview}
+                        ${moreCount}
+                      </div>
+                    `;
+                })
+                .join('');
+        }
+
+        // 4b) Pending Queue List
+        workerRefs.queueCount.textContent = String(st.queued.length);
+        if (!st.queued.length) {
+            workerRefs.queueList.innerHTML = `<div style="color:#7d8894;font-size:12px;padding:4px 0;">Queue is empty.</div>`;
+        } else {
+            workerRefs.queueList.innerHTML = st.queued
+                .slice(0, 40)
+                .map(q =>
+                    q.isThreadCrawl
+                        ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-radius:5px;background:#15171b;font-size:12px;">
+                             <span>📚 <b>${escHtml(h.limit(q.threadTitle || 'Thread', 28))}</b> · Pages ${q.startPage}–${q.endPage} (${q.pageCount}p)</span>
+                             <button type="button" data-wrk-cancel-thread="${escHtml(q.jobId)}" style="padding:1px 6px;border-radius:4px;border:1px solid rgba(217,83,79,.45);background:transparent;color:#ff8787;cursor:pointer;">✕</button>
+                           </div>`
+                        : `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-radius:5px;background:#15171b;font-size:12px;">
+                             <span>• ${escHtml(h.limit(q.threadTitle || 'Thread', 26))} · <b>#${escHtml(q.postNumber)}</b> (${q.hasLock && !q.resourceCount ? '🔒' : `${q.resourceCount} items`})</span>
+                             <button type="button" data-wrk-cancel-job="${escHtml(q.jobId)}" style="padding:1px 6px;border-radius:4px;border:1px solid rgba(217,83,79,.45);background:transparent;color:#ff8787;cursor:pointer;">✕</button>
+                           </div>`,
+                )
+                .join('');
+        }
+
+        // 4c) Recent Completed List
+        workerRefs.histCount.textContent = String(st.history.length);
+        if (!st.history.length) {
+            workerRefs.histList.innerHTML = `<div style="color:#7d8894;font-size:12px;padding:4px 0;">No completed posts yet.</div>`;
+        } else {
+            workerRefs.histList.innerHTML = st.history
+                .slice(0, 25)
+                .map(item => {
+                    const col =
+                        item.status === 'failed'
+                            ? '#ff6b6b'
+                            : item.status === 'partial'
+                              ? '#e8a838'
+                              : item.status === 'dedup'
+                                ? '#3DB7C7'
+                                : '#47ba24';
+                    const badge =
+                        item.status === 'dedup'
+                            ? `⚡ ${item.deduped} dupes`
+                            : item.failed > 0
+                              ? `✓ ${item.succeeded} · ✕ ${item.failed}`
+                              : `✓ ${item.succeeded}/${item.total || item.succeeded}`;
+                    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-radius:5px;background:#15171b;font-size:12px;">
+                              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(h.limit(item.threadTitle || 'Thread', 26))} · <b>#${escHtml(item.postNumber)}</b></span>
+                              <span style="color:${col};font-weight:700;white-space:nowrap;margin-left:8px;">${badge}</span>
+                            </div>`;
+                })
+                .join('');
+        }
+    };
+
     const publishState = (extra = {}) => {
         const isStandbyNow = !activeJobSummary && pendingJobs.length === 0 && standbyMode;
         const st = xfpdWriteQueueState({
@@ -13702,24 +13980,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             active: activeJobSummary ? { ...activeJobSummary } : null,
             queued: pendingJobs.map(summarizeQueuedJob),
             history: history.slice(0, 30),
+            stats: { ...sessionStats },
             ...extra,
         });
         if (isDedicatedWorkerTab) {
             try {
+                const deadSuffix = sessionStats.filesFailed > 0 ? ` · ✕${sessionStats.filesFailed}` : '';
                 document.title = st.active
-                    ? `📥 Downloading #${st.active.postNumber} (${st.active.totalPct || 0}%) — XFPD`
+                    ? `📥 #${st.active.postNumber} (${st.active.totalPct || 0}%)${deadSuffix} — XFPD Worker`
                     : isStandbyNow
-                      ? '💤 XFPD Queue Worker (Ready)'
+                      ? `💤 Ready (✓${sessionStats.filesSaved}${deadSuffix}) — XFPD Worker`
                       : '📥 XFPD Download Worker';
             } catch (e) {}
-        }
-        if (workerStatusDom) {
-            const actTxt = st.active
-                ? `Active: ${st.active.threadTitle} · Post #${st.active.postNumber} — ${st.active.statusText || st.active.phase}`
-                : isStandbyNow
-                  ? 'Standby (ready for next download across any page/thread)'
-                  : 'Idle (waiting for tasks...)';
-            workerStatusDom.textContent = `${actTxt} | Queued: ${st.queued.length} | Completed: ${st.history.length}`;
+            renderWorkerDashboard(st);
         }
         return st;
     };
@@ -13736,6 +14009,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     active: null,
                     queued: [],
                     history: history.slice(0, 30),
+                    stats: { ...sessionStats },
                 });
             } catch (e) {}
         });
@@ -13756,19 +14030,228 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     return;
                 }
                 document.body.style.cssText =
-                    'margin:0;padding:32px;background:#141518;color:#e4e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+                    'margin:0;padding:24px 16px 48px;background:#101216;color:#e4e7eb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
                 document.body.innerHTML = `
-                  <div style="max-width:680px;margin:0 auto;padding:24px;border-radius:10px;background:#1e2025;border:1px solid rgba(61,183,199,.35);">
-                    <h2 style="margin:0 0 8px;color:#3DB7C7;font-size:18px;">📥 XenForoPostDownloader — Background Queue Worker</h2>
-                    <p style="margin:0 0 14px;font-size:13px;color:#9aa4af;">
-                      Keep this background tab untouched while downloads run. It closes automatically (or stays in zero-CPU standby for instant reuse) once the queue finishes.
-                    </p>
-                    <div id="xfpd-worker-live-line" style="padding:10px 12px;border-radius:6px;background:#141518;font-family:monospace;font-size:12.5px;color:#47ba24;">
-                      Initializing worker...
+                  <div id="xfpd-wrk-root" style="max-width:980px;margin:0 auto;display:flex;flex-direction:column;gap:16px;">
+                    <div style="padding:18px 22px;border-radius:12px;background:#1a1d23;border:1px solid rgba(61,183,199,.35);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                      <div>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                          <h2 style="margin:0;color:#3DB7C7;font-size:18px;">📥 XenForoPostDownloader — Background Queue Worker</h2>
+                          <span style="padding:2px 8px;border-radius:999px;background:rgba(61,183,199,.14);color:#3DB7C7;font-size:11.5px;font-weight:700;">v${escHtml(xfpdVersion)}</span>
+                          <span id="wrk-status-badge" style="padding:2px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);font-size:12px;font-weight:700;">Initializing...</span>
+                          <span id="wrk-elapsed" style="font-family:monospace;font-size:12.5px;color:#9aa4af;">⏱ 00:00</span>
+                        </div>
+                        <p style="margin:6px 0 0;font-size:12.5px;color:#8e99a6;">
+                          Keep this background tab open while downloads run. You can freely browse, paginate, or close forum tabs.
+                        </p>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:8px;">
+                        <button type="button" id="wrk-reset-stats-btn" style="padding:6px 11px;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#d0d7de;font-size:12px;font-weight:600;cursor:pointer;">Reset Stats</button>
+                        <button type="button" id="wrk-stop-all-btn" style="padding:6px 11px;border-radius:6px;border:1px solid rgba(217,83,79,.55);background:rgba(217,83,79,.16);color:#ff8787;font-size:12px;font-weight:700;cursor:pointer;">✕ Stop All</button>
+                      </div>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;">
+                      <div style="padding:14px 16px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,255,255,.09);">
+                        <div style="font-size:11.5px;color:#8e99a6;font-weight:600;text-transform:uppercase;letter-spacing:.4px;">Posts Processed</div>
+                        <div id="wrk-kpi-posts" style="font-size:26px;font-weight:800;color:#f1f3f5;margin-top:4px;">0</div>
+                        <div id="wrk-kpi-posts-sub" style="font-size:11.5px;color:#8e99a6;margin-top:2px;">0 queued</div>
+                      </div>
+                      <div style="padding:14px 16px;border-radius:10px;background:#1a1d23;border:1px solid rgba(71,186,36,.28);">
+                        <div style="font-size:11.5px;color:#8e99a6;font-weight:600;text-transform:uppercase;letter-spacing:.4px;">✓ Files Saved</div>
+                        <div id="wrk-kpi-saved" style="font-size:26px;font-weight:800;color:#47ba24;margin-top:4px;">0</div>
+                        <div style="font-size:11.5px;color:#8e99a6;margin-top:2px;">written to disk</div>
+                      </div>
+                      <div style="padding:14px 16px;border-radius:10px;background:#1a1d23;border:1px solid rgba(61,183,199,.28);">
+                        <div style="font-size:11.5px;color:#8e99a6;font-weight:600;text-transform:uppercase;letter-spacing:.4px;">⚡ Dupes Skipped</div>
+                        <div id="wrk-kpi-dedup" style="font-size:26px;font-weight:800;color:#3DB7C7;margin-top:4px;">0</div>
+                        <div style="font-size:11.5px;color:#8e99a6;margin-top:2px;">SHA-256 + URL dedup</div>
+                      </div>
+                      <div id="wrk-kpi-failed-card" style="padding:14px 16px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,255,255,.09);">
+                        <div style="font-size:11.5px;color:#ff9b9b;font-weight:700;text-transform:uppercase;letter-spacing:.4px;">✕ Failed / Dead Links</div>
+                        <div id="wrk-kpi-failed" style="font-size:26px;font-weight:800;color:#7d8894;margin-top:4px;">0</div>
+                        <div id="wrk-kpi-failed-sub" style="font-size:11.5px;color:#8e99a6;margin-top:2px;">0 dead links detected</div>
+                      </div>
+                      <div style="padding:14px 16px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,255,255,.09);">
+                        <div style="font-size:11.5px;color:#8e99a6;font-weight:600;text-transform:uppercase;letter-spacing:.4px;">📄 Pages Scanned</div>
+                        <div id="wrk-kpi-pages" style="font-size:26px;font-weight:800;color:#e4e7eb;margin-top:4px;">0</div>
+                        <div id="wrk-kpi-pages-sub" style="font-size:11.5px;color:#8e99a6;margin-top:2px;">pages crawled</div>
+                      </div>
+                    </div>
+
+                    <div style="padding:16px 20px;border-radius:10px;background:#1a1d23;border:1px solid rgba(61,183,199,.28);">
+                      <div id="wrk-crawl-wrap" style="display:none;margin-bottom:12px;">
+                        <div id="wrk-crawl-lbl" style="font-size:12px;font-weight:700;color:#3DB7C7;margin-bottom:5px;">Thread Crawl Progress</div>
+                        <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.09);overflow:hidden;">
+                          <div id="wrk-crawl-fill" style="height:100%;width:0%;background:linear-gradient(90deg,#3DB7C7,#47ba24);transition:width .2s ease;"></div>
+                        </div>
+                      </div>
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+                        <div id="wrk-active-title" style="font-size:14px;color:#f1f3f5;">Initializing...</div>
+                        <span id="wrk-active-actions" style="display:none;gap:6px;">
+                          <button type="button" id="wrk-skip-post-btn" style="padding:3px 9px;border-radius:5px;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.07);color:#eaeaea;font-size:11.5px;font-weight:600;cursor:pointer;">Skip Post</button>
+                          <button type="button" id="wrk-stop-thread-btn" style="padding:3px 9px;border-radius:5px;border:1px solid rgba(217,83,79,.55);background:rgba(217,83,79,.16);color:#ff8787;font-size:11.5px;font-weight:700;cursor:pointer;">Stop Thread</button>
+                        </span>
+                      </div>
+                      <div id="wrk-active-status" style="font-family:monospace;font-size:12.5px;color:#47ba24;margin-bottom:8px;word-break:break-all;">Ready.</div>
+                      <div style="display:flex;flex-direction:column;gap:5px;">
+                        <div style="height:5px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;" title="Current File Progress">
+                          <div id="wrk-file-fill" style="height:100%;width:0%;background:#3DB7C7;transition:width .14s ease;"></div>
+                        </div>
+                        <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;" title="Current Post Progress">
+                          <div id="wrk-total-fill" style="height:100%;width:0%;background:#47ba24;transition:width .14s ease;"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style="padding:16px 20px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,107,107,.28);">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                          <span style="font-weight:700;font-size:14px;color:#ff8787;">✕ Failed / Dead Links Overview</span>
+                          <span id="wrk-dead-badge" style="padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.07);font-size:11.5px;color:#c9d1d9;">0 dead links · 0 posts</span>
+                        </div>
+                        <button type="button" id="wrk-copy-all-dead-btn" style="display:none;padding:4px 10px;border-radius:5px;border:1px solid rgba(61,183,199,.5);background:rgba(61,183,199,.14);color:#65d9e8;font-size:11.5px;font-weight:700;cursor:pointer;">Copy All Dead URLs</button>
+                      </div>
+                      <div id="wrk-host-pills" style="display:none;flex-wrap:wrap;gap:6px;margin-bottom:10px;"></div>
+                      <div id="wrk-failed-list" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:7px;"></div>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;">
+                      <div style="padding:14px 18px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,255,255,.09);">
+                        <div style="font-weight:700;font-size:13px;color:#3DB7C7;margin-bottom:8px;">⏳ Pending Queue (<span id="wrk-queue-count">0</span>)</div>
+                        <div id="wrk-queue-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;"></div>
+                      </div>
+                      <div style="padding:14px 18px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,255,255,.09);">
+                        <div style="font-weight:700;font-size:13px;color:#47ba24;margin-bottom:8px;">✓ Recent Completed Posts (<span id="wrk-hist-count">0</span>)</div>
+                        <div id="wrk-hist-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;"></div>
+                      </div>
                     </div>
                   </div>
                 `;
-                workerStatusDom = document.getElementById('xfpd-worker-live-line');
+
+                const q = id => document.getElementById(id);
+                workerRefs = {
+                    badge: q('wrk-status-badge'),
+                    timer: q('wrk-elapsed'),
+                    kpiPosts: q('wrk-kpi-posts'),
+                    kpiPostsSub: q('wrk-kpi-posts-sub'),
+                    kpiSaved: q('wrk-kpi-saved'),
+                    kpiDedup: q('wrk-kpi-dedup'),
+                    kpiFailedCard: q('wrk-kpi-failed-card'),
+                    kpiFailed: q('wrk-kpi-failed'),
+                    kpiFailedSub: q('wrk-kpi-failed-sub'),
+                    kpiPages: q('wrk-kpi-pages'),
+                    kpiPagesSub: q('wrk-kpi-pages-sub'),
+                    crawlWrap: q('wrk-crawl-wrap'),
+                    crawlLbl: q('wrk-crawl-lbl'),
+                    crawlFill: q('wrk-crawl-fill'),
+                    activeTitle: q('wrk-active-title'),
+                    activeStatus: q('wrk-active-status'),
+                    activeActions: q('wrk-active-actions'),
+                    skipPostBtn: q('wrk-skip-post-btn'),
+                    stopThreadBtn: q('wrk-stop-thread-btn'),
+                    fileFill: q('wrk-file-fill'),
+                    totalFill: q('wrk-total-fill'),
+                    deadCountBadge: q('wrk-dead-badge'),
+                    hostPills: q('wrk-host-pills'),
+                    failedList: q('wrk-failed-list'),
+                    copyAllDeadBtn: q('wrk-copy-all-dead-btn'),
+                    queueCount: q('wrk-queue-count'),
+                    queueList: q('wrk-queue-list'),
+                    histCount: q('wrk-hist-count'),
+                    histList: q('wrk-hist-list'),
+                };
+
+                q('wrk-stop-all-btn').addEventListener('click', () => {
+                    pendingJobs.length = 0;
+                    if (activeThreadCrawl) activeThreadCrawl.cancelled = true;
+                    if (activeCancelController) activeCancelController.cancel();
+                    listRenderRevision++;
+                    publishState();
+                });
+
+                q('wrk-reset-stats-btn').addEventListener('click', () => {
+                    history = [];
+                    failedPostsRecords.length = 0;
+                    deadLinksByHost.clear();
+                    sessionStats.postsDone = 0;
+                    sessionStats.postsSkipped = 0;
+                    sessionStats.filesSaved = 0;
+                    sessionStats.filesDeduped = 0;
+                    sessionStats.filesFailed = 0;
+                    sessionStats.failedPostsCount = 0;
+                    sessionStats.pagesScanned = 0;
+                    sessionStats.startedAt = Date.now();
+                    listRenderRevision++;
+                    publishState();
+                });
+
+                q('wrk-skip-post-btn').addEventListener('click', () => {
+                    if (activeCancelController) activeCancelController.cancel();
+                });
+
+                q('wrk-stop-thread-btn').addEventListener('click', () => {
+                    if (activeThreadCrawl) activeThreadCrawl.cancelled = true;
+                    if (activeCancelController) activeCancelController.cancel();
+                    listRenderRevision++;
+                    publishState();
+                });
+
+                q('wrk-copy-all-dead-btn').addEventListener('click', async e => {
+                    const btn = e.currentTarget;
+                    const lines = [];
+                    for (const rec of failedPostsRecords) {
+                        for (const d of rec.deadItems) {
+                            lines.push(`[${rec.threadTitle || 'Thread'} · Post #${rec.postNumber}] ${d.reason}: ${d.url}`);
+                        }
+                        if (!rec.deadItems.length) {
+                            lines.push(`[${rec.threadTitle || 'Thread'} · Post #${rec.postNumber}] ${rec.failed} failed link(s)`);
+                        }
+                    }
+                    const ok = await copyTextToClipboard(lines.join('\n'));
+                    btn.textContent = ok ? 'Copied!' : 'Failed';
+                    setTimeout(() => {
+                        if (btn.isConnected) btn.textContent = 'Copy All Dead URLs';
+                    }, 1500);
+                });
+
+                q('xfpd-wrk-root').addEventListener('click', async e => {
+                    const copyBtn = e.target.closest('[data-wrk-copy-log]');
+                    if (copyBtn) {
+                        const jId = copyBtn.getAttribute('data-wrk-copy-log');
+                        const rec = failedPostsRecords.find(r => r.jobId === jId);
+                        if (rec && rec.errorLog) {
+                            const ok = await copyTextToClipboard(rec.errorLog);
+                            copyBtn.textContent = ok ? 'Copied!' : 'Failed';
+                            setTimeout(() => {
+                                if (copyBtn.isConnected) copyBtn.textContent = 'Copy Log';
+                            }, 1500);
+                        }
+                        return;
+                    }
+                    const cThread = e.target.closest('[data-wrk-cancel-thread]');
+                    if (cThread) {
+                        const jId = cThread.getAttribute('data-wrk-cancel-thread');
+                        for (let i = pendingJobs.length - 1; i >= 0; i--) {
+                            if (pendingJobs[i].jobId === jId) pendingJobs.splice(i, 1);
+                        }
+                        listRenderRevision++;
+                        publishState();
+                        return;
+                    }
+                    const cJob = e.target.closest('[data-wrk-cancel-job]');
+                    if (cJob) {
+                        const jId = cJob.getAttribute('data-wrk-cancel-job');
+                        for (let i = pendingJobs.length - 1; i >= 0; i--) {
+                            if (pendingJobs[i].jobId === jId) pendingJobs.splice(i, 1);
+                        }
+                        listRenderRevision++;
+                        publishState();
+                    }
+                });
+
+                lastRenderedRevision = 0;
+                renderWorkerDashboard(xfpdReadQueueState());
             } catch (e) {}
         };
         if (document.readyState === 'loading') {
@@ -14187,6 +14670,37 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
 
         if (outcome) {
+            if (outcome.status !== 'cancelled') {
+                sessionStats.postsDone++;
+                sessionStats.filesSaved += Number(outcome.succeeded || 0) || 0;
+                sessionStats.filesDeduped += Number(outcome.deduped || 0) || 0;
+                const failCnt = Number(outcome.failed || 0) || 0;
+                if (failCnt > 0) {
+                    sessionStats.filesFailed += failCnt;
+                    sessionStats.failedPostsCount++;
+                    const deadItems = parseDeadLinksFromLog(outcome.errorLog || '');
+                    for (const d of deadItems) {
+                        deadLinksByHost.set(d.host, (deadLinksByHost.get(d.host) || 0) + 1);
+                    }
+                    failedPostsRecords.unshift({
+                        jobId: job.jobId,
+                        threadKey: job.threadKey,
+                        threadTitle: job.threadTitle,
+                        pageUrl: job.pageUrl || '',
+                        pageNumber: job.pageNumber || 0,
+                        postId: job.postId,
+                        postNumber: job.postNumber,
+                        succeeded: outcome.succeeded || 0,
+                        failed: failCnt,
+                        deduped: outcome.deduped || 0,
+                        total: outcome.total || 0,
+                        deadItems,
+                        errorLog: outcome.errorLog || '',
+                        finishedAt: Date.now(),
+                    });
+                    if (failedPostsRecords.length > 150) failedPostsRecords.length = 150;
+                }
+            }
             if (typeof xfpdRecordThreadPostOutcome === 'function') {
                 try {
                     xfpdRecordThreadPostOutcome(job.threadKey, {
@@ -14207,6 +14721,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 finishedAt: Date.now(),
             });
             if (history.length > 30) history = history.slice(0, 30);
+            listRenderRevision++;
         }
 
         if (activeThreadCrawl && !activeThreadCrawl.cancelled && job.threadCrawl) {
@@ -14316,6 +14831,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     continue;
                 }
 
+                sessionStats.pagesScanned++;
                 if (typeof xfpdRecordThreadPageOutcome === 'function') {
                     xfpdRecordThreadPageOutcome(crawlJob.threadKey, pageNum, true);
                 }
@@ -14338,6 +14854,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         ) {
                             const prevRec = xfpdGetThreadPostRecord(parsedPost.postId, crawlJob.threadKey);
                             if (prevRec && (prevRec.status === 'done' || prevRec.status === 'dedup')) {
+                                sessionStats.postsSkipped++;
                                 continue;
                             }
                         }
@@ -14505,10 +15022,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             } else if (cmd.type === 'clear_history') {
                 history = [];
+                failedPostsRecords.length = 0;
+                deadLinksByHost.clear();
+                sessionStats.postsDone = 0;
+                sessionStats.postsSkipped = 0;
+                sessionStats.filesSaved = 0;
+                sessionStats.filesDeduped = 0;
+                sessionStats.filesFailed = 0;
+                sessionStats.failedPostsCount = 0;
+                sessionStats.pagesScanned = 0;
+                sessionStats.startedAt = Date.now();
             }
         }
 
         if (mutated) {
+            listRenderRevision++;
             publishState();
         }
         if (pendingJobs.length > 0 && !pumping) {
@@ -15125,7 +15653,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
             hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
 
-            const doneCount = recentHistory.filter(hItem => hItem.status !== 'cancelled').length;
+            const recentDone = recentHistory.filter(hItem => hItem.status !== 'cancelled').length;
+            const doneCount = Math.max(recentDone, (st.stats && st.stats.postsDone) || 0);
             const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length + pendingEnqueues;
 
             if (active) {
@@ -15240,13 +15769,24 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 `);
             }
 
-            if (recentHistory.length > 0) {
-                const totalSavedFiles = recentHistory.reduce((a, x) => a + (Number(x.succeeded) || 0), 0);
-                const totalDupes = recentHistory.reduce((a, x) => a + (Number(x.deduped) || 0), 0);
+            if (recentHistory.length > 0 || (st.stats && st.stats.postsDone > 0)) {
+                const useCum = st.stats && st.stats.postsDone >= doneCount;
+                const dispDone = useCum ? st.stats.postsDone : doneCount;
+                const totalSavedFiles = useCum
+                    ? st.stats.filesSaved
+                    : recentHistory.reduce((a, x) => a + (Number(x.succeeded) || 0), 0);
+                const totalDupes = useCum
+                    ? st.stats.filesDeduped
+                    : recentHistory.reduce((a, x) => a + (Number(x.deduped) || 0), 0);
+                const totalDead = useCum
+                    ? st.stats.filesFailed
+                    : recentHistory.reduce((a, x) => a + (Number(x.failed) || 0), 0);
                 const lastFailed = recentHistory.find(x => x.failed > 0 && x.errorLog);
                 parts.push(`
                   <div class="xfpd-q-foot">
-                    <span>✓ ${doneCount} done · ${totalSavedFiles} saved${totalDupes > 0 ? ` · ${totalDupes} dupes` : ''}</span>
+                    <span>✓ ${dispDone} posts · ${totalSavedFiles} saved${totalDupes > 0 ? ` · ${totalDupes} dupes` : ''}${
+                        totalDead > 0 ? ` · <b style="color:#ff7b7b;">✕ ${totalDead} dead</b>` : ''
+                    }</span>
                     <span>
                       ${lastFailed ? `<button type="button" class="xfpd-q-btn" data-xfpd-copy-err="${escapeHudHtml(lastFailed.jobId)}">Copy Log</button>` : ''}
                       ${!isBusy ? `<button type="button" class="xfpd-q-btn" data-xfpd-clear-hist="1">Clear</button>` : ''}

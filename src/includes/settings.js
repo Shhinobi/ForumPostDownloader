@@ -1160,6 +1160,16 @@ function xfpdDefaultQueueState() {
         active: null,
         queued: [],
         history: [],
+        stats: {
+            postsDone: 0,
+            postsSkipped: 0,
+            filesSaved: 0,
+            filesDeduped: 0,
+            filesFailed: 0,
+            failedPostsCount: 0,
+            pagesScanned: 0,
+            startedAt: 0,
+        },
         _updatedAt: 0,
     };
 }
@@ -1274,6 +1284,8 @@ function xfpdReadQueueState() {
     xfpdBindQueueStorageListeners();
     const raw = xfpdReadRawGmOrLs(XFPD_K_QUEUE_STATE, xfpdQueueStateMirror);
     if (!raw || typeof raw !== 'object') return xfpdDefaultQueueState();
+    const defStats = xfpdDefaultQueueState().stats;
+    const rawStats = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
     return {
         workerId: String(raw.workerId || ''),
         workerHeartbeat: Number(raw.workerHeartbeat || 0) || 0,
@@ -1283,6 +1295,16 @@ function xfpdReadQueueState() {
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
         queued: Array.isArray(raw.queued) ? raw.queued : [],
         history: Array.isArray(raw.history) ? raw.history : [],
+        stats: {
+            postsDone: Number(rawStats.postsDone || 0) || 0,
+            postsSkipped: Number(rawStats.postsSkipped || 0) || 0,
+            filesSaved: Number(rawStats.filesSaved || 0) || 0,
+            filesDeduped: Number(rawStats.filesDeduped || 0) || 0,
+            filesFailed: Number(rawStats.filesFailed || 0) || 0,
+            failedPostsCount: Number(rawStats.failedPostsCount || 0) || 0,
+            pagesScanned: Number(rawStats.pagesScanned || 0) || 0,
+            startedAt: Number(rawStats.startedAt || 0) || 0,
+        },
         _updatedAt: Number(raw._updatedAt || 0) || 0,
     };
 }
