@@ -7947,25 +7947,70 @@ const addShowDownloadPageBtnLink = post => {
 };
 
 // TODO: Extract to ui.js
-const addDownloadPageButton = () => {
-    const existing = h.element('#download-page');
-    if (existing) return existing;
+const xfpdGetThreadPaginationInfo = (doc = document, baseHref = location.href) => {
+    let currentPage = 1;
+    let totalPages = 1;
+    try {
+        const u = new URL(baseHref, location.origin);
+        const mPath = /\/page-(\d+)(?:\/|$)/i.exec(u.pathname || '');
+        if (mPath && mPath[1]) {
+            currentPage = Math.max(1, parseInt(mPath[1], 10) || 1);
+        } else if (u.searchParams.has('page')) {
+            currentPage = Math.max(1, parseInt(u.searchParams.get('page'), 10) || 1);
+        }
+    } catch (e) {}
 
-    const downloadAllButton = document.createElement('a');
-    downloadAllButton.setAttribute('id', 'download-page');
-    downloadAllButton.setAttribute('href', '#');
-    downloadAllButton.setAttribute('class', 'button--link button rippleButton');
-    downloadAllButton.style.borderColor = 'rgba(61, 183, 199, 0.55)';
+    try {
+        doc.querySelectorAll('.pageNav-main .pageNav-page a, .pageNav-page a').forEach(a => {
+            const numTxt = parseInt(String(a.textContent || '').replace(/[^\d]/g, ''), 10);
+            if (numTxt > totalPages) totalPages = numTxt;
+            const href = a.getAttribute('href') || '';
+            const mh = /\/page-(\d+)(?:\/|[?#]|$)/i.exec(href) || /[?&]page=(\d+)/i.exec(href);
+            if (mh && mh[1]) {
+                const nh = parseInt(mh[1], 10);
+                if (nh > totalPages) totalPages = nh;
+            }
+        });
+        doc.querySelectorAll('input.js-pageJumpPage[max]').forEach(inp => {
+            const mx = parseInt(inp.getAttribute('max') || '', 10);
+            if (mx > totalPages) totalPages = mx;
+        });
+        const simpleEl = doc.querySelector('.pageNavSimple-el--current');
+        if (simpleEl) {
+            const ms = /(\d+)\s+of\s+(\d+)/i.exec(String(simpleEl.textContent || ''));
+            if (ms && ms[2]) {
+                const ns = parseInt(ms[2], 10);
+                if (ns > totalPages) totalPages = ns;
+            }
+        }
+    } catch (e) {}
 
-    const buttonTextSpan = document.createElement('span');
-    buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
-    buttonTextSpan.innerText = `🡳 Download All Page`;
+    totalPages = Math.max(1, currentPage, totalPages);
 
-    downloadAllButton.appendChild(buttonTextSpan);
+    const buildPageUrl = pageNum => {
+        const p = Math.max(1, parseInt(pageNum, 10) || 1);
+        try {
+            const u = new URL(baseHref, location.origin);
+            u.hash = '';
+            const basePath = (u.pathname || '').replace(/\/(?:page-\d+|post-\d+)(?:\/.*)?$/i, '').replace(/\/+$/, '');
+            if (u.searchParams.has('page')) {
+                if (p <= 1) u.searchParams.delete('page');
+                else u.searchParams.set('page', String(p));
+                return u.href;
+            }
+            u.search = '';
+            u.pathname = p <= 1 ? `${basePath}/` : `${basePath}/page-${p}`;
+            return u.href;
+        } catch (e) {
+            const clean = String(baseHref || '').split('#')[0].split('?')[0].replace(/\/(?:page-\d+|post-\d+).*$/i, '').replace(/\/+$/, '');
+            return p <= 1 ? `${clean}/` : `${clean}/page-${p}`;
+        }
+    };
 
-    // Strictly target the TOP .block-outer of .block--messages (never fall back to a hidden navbar menu
-    // or bottom .block-outer--after!). On 1-page threads where XenForo/SMG omits the top .block-outer,
-    // create a clean top .block-outer bar right above .block-container so the button is ALWAYS visible!
+    return { currentPage, totalPages, buildPageUrl };
+};
+
+const ensureTopThreadButtonGroup = () => {
     const messagesBlock =
         h.element('.block.block--messages') ||
         h.element('.block--messages') ||
@@ -8001,7 +8046,26 @@ const addDownloadPageButton = () => {
         buttonGroup.style.marginRight = '6px';
         outerOpposite.prepend(buttonGroup);
     }
+    return buttonGroup;
+};
 
+const addDownloadPageButton = () => {
+    const existing = h.element('#download-page');
+    if (existing) return existing;
+
+    const downloadAllButton = document.createElement('a');
+    downloadAllButton.setAttribute('id', 'download-page');
+    downloadAllButton.setAttribute('href', '#');
+    downloadAllButton.setAttribute('class', 'button--link button rippleButton');
+    downloadAllButton.style.borderColor = 'rgba(61, 183, 199, 0.55)';
+
+    const buttonTextSpan = document.createElement('span');
+    buttonTextSpan.setAttribute('class', 'button-text download-page-btn');
+    buttonTextSpan.innerText = `🡳 Download All Page`;
+
+    downloadAllButton.appendChild(buttonTextSpan);
+
+    const buttonGroup = ensureTopThreadButtonGroup();
     if (buttonGroup) {
         buttonGroup.prepend(downloadAllButton);
     } else {
@@ -8012,6 +8076,174 @@ const addDownloadPageButton = () => {
     }
 
     return downloadAllButton;
+};
+
+const addDownloadThreadButton = () => {
+    const existing = h.element('#download-thread');
+    if (existing) return existing;
+
+    const btn = document.createElement('a');
+    btn.setAttribute('id', 'download-thread');
+    btn.setAttribute('href', '#');
+    btn.setAttribute('class', 'button--link button rippleButton');
+    btn.style.borderColor = 'rgba(61, 183, 199, 0.75)';
+    btn.style.color = '#3DB7C7';
+
+    const span = document.createElement('span');
+    span.setAttribute('class', 'button-text download-thread-btn');
+    span.innerText = '📚 Download Thread';
+    btn.appendChild(span);
+
+    const buttonGroup = ensureTopThreadButtonGroup();
+    if (buttonGroup) {
+        buttonGroup.prepend(btn);
+    } else {
+        const pageAction = h.element('.p-title-pageAction') || h.element('.p-body-header');
+        if (pageAction) {
+            pageAction.prepend(btn);
+        }
+    }
+    return btn;
+};
+
+const xfpdCollectHintsFromPostDom = (contentContainer, parsedHosts) => {
+    const linkNames = [];
+    const bunkrNames = [];
+    const goonboxThumbs = [];
+    const imagepondDirects = [];
+    const imagepondNames = [];
+
+    const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
+
+    try {
+        if (contentContainer && contentContainer.querySelectorAll) {
+            contentContainer.querySelectorAll('a[href]').forEach(a => {
+                let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim().split(/[\s"'<>]/)[0];
+                if (!href0) return;
+                if (!/^https?:\/\//i.test(href0)) {
+                    try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
+                }
+                if (href0.endsWith('/')) href0 = href0.slice(0, -1);
+                if (/bunkrr?r?\./i.test(href0) && !/scdn\.st\//i.test(href0)) {
+                    const txt = String(a.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (txt && !/^https?:\/\//i.test(txt) && /\.[A-Za-z0-9]{1,8}$/.test(txt) && !xfpdLooksLikeCfFilenameHint(txt)) {
+                        bunkrNames.push([href0, txt]);
+                        bunkrNames.push([strip(href0), txt]);
+                    }
+                }
+                if (/goonbox\.cr\/img\//i.test(href0)) {
+                    const img = a.querySelector('img');
+                    const rawThumb = img && (img.getAttribute('data-url') || img.getAttribute('data-src') || img.getAttribute('src'));
+                    if (rawThumb && !/^data:/i.test(rawThumb)) {
+                        goonboxThumbs.push([strip(href0), rawThumb]);
+                    }
+                }
+            });
+        }
+    } catch (e) {}
+
+    for (const host of parsedHosts || []) {
+        for (const resUrl of host.resources || []) {
+            const sUrl = strip(resUrl);
+            for (const k of [resUrl, sUrl]) {
+                if (linkHintNameByUrl.has(k)) linkNames.push([k, linkHintNameByUrl.get(k)]);
+                if (bunkrNameByUrl.has(k)) bunkrNames.push([k, bunkrNameByUrl.get(k)]);
+                if (goonboxThumbByUrl.has(k)) goonboxThumbs.push([k, goonboxThumbByUrl.get(k)]);
+                if (imagepondDirectByPageUrl.has(k)) {
+                    const dirU = imagepondDirectByPageUrl.get(k);
+                    imagepondDirects.push([k, dirU]);
+                    if (imagepondNameByUrl.has(dirU)) imagepondNames.push([dirU, imagepondNameByUrl.get(dirU)]);
+                }
+                if (imagepondNameByUrl.has(k)) imagepondNames.push([k, imagepondNameByUrl.get(k)]);
+            }
+        }
+    }
+
+    return { linkNames, bunkrNames, goonboxThumbs, imagepondDirects, imagepondNames };
+};
+
+const xfpdBuildSerializedPostJob = ({
+    parsedPost,
+    parsedHosts,
+    messageEl,
+    postSettings,
+    threadKey,
+    threadTitle,
+    pageUrl,
+    pageNumber,
+    csrfToken,
+}) => {
+    const ps = postSettings || {};
+    const incComments = ps.includeComments !== false;
+    const unlockReactUrls = [];
+    let completionReactUrl = '';
+
+    if (messageEl) {
+        const mainReactLink = xfpdFindPostNativeReactLink(messageEl);
+        if (mainReactLink) {
+            const alreadyMain =
+                mainReactLink.classList.contains('has-reaction') ||
+                !!messageEl.querySelector(':scope > footer .has-reaction, :scope > footer .smgReactionPill--reacted');
+            if (!alreadyMain) {
+                const rUrl = xfpdBuildPostReactUrl(mainReactLink.getAttribute('href') || '');
+                completionReactUrl = rUrl;
+                if (parsedPost.hasMainLockedContent) {
+                    unlockReactUrls.push(rUrl);
+                }
+            }
+        }
+
+        if (incComments && parsedPost.hasCommentLockedContent) {
+            const commentEls = xfpdCollectPostCommentElements(messageEl);
+            for (const cEl of commentEls) {
+                const cClone = xfpdCleanContentFragmentClone(cEl.cloneNode(true));
+                if (xfpdDetectLockedReactionContent(cEl, cClone, true)) {
+                    const cLink = xfpdFindNativeReactLinkInContainer(cEl, false);
+                    if (cLink && !cLink.classList.contains('has-reaction')) {
+                        const crUrl = xfpdBuildPostReactUrl(cLink.getAttribute('href') || '');
+                        if (crUrl) unlockReactUrls.push(crUrl);
+                    }
+                }
+            }
+        }
+    }
+
+    const clonedHosts = (parsedHosts || []).map(hItem => ({
+        id: hItem.id,
+        name: hItem.name,
+        type: hItem.type,
+        category: hItem.category,
+        enabled: !!hItem.enabled,
+        resources: Array.isArray(hItem.resources) ? hItem.resources.slice() : [],
+    }));
+
+    const initialResourceCount = clonedHosts
+        .filter(hItem => hItem.enabled && hItem.resources.length)
+        .reduce((a, hItem) => a + hItem.resources.length, 0);
+
+    return {
+        kind: 'post',
+        jobId: `job_${threadKey || 'f'}_${parsedPost.postId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        threadKey,
+        threadTitle,
+        pageUrl,
+        csrfToken,
+        postId: parsedPost.postId,
+        postNumber: parsedPost.postNumber,
+        pageNumber: pageNumber || parsedPost.pageNumber || 1,
+        postCaption: parsedPost.postCaption || '',
+        spoilers: Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers.slice() : [],
+        hasMainLockedContent: !!parsedPost.hasMainLockedContent,
+        hasCommentLockedContent: !!parsedPost.hasCommentLockedContent,
+        hasLockedContent: !!(parsedPost.hasMainLockedContent || (incComments && parsedPost.hasCommentLockedContent)),
+        hasCollapsedComments: !!(incComments && parsedPost.hasCollapsedComments),
+        unlockReactUrls,
+        completionReactUrl,
+        initialResourceCount,
+        parsedHosts: clonedHosts,
+        postSettings: JSON.parse(JSON.stringify(ps)),
+        hints: xfpdCollectHintsFromPostDom(parsedPost.contentContainer, parsedHosts),
+    };
 };
 
 const xfpdGetXenForoCsrfToken = () => {
@@ -8229,6 +8461,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     let history = Array.isArray(initialCheck.history) ? initialCheck.history.slice(0, 30) : [];
     let activeJobSummary = null;
     let activeCancelController = null;
+    let activeThreadCrawl = null;
     let pumping = false;
     let standbyMode = false;
     let idleCloseTimer = null;
@@ -8241,16 +8474,30 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
     };
 
-    const summarizeQueuedJob = j => ({
-        jobId: j.jobId,
-        threadKey: j.threadKey,
-        threadTitle: j.threadTitle,
-        postId: j.postId,
-        postNumber: j.postNumber,
-        postCaption: j.postCaption || '',
-        resourceCount: Number(j.initialResourceCount || 0) || 0,
-        hasLock: !!j.hasLockedContent,
-    });
+    const summarizeQueuedJob = j => {
+        if (j && j.kind === 'thread_crawl') {
+            return {
+                jobId: j.jobId,
+                isThreadCrawl: true,
+                threadKey: j.threadKey,
+                threadTitle: j.threadTitle,
+                startPage: j.startPage,
+                endPage: j.endPage,
+                pageCount: Array.isArray(j.pages) ? j.pages.length : Math.max(1, (j.endPage || 1) - (j.startPage || 1) + 1),
+            };
+        }
+        return {
+            jobId: j.jobId,
+            isThreadCrawl: false,
+            threadKey: j.threadKey,
+            threadTitle: j.threadTitle,
+            postId: j.postId,
+            postNumber: j.postNumber,
+            postCaption: j.postCaption || '',
+            resourceCount: Number(j.initialResourceCount || 0) || 0,
+            hasLock: !!j.hasLockedContent,
+        };
+    };
 
     const publishState = (extra = {}) => {
         const isStandbyNow = !activeJobSummary && pendingJobs.length === 0 && standbyMode;
@@ -8540,6 +8787,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             postId: job.postId,
             postNumber: job.postNumber,
             postCaption: job.postCaption || '',
+            threadCrawl: job.threadCrawl || null,
             phase: 'starting',
             completed: 0,
             total: enabledCount0,
@@ -8751,9 +8999,144 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (history.length > 30) history = history.slice(0, 30);
         }
 
-        activeJobSummary = null;
+        if (activeThreadCrawl && !activeThreadCrawl.cancelled && job.threadCrawl) {
+            activeJobSummary = {
+                jobId: activeThreadCrawl.jobId,
+                threadKey: activeThreadCrawl.threadKey,
+                threadTitle: activeThreadCrawl.threadTitle,
+                postId: '',
+                postNumber: `P.${job.threadCrawl.currentPage}`,
+                postCaption: '',
+                threadCrawl: job.threadCrawl,
+                phase: 'scanning_page',
+                completed: job.threadCrawl.pagesDone,
+                total: job.threadCrawl.pagesTotal,
+                filePct: 0,
+                totalPct: Math.round(((job.threadCrawl.pagesDone + 0.5) / Math.max(1, job.threadCrawl.pagesTotal)) * 100),
+                statusText: `📄 Continuing thread crawl (Page ${job.threadCrawl.currentPage}/${job.threadCrawl.endPage})...`,
+            };
+        } else {
+            activeJobSummary = null;
+        }
         activeCancelController = null;
         publishState();
+    };
+
+    const executeThreadCrawlJob = async crawlJob => {
+        cancelIdleClose();
+        const pages = Array.isArray(crawlJob.pages) ? crawlJob.pages : [];
+        if (!pages.length) return;
+
+        activeThreadCrawl = {
+            jobId: crawlJob.jobId,
+            threadKey: crawlJob.threadKey,
+            threadTitle: crawlJob.threadTitle,
+            startPage: crawlJob.startPage || pages[0].pageNum,
+            endPage: crawlJob.endPage || pages[pages.length - 1].pageNum,
+            pagesTotal: pages.length,
+            cancelled: false,
+        };
+
+        let csrfToken = crawlJob.csrfToken || '';
+        const incComments = !crawlJob.postSettings || crawlJob.postSettings.includeComments !== false;
+
+        try {
+            for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+                if (activeThreadCrawl.cancelled) break;
+                const { pageNum, pageUrl } = pages[pIdx];
+
+                const crawlSnapshot = {
+                    jobId: crawlJob.jobId,
+                    currentPage: pageNum,
+                    startPage: activeThreadCrawl.startPage,
+                    endPage: activeThreadCrawl.endPage,
+                    pagesDone: pIdx,
+                    pagesTotal: pages.length,
+                };
+
+                activeJobSummary = {
+                    jobId: crawlJob.jobId,
+                    threadKey: crawlJob.threadKey,
+                    threadTitle: crawlJob.threadTitle,
+                    postId: '',
+                    postNumber: `P.${pageNum}`,
+                    postCaption: '',
+                    threadCrawl: crawlSnapshot,
+                    phase: 'scanning_page',
+                    completed: pIdx,
+                    total: pages.length,
+                    filePct: 0,
+                    totalPct: Math.round((pIdx / pages.length) * 100),
+                    statusText: `📄 Scanning Thread Page ${pageNum} / ${activeThreadCrawl.endPage}...`,
+                };
+                publishState();
+
+                let pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                if ((!pageRes || !pageRes.ok) && !activeThreadCrawl.cancelled) {
+                    await h.delayedResolve(1200);
+                    pageRes = await xfpdSameOriginFetchText(pageUrl, 'GET', null);
+                }
+                if (!pageRes || !pageRes.ok || !pageRes.text || activeThreadCrawl.cancelled) {
+                    continue;
+                }
+
+                const pagePostJobs = [];
+                try {
+                    const doc = new DOMParser().parseFromString(pageRes.text, 'text/html');
+                    const freshCsrf =
+                        doc.querySelector('input[name="_xfToken"]')?.value ||
+                        (doc.documentElement && doc.documentElement.getAttribute('data-csrf')) ||
+                        '';
+                    if (freshCsrf) csrfToken = freshCsrf;
+
+                    const oppEls = [...doc.querySelectorAll('.message-attribution-opposite')];
+                    for (const oppEl of oppEls) {
+                        const parsedPost = parsers.thread.parsePost(oppEl);
+                        if (!parsedPost) continue;
+                        parsedPost.pageNumber = pageNum;
+                        const targetContent = incComments ? parsedPost.content : parsedPost.mainOnlyContent;
+                        const parsedHosts = parsers.hosts.parseHosts(targetContent);
+                        const hasLocked =
+                            !!(parsedPost.hasMainLockedContent || (incComments && parsedPost.hasCommentLockedContent));
+                        const hasCollapsed = !!(incComments && parsedPost.hasCollapsedComments);
+
+                        if (!parsedHosts.length && !hasLocked && !hasCollapsed) {
+                            continue;
+                        }
+
+                        const pJob = xfpdBuildSerializedPostJob({
+                            parsedPost,
+                            parsedHosts,
+                            messageEl: parsedPost.messageEl,
+                            postSettings: crawlJob.postSettings,
+                            threadKey: crawlJob.threadKey,
+                            threadTitle: crawlJob.threadTitle,
+                            pageUrl,
+                            pageNumber: pageNum,
+                            csrfToken,
+                        });
+                        pJob.threadCrawl = crawlSnapshot;
+                        pagePostJobs.push(pJob);
+                    }
+                } catch (err) {
+                    console.error('[XFPD Worker] Error parsing thread page:', pageNum, err);
+                }
+
+                for (const postJob of pagePostJobs) {
+                    if (activeThreadCrawl.cancelled) break;
+                    await executeSingleJob(postJob);
+                }
+
+                if (pIdx + 1 < pages.length && !activeThreadCrawl.cancelled) {
+                    await h.delayedResolve(350);
+                }
+            }
+        } finally {
+            activeThreadCrawl = null;
+            activeJobSummary = null;
+            activeCancelController = null;
+            publishState();
+        }
     };
 
     const pumpQueue = async () => {
@@ -8766,7 +9149,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             while (pendingJobs.length > 0) {
                 const nextJob = pendingJobs.shift();
                 if (!nextJob) continue;
-                await executeSingleJob(nextJob);
+                if (nextJob.kind === 'thread_crawl') {
+                    await executeThreadCrawlJob(nextJob);
+                } else {
+                    await executeSingleJob(nextJob);
+                }
             }
         };
 
@@ -8803,13 +9190,49 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         activeJobSummary.threadKey === job.threadKey &&
                         activeJobSummary.postId === job.postId;
                     const dupQueued = pendingJobs.some(
-                        q => q.threadKey === job.threadKey && q.postId === job.postId,
+                        q => q.kind !== 'thread_crawl' && q.threadKey === job.threadKey && q.postId === job.postId,
                     );
                     if (!dupActive && !dupQueued) {
                         pendingJobs.push(job);
                     }
                 }
+            } else if (cmd.type === 'enqueue_thread' && p.crawlJob && Array.isArray(p.crawlJob.pages)) {
+                const cj = p.crawlJob;
+                const dupActiveCrawl =
+                    activeThreadCrawl &&
+                    activeThreadCrawl.threadKey === cj.threadKey &&
+                    activeThreadCrawl.startPage === cj.startPage &&
+                    activeThreadCrawl.endPage === cj.endPage;
+                const dupQueuedCrawl = pendingJobs.some(
+                    q =>
+                        q.kind === 'thread_crawl' &&
+                        q.threadKey === cj.threadKey &&
+                        q.startPage === cj.startPage &&
+                        q.endPage === cj.endPage,
+                );
+                if (!dupActiveCrawl && !dupQueuedCrawl) {
+                    pendingJobs.push({ ...cj, kind: 'thread_crawl' });
+                }
+            } else if (cmd.type === 'cancel_thread') {
+                const matchCrawl = item =>
+                    item &&
+                    ((p.jobId && item.jobId === p.jobId) ||
+                        (!p.jobId && p.threadKey && item.threadKey === p.threadKey));
+                if (activeThreadCrawl && matchCrawl(activeThreadCrawl)) {
+                    activeThreadCrawl.cancelled = true;
+                    if (activeCancelController) activeCancelController.cancel();
+                }
+                for (let i = pendingJobs.length - 1; i >= 0; i--) {
+                    if (pendingJobs[i].kind === 'thread_crawl' && matchCrawl(pendingJobs[i])) {
+                        pendingJobs.splice(i, 1);
+                    }
+                }
             } else if (cmd.type === 'cancel_job') {
+                if (activeThreadCrawl && p.jobId && activeThreadCrawl.jobId === p.jobId) {
+                    activeThreadCrawl.cancelled = true;
+                    if (activeCancelController) activeCancelController.cancel();
+                    continue;
+                }
                 const matchJob = item =>
                     (p.jobId && item.jobId === p.jobId) ||
                     (p.postId && item.postId === p.postId && (!p.threadKey || item.threadKey === p.threadKey));
@@ -8824,6 +9247,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             } else if (cmd.type === 'cancel_all') {
                 pendingJobs.length = 0;
+                if (activeThreadCrawl) {
+                    activeThreadCrawl.cancelled = true;
+                }
                 if (activeCancelController) {
                     activeCancelController.cancel();
                 }
@@ -9079,146 +9505,70 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (sessionStorage.getItem('xfpd_hud_idle_dismissed') === '1') hudIdleDismissed = true;
         } catch (e) {}
 
-        const collectPostHintsSnapshot = postEntry => {
-            const { parsedPost, parsedHosts } = postEntry;
-            const linkNames = [];
-            const bunkrNames = [];
-            const goonboxThumbs = [];
-            const imagepondDirects = [];
-            const imagepondNames = [];
-
-            const strip = s => String(s || '').split('#')[0].split('?')[0].replace(/\/+$/, '');
-
-            // Capture Bunkr visible filenames & Goonbox thumbs from live post DOM before user navigates away!
-            try {
-                const cc = parsedPost && parsedPost.contentContainer;
-                if (cc && cc.querySelectorAll) {
-                    cc.querySelectorAll('a[href]').forEach(a => {
-                        let href0 = String(a.getAttribute('href') || '').replace(/&amp;/g, '&').trim().split(/[\s"'<>]/)[0];
-                        if (!href0) return;
-                        if (!/^https?:\/\//i.test(href0)) {
-                            try { href0 = new URL(href0, location.origin).href; } catch (e) { return; }
-                        }
-                        if (href0.endsWith('/')) href0 = href0.slice(0, -1);
-                        if (/bunkrr?r?\./i.test(href0) && !/scdn\.st\//i.test(href0)) {
-                            const txt = String(a.textContent || '').replace(/\s+/g, ' ').trim();
-                            if (txt && !/^https?:\/\//i.test(txt) && /\.[A-Za-z0-9]{1,8}$/.test(txt) && !xfpdLooksLikeCfFilenameHint(txt)) {
-                                bunkrNames.push([href0, txt]);
-                                bunkrNames.push([strip(href0), txt]);
-                            }
-                        }
-                        if (/goonbox\.cr\/img\//i.test(href0)) {
-                            const img = a.querySelector('img');
-                            const thumbUrl = img && (img.getAttribute('data-url') || img.getAttribute('src'));
-                            if (thumbUrl) {
-                                goonboxThumbs.push([strip(href0), thumbUrl]);
-                            }
-                        }
-                    });
-                }
-            } catch (e) {}
-
-            for (const host of parsedHosts || []) {
-                for (const resUrl of host.resources || []) {
-                    const sUrl = strip(resUrl);
-                    for (const k of [resUrl, sUrl]) {
-                        if (linkHintNameByUrl.has(k)) linkNames.push([k, linkHintNameByUrl.get(k)]);
-                        if (bunkrNameByUrl.has(k)) bunkrNames.push([k, bunkrNameByUrl.get(k)]);
-                        if (goonboxThumbByUrl.has(k)) goonboxThumbs.push([k, goonboxThumbByUrl.get(k)]);
-                        if (imagepondDirectByPageUrl.has(k)) {
-                            const dirU = imagepondDirectByPageUrl.get(k);
-                            imagepondDirects.push([k, dirU]);
-                            if (imagepondNameByUrl.has(dirU)) imagepondNames.push([dirU, imagepondNameByUrl.get(dirU)]);
-                        }
-                        if (imagepondNameByUrl.has(k)) imagepondNames.push([k, imagepondNameByUrl.get(k)]);
-                    }
-                }
-            }
-
-            return { linkNames, bunkrNames, goonboxThumbs, imagepondDirects, imagepondNames };
-        };
-
         const serializePostEntryToJob = postEntry => {
             const { parsedPost, parsedHosts } = postEntry;
             const ps = postEntry.getSettingsCB();
-            const incComments = ps.includeComments !== false;
-            const tKey = xfpdGetCurrentThreadKey();
-            const tTitle = parsers.thread.parseTitle();
-            const pageUrl = String(location.href || '').split('#')[0];
-            const csrfToken = xfpdGetXenForoCsrfToken();
-
             const messageEl =
                 parsedPost.messageEl ||
                 document.querySelector(`#js-post-${parsedPost.postId}, [data-content="post-${parsedPost.postId}"]`);
-
-            const unlockReactUrls = [];
-            let completionReactUrl = '';
-
-            if (messageEl) {
-                const mainReactLink = xfpdFindPostNativeReactLink(messageEl);
-                if (mainReactLink) {
-                    const alreadyMain =
-                        mainReactLink.classList.contains('has-reaction') ||
-                        !!messageEl.querySelector(':scope > footer .has-reaction, :scope > footer .smgReactionPill--reacted');
-                    if (!alreadyMain) {
-                        const rUrl = xfpdBuildPostReactUrl(mainReactLink.getAttribute('href') || '');
-                        completionReactUrl = rUrl;
-                        if (parsedPost.hasMainLockedContent) {
-                            unlockReactUrls.push(rUrl);
-                        }
-                    }
-                }
-
-                if (incComments && parsedPost.hasCommentLockedContent) {
-                    const commentEls = xfpdCollectPostCommentElements(messageEl);
-                    for (const cEl of commentEls) {
-                        const cClone = xfpdCleanContentFragmentClone(cEl.cloneNode(true));
-                        if (xfpdDetectLockedReactionContent(cEl, cClone, true)) {
-                            const cLink = xfpdFindNativeReactLinkInContainer(cEl, false);
-                            if (cLink && !cLink.classList.contains('has-reaction')) {
-                                const crUrl = xfpdBuildPostReactUrl(cLink.getAttribute('href') || '');
-                                if (crUrl) unlockReactUrls.push(crUrl);
-                            }
-                        }
-                    }
-                }
-            }
-
-            const clonedHosts = (parsedHosts || []).map(hItem => ({
-                id: hItem.id,
-                name: hItem.name,
-                type: hItem.type,
-                category: hItem.category,
-                enabled: !!hItem.enabled,
-                resources: Array.isArray(hItem.resources) ? hItem.resources.slice() : [],
-            }));
-
-            const initialResourceCount = clonedHosts
-                .filter(hItem => hItem.enabled && hItem.resources.length)
-                .reduce((a, hItem) => a + hItem.resources.length, 0);
-
-            return {
-                jobId: `job_${tKey || 'f'}_${parsedPost.postId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                threadKey: tKey,
-                threadTitle: tTitle,
-                pageUrl,
-                csrfToken,
-                postId: parsedPost.postId,
-                postNumber: parsedPost.postNumber,
+            return xfpdBuildSerializedPostJob({
+                parsedPost,
+                parsedHosts,
+                messageEl,
+                postSettings: ps,
+                threadKey: xfpdGetCurrentThreadKey(),
+                threadTitle: parsers.thread.parseTitle(),
+                pageUrl: String(location.href || '').split('#')[0],
                 pageNumber: parsedPost.pageNumber || 1,
-                postCaption: parsedPost.postCaption || '',
-                spoilers: Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers.slice() : [],
-                hasMainLockedContent: !!parsedPost.hasMainLockedContent,
-                hasCommentLockedContent: !!parsedPost.hasCommentLockedContent,
-                hasLockedContent: !!(parsedPost.hasMainLockedContent || (incComments && parsedPost.hasCommentLockedContent)),
-                hasCollapsedComments: !!(incComments && parsedPost.hasCollapsedComments),
-                unlockReactUrls,
-                completionReactUrl,
-                initialResourceCount,
-                parsedHosts: clonedHosts,
-                postSettings: JSON.parse(JSON.stringify(ps)),
-                hints: collectPostHintsSnapshot(postEntry),
+                csrfToken: xfpdGetXenForoCsrfToken(),
+            });
+        };
+
+        const enqueueThreadPagesRange = (rawStartPage = null, rawEndPage = null) => {
+            const pag = xfpdGetThreadPaginationInfo();
+            if (pag.totalPages <= 1 && parsedPosts.length > 0) {
+                enqueueAllPagePosts();
+                return;
+            }
+            const sPage = Math.max(1, Math.min(pag.totalPages, parseInt(rawStartPage, 10) || 1));
+            const ePage = Math.max(sPage, Math.min(pag.totalPages, parseInt(rawEndPage, 10) || pag.totalPages));
+            const pages = [];
+            for (let p = sPage; p <= ePage; p++) {
+                pages.push({ pageNum: p, pageUrl: pag.buildPageUrl(p) });
+            }
+            if (!pages.length) return;
+
+            hudDismissedUntilCount = -1;
+            hudIdleDismissed = false;
+            try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
+
+            const tKey = xfpdGetCurrentThreadKey();
+            const crawlJob = {
+                kind: 'thread_crawl',
+                jobId: `tcrawl_${tKey || 'f'}_${sPage}_${ePage}_${Date.now()}`,
+                threadKey: tKey,
+                threadTitle: parsers.thread.parseTitle(),
+                startPage: sPage,
+                endPage: ePage,
+                pages,
+                csrfToken: xfpdGetXenForoCsrfToken(),
+                postSettings: JSON.parse(JSON.stringify(pageSettings)),
             };
+
+            const cmdId = xfpdSendQueueCommand('enqueue_thread', { crawlJob });
+            const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+            syncVisiblePostsAndHud(xfpdReadQueueState());
+            if (!spawnedOrAlive) {
+                xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                return;
+            }
+            setTimeout(() => {
+                const st = xfpdReadQueueState();
+                const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                    xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                }
+            }, 3500);
         };
 
         const enqueuePostsToBackgroundWorker = entries => {
@@ -9330,14 +9680,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (!document.body) return;
             const recentHistory = history.filter(hItem => Date.now() - (Number(hItem.finishedAt) || 0) < 1800000);
             const unackedCmds = xfpdReadPendingQueueCommands(new Set(st.ackCmdIds || []));
-            const pendingEnqueues = unackedCmds.reduce(
-                (acc, c) => acc + (c.type === 'enqueue' && c.payload && Array.isArray(c.payload.jobs) ? c.payload.jobs.length : 0),
-                0,
-            );
+            const pendingEnqueues = unackedCmds.reduce((acc, c) => {
+                if (c.type === 'enqueue' && c.payload && Array.isArray(c.payload.jobs)) {
+                    return acc + c.payload.jobs.length;
+                }
+                if (c.type === 'enqueue_thread' && c.payload && c.payload.crawlJob) {
+                    return acc + 1;
+                }
+                return acc;
+            }, 0);
+            const pagInfo = xfpdGetThreadPaginationInfo();
             const isBusy = !!(active || queued.length > 0 || pendingEnqueues > 0);
             const hasUnclosedHistory = recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount;
             const isIdlePillMode = !isBusy && !hasUnclosedHistory;
-            const shouldShowHud = isBusy || hasUnclosedHistory || (parsedPosts.length > 0 && !hudIdleDismissed);
+            const shouldShowHud =
+                isBusy || hasUnclosedHistory || ((parsedPosts.length > 0 || pagInfo.totalPages > 1) && !hudIdleDismissed);
 
             let hudEl = document.getElementById('xfpd-queue-hud');
             if (!shouldShowHud) {
@@ -9353,6 +9710,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-head" id="xfpd-q-head-bar">
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-thread-btn" title="Download entire thread (all pages)">📚 Thread</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-page-btn" title="Enqueue all posts on this page">⬇ Page</button>
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" id="xfpd-q-close-btn" title="Cancel All / Hide">✕</button>
@@ -9392,6 +9750,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     if (e.target.closest('button')) return;
                     toggleExpand();
                 });
+                hudEl.querySelector('#xfpd-q-dl-thread-btn').addEventListener('click', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const pInf = xfpdGetThreadPaginationInfo();
+                    enqueueThreadPagesRange(1, pInf.totalPages);
+                });
                 hudEl.querySelector('#xfpd-q-dl-page-btn').addEventListener('click', e => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -9426,6 +9790,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 });
 
                 hudEl.querySelector('#xfpd-q-body').addEventListener('click', async e => {
+                    const cancelThreadBtn = e.target.closest('[data-xfpd-cancel-thread]');
+                    if (cancelThreadBtn) {
+                        e.preventDefault();
+                        xfpdSendQueueCommand('cancel_thread', { jobId: cancelThreadBtn.getAttribute('data-xfpd-cancel-thread') });
+                        return;
+                    }
                     const cancelBtn = e.target.closest('[data-xfpd-cancel-job]');
                     if (cancelBtn) {
                         e.preventDefault();
@@ -9460,11 +9830,20 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             hudEl.style.display = 'block';
             const titleEl = hudEl.querySelector('#xfpd-q-title-txt');
+            const dlThreadHudBtn = hudEl.querySelector('#xfpd-q-dl-thread-btn');
             const dlPageHudBtn = hudEl.querySelector('#xfpd-q-dl-page-btn');
             const toggleBtn = hudEl.querySelector('#xfpd-q-toggle-btn');
             const topFill = hudEl.querySelector('#xfpd-q-top-fill');
             const bodyEl = hudEl.querySelector('#xfpd-q-body');
 
+            if (dlThreadHudBtn) {
+                if (pagInfo.totalPages > 1) {
+                    dlThreadHudBtn.style.display = '';
+                    dlThreadHudBtn.textContent = `📚 Thread (${pagInfo.totalPages}p)`;
+                } else {
+                    dlThreadHudBtn.style.display = 'none';
+                }
+            }
             if (dlPageHudBtn) {
                 const pageDlPosts = parsedPosts.filter(isPostDownloadableOrLocked);
                 if (pageDlPosts.length > 0) {
@@ -9482,10 +9861,16 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length + pendingEnqueues;
 
             if (active) {
-                const curPostIdx = doneCount + 1;
                 const pct = active.totalPct || 0;
                 titleEl.style.color = '#3DB7C7';
-                titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts) · ${pct}%`;
+                if (active.threadCrawl) {
+                    const tc = active.threadCrawl;
+                    const postTag = active.phase === 'scanning_page' ? 'scanning' : `#${active.postNumber}`;
+                    titleEl.textContent = `📚 Thread P.${tc.currentPage}/${tc.endPage} · ${postTag} · ${pct}%`;
+                } else {
+                    const curPostIdx = doneCount + 1;
+                    titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts) · ${pct}%`;
+                }
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = `${pct}%`;
             } else if (queued.length > 0 || pendingEnqueues > 0) {
@@ -9520,11 +9905,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 `);
             }
             if (active) {
+                const tc = active.threadCrawl;
+                const activeHeading = tc
+                    ? `📚 ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 18))} · P.${tc.currentPage}/${tc.endPage}${active.postId ? ` · #${escapeHudHtml(active.postNumber)}` : ''}`
+                    : `▶ ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 24))} · #${escapeHudHtml(active.postNumber)}`;
+                const activeBtns = tc
+                    ? `<span class="xfpd-q-ctrls">
+                         ${active.postId ? `<button type="button" class="xfpd-q-btn" data-xfpd-cancel-job="${escapeHudHtml(active.jobId)}" title="Skip only this post">Skip</button>` : ''}
+                         <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-thread="${escapeHudHtml(tc.jobId)}" title="Stop entire thread download">Stop Thread</button>
+                       </span>`
+                    : `<button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-job="${escapeHudHtml(active.jobId)}">Cancel</button>`;
                 parts.push(`
                   <div class="xfpd-q-active">
                     <div class="xfpd-q-active-top">
-                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">▶ ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 24))} · #${escapeHudHtml(active.postNumber)}</span>
-                      <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-job="${escapeHudHtml(active.jobId)}">Cancel</button>
+                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${activeHeading}</span>
+                      ${activeBtns}
                     </div>
                     <div class="xfpd-q-sub">${escapeHudHtml(active.statusText || active.phase || 'Working...')}</div>
                     <div class="xfpd-q-pbar"><div style="width:${active.filePct || 0}%;background:#3DB7C7;"></div></div>
@@ -9535,14 +9930,22 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             if (queued.length > 0) {
                 const rows = queued
-                    .map(
-                        q => `
+                    .map(q => {
+                        if (q.isThreadCrawl) {
+                            return `
+                      <div class="xfpd-q-item">
+                        <span class="xfpd-q-item-txt">📚 ${escapeHudHtml(h.limit(q.threadTitle || 'Thread', 20))} · Pages ${q.startPage}–${q.endPage} (${q.pageCount}p)</span>
+                        <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-thread="${escapeHudHtml(q.jobId)}" title="Remove thread crawl">✕</button>
+                      </div>
+                    `;
+                        }
+                        return `
                       <div class="xfpd-q-item">
                         <span class="xfpd-q-item-txt">• ${escapeHudHtml(h.limit(q.threadTitle || 'Thread', 22))} · #${escapeHudHtml(q.postNumber)} (${q.hasLock && !q.resourceCount ? '🔒' : q.resourceCount})</span>
                         <button type="button" class="xfpd-q-btn xfpd-q-btn-danger" data-xfpd-cancel-job="${escapeHudHtml(q.jobId)}" title="Remove from queue">✕</button>
                       </div>
-                    `,
-                    )
+                    `;
+                    })
                     .join('');
                 parts.push(`
                   <div class="xfpd-q-sec-lbl"><span>⏳ In Queue (${queued.length})</span></div>
@@ -9571,9 +9974,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         xfpdOnQueueStateChange(st => {
             syncVisiblePostsAndHud(st);
             updateDownloadPageButtonLabel();
+            updateDownloadThreadButtonLabel();
         });
         setInterval(() => {
             syncVisiblePostsAndHud(xfpdReadQueueState());
+            updateDownloadThreadButtonLabel();
         }, 700);
 
         const enqueueAllPagePosts = () => {
@@ -9686,10 +10091,37 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     return !!(s && s.enabled);
                 });
 
+            const pag = xfpdGetThreadPaginationInfo();
+            const threadRangeHtml =
+                pag.totalPages > 1
+                    ? ui.forms.createRow(`
+                        <div class="xfpd-thread-range-box">
+                          <div class="xfpd-thread-range-row">
+                            <span style="font-weight:700;color:#3DB7C7;">📚 Entire Thread (${pag.totalPages} pages)</span>
+                            ${
+                                pag.currentPage > 1
+                                    ? `<button type="button" id="xfpd-range-from-cur" class="xfpd-mini-btn" title="Set range from current page (${pag.currentPage}) to last page (${pag.totalPages})">P.${pag.currentPage}→${pag.totalPages}</button>`
+                                    : ''
+                            }
+                          </div>
+                          <div class="xfpd-thread-range-row">
+                            <span>Pages:</span>
+                            <span style="display:inline-flex;align-items:center;gap:5px;">
+                              <input type="number" id="xfpd-thread-start-page" class="xfpd-page-num-input" min="1" max="${pag.totalPages}" value="1" />
+                              <span>to</span>
+                              <input type="number" id="xfpd-thread-end-page" class="xfpd-page-num-input" min="1" max="${pag.totalPages}" value="${pag.totalPages}" />
+                            </span>
+                          </div>
+                          <button type="button" id="xfpd-start-thread-download" class="xfpd-thread-btn">📚 Download Thread Pages (1–${pag.totalPages})</button>
+                        </div>
+                      `)
+                    : '';
+
             const settingsHtml = ui.forms.config.createSettingsCheckboxesHtml('page-settings', pageSettings);
             const postSelectionHtml = [
+                threadRangeHtml,
                 ui.forms.createRow(
-                    `<div data-xfpd-post-selection-heading="1" style="font-weight: bold; margin-top:5px; margin-bottom: 8px; color: #3DB7C7;">Post Selection (${downloadablePosts.length})</div>`,
+                    `<div data-xfpd-post-selection-heading="1" style="font-weight: bold; margin-top:5px; margin-bottom: 8px; color: #3DB7C7;">Current Page Posts (${downloadablePosts.length})</div>`,
                 ),
                 ui.forms.createCheckbox('config-toggle-all-posts', settings.ui.checkboxes.toggleAllCheckboxLabel, allSelected),
                 `<div id="downloader-page-posts-list" style="max-height: 240px; overflow-y: auto; overflow-x: hidden;">${postsHtml}</div>`,
@@ -9718,6 +10150,52 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     if (instance && typeof instance.hide === 'function') {
                         instance.hide();
                     }
+                });
+            }
+
+            const startThreadBtn = formEl.querySelector('#xfpd-start-thread-download');
+            const startPageInp = formEl.querySelector('#xfpd-thread-start-page');
+            const endPageInp = formEl.querySelector('#xfpd-thread-end-page');
+            const fromCurBtn = formEl.querySelector('#xfpd-range-from-cur');
+
+            const syncThreadBtnLabel = () => {
+                if (!startThreadBtn || !startPageInp || !endPageInp) return;
+                const pagNow = xfpdGetThreadPaginationInfo();
+                const sVal = Math.max(1, Math.min(pagNow.totalPages, parseInt(startPageInp.value, 10) || 1));
+                const eVal = Math.max(sVal, Math.min(pagNow.totalPages, parseInt(endPageInp.value, 10) || pagNow.totalPages));
+                const count = eVal - sVal + 1;
+                startThreadBtn.textContent = `📚 Download Thread Pages (${sVal}–${eVal} · ${count}p)`;
+            };
+
+            if (startPageInp && startPageInp.dataset.xfpdBound !== '1') {
+                startPageInp.dataset.xfpdBound = '1';
+                startPageInp.addEventListener('input', syncThreadBtnLabel);
+            }
+            if (endPageInp && endPageInp.dataset.xfpdBound !== '1') {
+                endPageInp.dataset.xfpdBound = '1';
+                endPageInp.addEventListener('input', syncThreadBtnLabel);
+            }
+            if (fromCurBtn && fromCurBtn.dataset.xfpdBound !== '1') {
+                fromCurBtn.dataset.xfpdBound = '1';
+                fromCurBtn.addEventListener('click', e => {
+                    e.preventDefault();
+                    const pagNow = xfpdGetThreadPaginationInfo();
+                    if (startPageInp) startPageInp.value = String(pagNow.currentPage);
+                    if (endPageInp) endPageInp.value = String(pagNow.totalPages);
+                    syncThreadBtnLabel();
+                });
+            }
+            if (startThreadBtn && startThreadBtn.dataset.xfpdBound !== '1') {
+                startThreadBtn.dataset.xfpdBound = '1';
+                startThreadBtn.addEventListener('click', e => {
+                    e.preventDefault();
+                    const pagNow = xfpdGetThreadPaginationInfo();
+                    const sVal = startPageInp ? parseInt(startPageInp.value, 10) || 1 : 1;
+                    const eVal = endPageInp ? parseInt(endPageInp.value, 10) || pagNow.totalPages : pagNow.totalPages;
+                    if (instance && typeof instance.hide === 'function') {
+                        instance.hide();
+                    }
+                    enqueueThreadPagesRange(sVal, eVal);
                 });
             }
 
@@ -9808,12 +10286,79 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             updatePageFormActionBtn(formEl);
         };
 
+        const updateDownloadThreadButtonLabel = () => {
+            const btn = h.element('#download-thread');
+            if (!btn) return;
+            const span = btn.querySelector('.download-thread-btn') || btn;
+            const pag = xfpdGetThreadPaginationInfo();
+            if (pag.totalPages <= 1) {
+                btn.style.display = 'none';
+                return;
+            }
+            btn.style.display = '';
+            const st = xfpdReadQueueState();
+            const curKey = xfpdGetCurrentThreadKey();
+            const alive = xfpdIsQueueWorkerAlive(st);
+            const activeTc =
+                alive && st.active && st.active.threadCrawl && (!st.active.threadKey || st.active.threadKey === curKey)
+                    ? st.active.threadCrawl
+                    : null;
+            const queuedTc =
+                alive && Array.isArray(st.queued)
+                    ? st.queued.find(q => q && q.isThreadCrawl && (!q.threadKey || q.threadKey === curKey))
+                    : null;
+
+            if (activeTc) {
+                btn.style.color = '#e8a838';
+                span.textContent = `✕ Stop Thread (P.${activeTc.currentPage}/${activeTc.endPage})`;
+            } else if (queuedTc) {
+                btn.style.color = '#3DB7C7';
+                span.textContent = `⏳ Thread Queued (${queuedTc.startPage}–${queuedTc.endPage}) · ✕`;
+            } else {
+                btn.style.color = '#3DB7C7';
+                span.textContent = `📚 Download Thread (${pag.totalPages} pages)`;
+            }
+        };
+
         const syncDownloadPageUI = () => {
             const downloadablePosts = parsedPosts.filter(isPostDownloadableOrLocked);
-            if (!downloadablePosts.length) return;
+            const pag = xfpdGetThreadPaginationInfo();
+            if (!downloadablePosts.length && pag.totalPages <= 1) return;
 
             const btnDownloadPage = addDownloadPageButton();
             if (!btnDownloadPage) return;
+
+            if (pag.totalPages > 1) {
+                const btnDownloadThread = addDownloadThreadButton();
+                if (btnDownloadThread && btnDownloadThread.dataset.xfpdClickBound !== '1') {
+                    btnDownloadThread.dataset.xfpdClickBound = '1';
+                    btnDownloadThread.addEventListener('click', e => {
+                        e.preventDefault();
+                        const st = xfpdReadQueueState();
+                        const curKey = xfpdGetCurrentThreadKey();
+                        const alive = xfpdIsQueueWorkerAlive(st);
+                        const activeTc =
+                            alive && st.active && st.active.threadCrawl && (!st.active.threadKey || st.active.threadKey === curKey)
+                                ? st.active.threadCrawl
+                                : null;
+                        const queuedTc =
+                            alive && Array.isArray(st.queued)
+                                ? st.queued.find(q => q && q.isThreadCrawl && (!q.threadKey || q.threadKey === curKey))
+                                : null;
+                        if (activeTc) {
+                            xfpdSendQueueCommand('cancel_thread', { jobId: activeTc.jobId });
+                            return;
+                        }
+                        if (queuedTc) {
+                            xfpdSendQueueCommand('cancel_thread', { jobId: queuedTc.jobId });
+                            return;
+                        }
+                        const curPag = xfpdGetThreadPaginationInfo();
+                        enqueueThreadPagesRange(1, curPag.totalPages);
+                    });
+                }
+                updateDownloadThreadButtonLabel();
+            }
 
             if (btnDownloadPage.dataset.xfpdClickBound !== '1') {
                 btnDownloadPage.dataset.xfpdClickBound = '1';
@@ -10326,7 +10871,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     console.error('[XFPD] Error initializing post:', e);
                 }
             });
-            if (changed) {
+            if (changed || xfpdGetThreadPaginationInfo().totalPages > 1) {
                 syncDownloadPageUI();
             }
         };
