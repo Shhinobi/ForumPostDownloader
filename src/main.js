@@ -6647,7 +6647,55 @@ if (imagebamHeaders && isFF) {
                                 } catch (e) {}
                             }
 
-GM_download(dlOpts);
+                            const effectiveSaveMode = postSettings.saveMode || 'auto';
+                            if (
+                                (effectiveSaveMode === 'auto' || effectiveSaveMode === 'agent') &&
+                                typeof xfpdCheckGoAgentOnline === 'function' &&
+                                (await xfpdCheckGoAgentOnline(false))
+                            ) {
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                                const hdrs = { ...(dlOpts.headers || {}), Referer: reflink || '' };
+                                if (isGoFile && settings?.hosts?.goFile?.token) {
+                                    hdrs.Cookie = `accountToken=${settings.hosts.goFile.token}`;
+                                }
+                                const fbUrls = Array.isArray(resource?.mirrorFallbacks)
+                                    ? resource.mirrorFallbacks.map(m => m && m.url).filter(Boolean)
+                                    : [];
+                                const postTag = formatPostOrderTag(postNumber);
+                                const seqTag = String((resource && resource._seqIndex) || 1).padStart(
+                                    Math.max(3, String(totalDownloadable || 1).length),
+                                    '0',
+                                );
+                                const curLay = resolveEffectiveLayout();
+                                const agentRes = await xfpdAgentDownloadItem({
+                                    url: String(dlOpts.url),
+                                    fallbacks: fbUrls,
+                                    headers: hdrs,
+                                    threadTitle: title,
+                                    relPath: fn,
+                                    filePrefix: curLay === 'media' ? `${postTag}_${seqTag}` : seqTag,
+                                    archiveLabel: cleanAlbumLabel(h.fnNoExt(basename)) || sanitizeWinSegment(h.fnNoExt(basename), ''),
+                                    folderLayout: curLay,
+                                    postFolder: curLay === 'media' ? '' : buildPostSubfolderName(sanitizeWinSegment),
+                                    extractArchives: postSettings.extractArchives !== false,
+                                    contentDedup: useContentDedup,
+                                    passwords: parsedPost && Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers : [],
+                                });
+                                if (agentRes && agentRes.ok) {
+                                    if (useContentDedup) {
+                                        const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                        if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                        if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
+                                    }
+                                    finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
+                                    h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Saved 🢒 ${ellipsedUrl}`);
+                                    h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                    h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                                    return;
+                                }
+                            }
+
+                            GM_download(dlOpts);
                         }
 
                     } catch (e) {
@@ -6699,6 +6747,112 @@ if (isGoFile || isPixeldrain || isFilester) {
                 const isTurboCdn = /turbocdn\.st/i.test(String(url || ''));
                 const filesterRef = isFilester ? String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/') : '';
                 const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
+
+                // Fast Native Go Companion Path (when Go Agent is running on 127.0.0.1:48721 & Zipped is OFF):
+                // Offloads the download + SHA-256 disk dedup + native 7z.exe archive extraction directly to Go,
+                // using 0 MB of Chrome JS RAM and writing straight to F:\Downloads without chrome://downloads!
+                const activeSaveMode = postSettings.saveMode || 'auto';
+                if (
+                    !zippedForThis &&
+                    !isForumAttachment &&
+                    (activeSaveMode === 'auto' || activeSaveMode === 'agent') &&
+                    typeof xfpdCheckGoAgentOnline === 'function' &&
+                    (await xfpdCheckGoAgentOnline(false))
+                ) {
+                    const knownName = inferItemKnownFilename(resource);
+                    if (knownName && /\.[A-Za-z0-9]{2,5}$/.test(knownName) && !/\.bin$/i.test(knownName)) {
+                        const preFn = ensureUniquePath(
+                            buildTargetRelativePath({
+                                basename: sanitizeWinSegment(knownName),
+                                folderName: folderName || '',
+                                seqIndex: resource && resource._seqIndex,
+                                contentType: '',
+                                hostCategory: host && host.category,
+                                sanitizeSegFn: sanitizeWinSegment,
+                                sanitizePathFn: sanitizeWinPath,
+                            }),
+                        );
+                        const titleClean = sanitizeWinSegment(threadTitle);
+                        const agentHeaders = {
+                            Referer: String(reqHeaders.Referer || reflink || ''),
+                            'User-Agent': (typeof navigator !== 'undefined' && navigator.userAgent) || '',
+                        };
+                        if (isGoFile && settings?.hosts?.goFile?.token) {
+                            agentHeaders.Cookie = `accountToken=${settings.hosts.goFile.token}`;
+                        }
+                        const fbUrls = Array.isArray(resource?.mirrorFallbacks)
+                            ? resource.mirrorFallbacks.map(m => m && m.url).filter(Boolean)
+                            : [];
+                        const postTag = formatPostOrderTag(postNumber);
+                        const seqTag = String((resource && resource._seqIndex) || 1).padStart(
+                            Math.max(3, String(totalDownloadable || 1).length),
+                            '0',
+                        );
+                        const curLay = resolveEffectiveLayout();
+
+                        h.ui.setElProps(statusLabel, { color: '#469cf3' });
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+
+                        const goCtrl = typeof AbortController === 'function' ? new AbortController() : null;
+                        if (goCtrl) {
+                            cancelController.abortHandlers.add(() => {
+                                try { goCtrl.abort(); } catch (e) {}
+                            });
+                        }
+
+                        const agentRes = await xfpdAgentDownloadItem(
+                            {
+                                url: String(url),
+                                fallbacks: fbUrls,
+                                headers: agentHeaders,
+                                threadTitle: titleClean,
+                                relPath: preFn,
+                                filePrefix: curLay === 'media' ? `${postTag}_${seqTag}` : seqTag,
+                                archiveLabel: cleanAlbumLabel(h.fnNoExt(knownName)) || sanitizeWinSegment(h.fnNoExt(knownName), ''),
+                                folderLayout: curLay,
+                                postFolder: curLay === 'media' ? '' : buildPostSubfolderName(sanitizeWinSegment),
+                                extractArchives: postSettings.extractArchives !== false,
+                                contentDedup: useContentDedup,
+                                passwords: parsedPost && Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers : [],
+                            },
+                            goCtrl ? goCtrl.signal : null,
+                        );
+
+                        if (isCancelled()) {
+                            notifyBatchStep();
+                            return;
+                        }
+
+                        if (agentRes && agentRes.ok) {
+                            if (useContentDedup) {
+                                const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                if (resource && !resource.folderName && resource.original) {
+                                    const oKey = canonicalizeMediaUrl(resource.original);
+                                    if (oKey) xfpdMarkSeenThreadUrl(oKey, activeThreadKey);
+                                }
+                                if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
+                            }
+                            log.post.info(postId, `::Saved via Go Agent (${agentRes.status})::: ${preFn}`, postNumber);
+                            finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ ${ellipsedUrl}`);
+                            h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                            h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                            return;
+                        }
+
+                        // Release reserved path before either falling through to browser Blob fetch (Cloudflare TLS) or failing
+                        usedPaths.delete(preFn);
+                        if (agentRes && !agentRes.fallbackToBrowser) {
+                            log.post.error(postId, `::Go Agent download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
+                            finishBatchItem(false);
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                            h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                            h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                            return;
+                        }
+                    }
+                }
 
                 let lastBlobProgressUiAt = 0;
                 const progressEntry = { url: progressKey, intervalId: null, old: 0, new: 0 };
@@ -7532,44 +7686,17 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                             while (!isCancelled() && tCursor < saveTasks.length) {
                                                 const task = saveTasks[tCursor++];
                                                 if (!task) continue;
-                                                await new Promise(resolveSave => {
-                                                    const bUrl = URL.createObjectURL(task.blob);
-                                                    let settled = false;
-                                                    const doneSave = () => {
-                                                        if (settled) return;
-                                                        settled = true;
-                                                        setTimeout(() => {
-                                                            try { URL.revokeObjectURL(bUrl); } catch (e) {}
-                                                        }, 1000);
-                                                        resolveSave();
-                                                    };
-                                                    const safetyTimer = setTimeout(doneSave, 15000);
-                                                    try {
-                                                        GM_download({
-                                                            url: bUrl,
-                                                            name: task.saveName,
-                                                            onload: () => {
-                                                                clearTimeout(safetyTimer);
-                                                                doneSave();
-                                                            },
-                                                            onerror: err => {
-                                                                clearTimeout(safetyTimer);
-                                                                console.warn('[XFPD] Error saving extracted file:', task.relFn, err);
-                                                                doneSave();
-                                                            },
-                                                            ontimeout: () => {
-                                                                clearTimeout(safetyTimer);
-                                                                doneSave();
-                                                            },
-                                                        });
-                                                    } catch (e) {
-                                                        clearTimeout(safetyTimer);
-                                                        doneSave();
-                                                    }
+                                                await xfpdSaveBlobUnified({
+                                                    blob: task.blob,
+                                                    threadTitle: titleClean,
+                                                    relFn: task.relFn,
+                                                    saveAsName: task.saveName,
+                                                    saveMode: postSettings.saveMode || 'auto',
+                                                    useDedup: false, // Already SHA-256 verified above
                                                 });
                                             }
                                         };
-                                        const poolSize = Math.min(6, saveTasks.length);
+                                        const poolSize = Math.min(8, saveTasks.length);
                                         const pool = [];
                                         for (let w = 0; w < poolSize; w++) pool.push(saveWorker());
                                         await Promise.all(pool);
@@ -7656,19 +7783,21 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                         const saveAsName = (isFF && !zippedForThis) ? saveAsFF : saveAsPath;
 
                         if (!zippedForThis) {
-                            const blobUrl = URL.createObjectURL(fileBlob);
-                            GM_download({
-                                url: blobUrl,
-                                name: saveAsName,
-                                onload: () => {
-                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-                                },
-                                onerror: response => {
-                                    console.log(`Error writing file ${fn} to disk. There may be more details below.`);
-                                    console.log(response);
-                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-                                },
+                            const savedRes = await xfpdSaveBlobUnified({
+                                blob: fileBlob,
+                                threadTitle: title,
+                                relFn: fn,
+                                saveAsName,
+                                saveMode: postSettings.saveMode || 'auto',
+                                useDedup: useContentDedup,
                             });
+                            if (savedRes && savedRes.status === 'dedup') {
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped on disk) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                                return;
+                            }
                         }
 
                         if (zippedForThis) {
@@ -10316,6 +10445,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             hudDismissedUntilCount = -1;
             hudIdleDismissed = false;
             try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
+            if (typeof xfpdEnsureDirectFolderPermissionOnGesture === 'function') {
+                xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
+            }
 
             const tKey = xfpdGetCurrentThreadKey();
             const sPage = cleanNums[0];
@@ -10367,6 +10499,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             hudDismissedUntilCount = -1;
             hudIdleDismissed = false;
             try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
+            if (typeof xfpdEnsureDirectFolderPermissionOnGesture === 'function') {
+                xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
+            }
             const jobs = list.map(serializePostEntryToJob);
             const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
 

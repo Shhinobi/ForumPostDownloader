@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.43
+// @version 3.44
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -351,9 +351,11 @@ const XFPD_MAX_STORED_THREADS = 500;
 
 const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
 const XFPD_VALID_FOLDER_LAYOUTS = ['media', 'post', 'post-media', 'flat', 'albums'];
+const XFPD_VALID_SAVE_MODES = ['auto', 'folder', 'agent', 'browser'];
 
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
+    saveMode: 'auto',
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
@@ -425,6 +427,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
             normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
                 ? src.videoQuality
                 : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else if (key === 'saveMode') {
+            normalized.saveMode = XFPD_VALID_SAVE_MODES.includes(src.saveMode)
+                ? src.saveMode
+                : XFPD_DEFAULT_USER_PREFS.saveMode;
         } else if (key === 'folderLayout') {
             normalized.folderLayout = xfpdDeriveFolderLayout(src);
         } else {
@@ -1769,6 +1775,346 @@ function xfpdEnsureQueueWorkerTab() {
         }
     } catch (e) {}
     return false;
+}
+
+// --- Hybrid Direct-Disk Save Engine (Go Agent 127.0.0.1 + Browser File System API + GM_download) ---
+const XFPD_GO_AGENT_BASE = 'http://127.0.0.1:48721';
+const XFPD_FS_IDB_NAME = 'xfpd_fs_handles_v1';
+const XFPD_FS_IDB_STORE = 'handles';
+const XFPD_FS_FOLDER_LS_KEY = 'xfpd_direct_folder_name';
+
+let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', checkingPromise: null };
+let xfpdCachedRootDirHandle = null;
+const xfpdSubDirHandleCache = new Map();
+
+function xfpdGetGoAgentCachedState() {
+    return xfpdGoAgentState;
+}
+
+async function xfpdCheckGoAgentOnline(force = false) {
+    const now = Date.now();
+    if (!force && xfpdGoAgentState.checkedAt > 0 && now - xfpdGoAgentState.checkedAt < 3500) {
+        return xfpdGoAgentState.online;
+    }
+    if (xfpdGoAgentState.checkingPromise) {
+        return await xfpdGoAgentState.checkingPromise;
+    }
+
+    xfpdGoAgentState.checkingPromise = (async () => {
+        try {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (!fetchFn) {
+                xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+                return false;
+            }
+            const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            const timer = ctrl ? setTimeout(() => ctrl.abort(), 650) : null;
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/ping`, {
+                method: 'GET',
+                mode: 'cors',
+                credentials: 'omit',
+                ...(ctrl ? { signal: ctrl.signal } : {}),
+            });
+            if (timer) clearTimeout(timer);
+            if (res && res.ok) {
+                const j = await res.json();
+                if (j && j.ok) {
+                    xfpdGoAgentState = {
+                        online: true,
+                        checkedAt: Date.now(),
+                        rootDir: String(j.rootDir || ''),
+                        checkingPromise: null,
+                    };
+                    return true;
+                }
+            }
+        } catch (e) {}
+        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+        return false;
+    })();
+
+    return await xfpdGoAgentState.checkingPromise;
+}
+
+async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return null;
+        const qs = new URLSearchParams({
+            thread: String(threadTitle || 'Thread'),
+            relPath: String(relFn || 'file'),
+            dedup: useDedup ? '1' : '0',
+        }).toString();
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/write-blob?${qs}`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: blob,
+        });
+        if (!res || !res.ok) return null;
+        const j = await res.json();
+        return j && j.ok ? j : null;
+    } catch (e) {
+        xfpdGoAgentState.online = false;
+        xfpdGoAgentState.checkedAt = 0;
+        return null;
+    }
+}
+
+async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return null;
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reqPayload),
+            ...(abortSignal ? { signal: abortSignal } : {}),
+        });
+        if (!res || !res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdOpenFsHandlesDb() {
+    return new Promise((resolve, reject) => {
+        try {
+            const idb =
+                (typeof indexedDB !== 'undefined' && indexedDB) ||
+                (typeof window !== 'undefined' && window.indexedDB);
+            if (!idb) return resolve(null);
+            const req = idb.open(XFPD_FS_IDB_NAME, 1);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(XFPD_FS_IDB_STORE)) {
+                    db.createObjectStore(XFPD_FS_IDB_STORE);
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+async function xfpdLoadDirectDirHandleFromIdb() {
+    if (xfpdCachedRootDirHandle) return xfpdCachedRootDirHandle;
+    try {
+        const db = await xfpdOpenFsHandlesDb();
+        if (!db) return null;
+        const handle = await new Promise(resolve => {
+            try {
+                const tx = db.transaction(XFPD_FS_IDB_STORE, 'readonly');
+                const getReq = tx.objectStore(XFPD_FS_IDB_STORE).get('root');
+                getReq.onsuccess = () => resolve(getReq.result || null);
+                getReq.onerror = () => resolve(null);
+            } catch (e) {
+                resolve(null);
+            }
+        });
+        if (handle) xfpdCachedRootDirHandle = handle;
+        return handle || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function xfpdSaveDirectDirHandleToIdb(handle) {
+    xfpdCachedRootDirHandle = handle || null;
+    xfpdSubDirHandleCache.clear();
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            if (handle && handle.name) localStorage.setItem(XFPD_FS_FOLDER_LS_KEY, String(handle.name));
+            else localStorage.removeItem(XFPD_FS_FOLDER_LS_KEY);
+        }
+    } catch (e) {}
+    try {
+        const db = await xfpdOpenFsHandlesDb();
+        if (!db) return;
+        await new Promise(resolve => {
+            try {
+                const tx = db.transaction(XFPD_FS_IDB_STORE, 'readwrite');
+                const st = tx.objectStore(XFPD_FS_IDB_STORE);
+                if (handle) st.put(handle, 'root');
+                else st.delete('root');
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+            } catch (e) {
+                resolve();
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdGetDirectFolderLabel() {
+    try {
+        if (xfpdCachedRootDirHandle && xfpdCachedRootDirHandle.name) {
+            return String(xfpdCachedRootDirHandle.name);
+        }
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            return String(localStorage.getItem(XFPD_FS_FOLDER_LS_KEY) || '');
+        }
+    } catch (e) {}
+    return '';
+}
+
+function xfpdIsFileSystemAccessSupported() {
+    return (
+        (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function') ||
+        typeof showDirectoryPicker === 'function'
+    );
+}
+
+async function xfpdPickDirectSaveDirectory() {
+    const picker =
+        (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
+            ? window.showDirectoryPicker.bind(window)
+            : null) || (typeof showDirectoryPicker === 'function' ? showDirectoryPicker : null);
+    if (!picker) {
+        throw new Error('File System Access API is not enabled in this browser.');
+    }
+    const handle = await picker({ id: 'xfpd_direct_root', mode: 'readwrite' });
+    if (handle) {
+        await xfpdSaveDirectDirHandleToIdb(handle);
+        return handle.name || 'Selected';
+    }
+    return '';
+}
+
+async function xfpdEnsureDirectFolderPermissionOnGesture() {
+    try {
+        const prefs = xfpdGetEffectivePrefs();
+        if (prefs.saveMode === 'browser' || prefs.zipped) return false;
+        if (prefs.saveMode === 'auto' && xfpdGoAgentState.online) return true;
+        const handle = await xfpdLoadDirectDirHandleFromIdb();
+        if (!handle || typeof handle.queryPermission !== 'function') return false;
+        let perm = await handle.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') return true;
+        if (perm === 'prompt' && typeof handle.requestPermission === 'function') {
+            perm = await handle.requestPermission({ mode: 'readwrite' });
+            return perm === 'granted';
+        }
+    } catch (e) {}
+    return false;
+}
+
+async function xfpdWriteBlobToDirectFolder(saveAsPath, blob) {
+    try {
+        const rootHandle = await xfpdLoadDirectDirHandleFromIdb();
+        if (!rootHandle || typeof rootHandle.getDirectoryHandle !== 'function') return false;
+        if (typeof rootHandle.queryPermission === 'function') {
+            const perm = await rootHandle.queryPermission({ mode: 'readwrite' });
+            if (perm !== 'granted') return false;
+        }
+
+        const cleanSegs = String(saveAsPath || '')
+            .replace(/\\/g, '/')
+            .split('/')
+            .map(s => s.trim())
+            .filter(Boolean);
+        if (!cleanSegs.length) return false;
+
+        const fileName = cleanSegs.pop();
+        let dirHandle = rootHandle;
+        let pathKey = '';
+
+        for (const seg of cleanSegs) {
+            pathKey = pathKey ? `${pathKey}/${seg}` : seg;
+            if (xfpdSubDirHandleCache.has(pathKey)) {
+                dirHandle = xfpdSubDirHandleCache.get(pathKey);
+            } else {
+                dirHandle = await dirHandle.getDirectoryHandle(seg, { create: true });
+                xfpdSubDirHandleCache.set(pathKey, dirHandle);
+                if (xfpdSubDirHandleCache.size > 300) {
+                    const firstK = xfpdSubDirHandleCache.keys().next().value;
+                    if (firstK !== undefined) xfpdSubDirHandleCache.delete(firstK);
+                }
+            }
+        }
+
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return true;
+    } catch (e) {
+        xfpdSubDirHandleCache.clear();
+        return false;
+    }
+}
+
+async function xfpdSaveBlobUnified({ blob, threadTitle, relFn, saveAsName, saveMode = 'auto', useDedup = true }) {
+    const mode = XFPD_VALID_SAVE_MODES.includes(saveMode) ? saveMode : 'auto';
+
+    // 1) Option 2: Native Go Companion Agent (127.0.0.1:48721)
+    if (mode === 'auto' || mode === 'agent') {
+        const agentOnline = await xfpdCheckGoAgentOnline(false);
+        if (agentOnline) {
+            const agentRes = await xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup);
+            if (agentRes && agentRes.ok) {
+                return { via: 'agent', status: agentRes.status || 'saved', fingerprint: agentRes.fingerprint || '' };
+            }
+        }
+    }
+
+    // 2) Option 1: Browser Native File System Access API (Direct Folder Handle)
+    if (mode === 'auto' || mode === 'folder' || mode === 'agent') {
+        const cleanThread = String(threadTitle || 'Thread').trim();
+        const fullRel = `${cleanThread}/${String(relFn || 'file').replace(/^\/+/, '')}`;
+        const wroteDirect = await xfpdWriteBlobToDirectFolder(fullRel, blob);
+        if (wroteDirect) {
+            return { via: 'folder', status: 'saved', fingerprint: '' };
+        }
+    }
+
+    // 3) Fallback: Classic Browser Download Manager (GM_download)
+    await new Promise(resolveSave => {
+        const bUrl = URL.createObjectURL(blob);
+        let settled = false;
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            setTimeout(() => {
+                try { URL.revokeObjectURL(bUrl); } catch (e) {}
+            }, 1000);
+            resolveSave();
+        };
+        const safetyTimer = setTimeout(done, 15000);
+        try {
+            GM_download({
+                url: bUrl,
+                name: saveAsName,
+                onload: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+                onerror: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+                ontimeout: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+            });
+        } catch (e) {
+            clearTimeout(safetyTimer);
+            done();
+        }
+    });
+    return { via: 'browser', status: 'saved', fingerprint: '' };
 }
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments
@@ -4368,12 +4714,18 @@ const ui = {
                 const layoutVal =
                     currentSettings.folderLayout ||
                     (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
+                const saveModeVal = currentSettings.saveMode || 'auto';
                 const vidQual = currentSettings.videoQuality || 'best';
                 const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
                 const dedupHistoryCount = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
+                const directFolderName = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                const agentSt = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                const fsSupported = typeof xfpdIsFileSystemAccessSupported === 'function' && xfpdIsFileSystemAccessSupported();
 
                 const optLayout = (val, label) =>
                     `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const optSaveMode = (val, label) =>
+                    `<option value="${val}" ${saveModeVal === val ? 'selected="selected"' : ''}>${label}</option>`;
                 const optQual = (val, label) =>
                     `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
 
@@ -4394,6 +4746,35 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-save-mode">Save Engine</label>
+            <select id="${idPrefix}-save-mode" class="xfpd-select" ${skipDl ? 'disabled="disabled"' : ''}>
+              ${optSaveMode('auto', 'Auto (Go → Folder → Chrome)')}
+              ${optSaveMode('folder', 'Direct Folder (Browser API)')}
+              ${optSaveMode('agent', 'Go Agent (127.0.0.1)')}
+              ${optSaveMode('browser', 'Chrome Download Manager')}
+            </select>
+          </div>
+          <div class="menu-row" style="padding:0 8px 6px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;">
+            <span id="${idPrefix}-save-engine-status" style="color:${agentSt && agentSt.online ? '#47ba24' : directFolderName ? '#3DB7C7' : '#959595'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+              ${
+                  agentSt && agentSt.online
+                      ? `⚡ Go Agent Online (${agentSt.rootDir || 'F:\\Downloads'})`
+                      : directFolderName
+                        ? `📁 Folder: ${directFolderName}`
+                        : '🌐 Default: Chrome Downloads'
+              }
+            </span>
+            ${
+                fsSupported
+                    ? `<button type="button" id="${idPrefix}-pick-folder" class="xfpd-mini-btn" title="Choose a local folder so single posts & pages save directly without Chrome's download manager">${
+                          directFolderName ? '📁 Change' : '📁 Pick Folder'
+                      }</button>`
+                    : ''
+            }
+          </div>
+          `,
                     `
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-folder-layout">Folder Layout</label>
@@ -4485,6 +4866,47 @@ const ui = {
                 };
                 const skipDl = !!settingsObj.skipDownload;
                 setCb('zipped', settingsObj.zipped, false);
+
+                const saveModeEl = rootEl.querySelector(`#${idPrefix}-save-mode`);
+                if (saveModeEl) {
+                    const sm = settingsObj.saveMode || 'auto';
+                    if (saveModeEl.value !== sm) saveModeEl.value = sm;
+                    saveModeEl.disabled = skipDl;
+                }
+                const engineStEl = rootEl.querySelector(`#${idPrefix}-save-engine-status`);
+                if (engineStEl) {
+                    const refreshEngineStatus = stObj => {
+                        const fLbl = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                        const sm = settingsObj.saveMode || 'auto';
+                        if (sm === 'browser') {
+                            engineStEl.style.color = '#959595';
+                            engineStEl.textContent = '🌐 Mode: Chrome Downloads';
+                        } else if (stObj && stObj.online && (sm === 'auto' || sm === 'agent')) {
+                            engineStEl.style.color = '#47ba24';
+                            engineStEl.textContent = `⚡ Go Agent Online (${stObj.rootDir || 'F:\\Downloads'})`;
+                        } else if (fLbl && (sm === 'auto' || sm === 'folder' || sm === 'agent')) {
+                            engineStEl.style.color = '#3DB7C7';
+                            engineStEl.textContent = `📁 Direct Folder: ${fLbl}`;
+                        } else {
+                            engineStEl.style.color = '#959595';
+                            engineStEl.textContent = sm === 'agent' ? '⚠ Go Agent Offline (using Chrome)' : '🌐 Fallback: Chrome Downloads';
+                        }
+                    };
+                    const curAgent = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    refreshEngineStatus(curAgent);
+                    if (typeof xfpdCheckGoAgentOnline === 'function') {
+                        xfpdCheckGoAgentOnline(false).then(() => {
+                            if (engineStEl.isConnected) {
+                                refreshEngineStatus(xfpdGetGoAgentCachedState());
+                            }
+                        });
+                    }
+                }
+                const pickBtnEl = rootEl.querySelector(`#${idPrefix}-pick-folder`);
+                if (pickBtnEl) {
+                    const fLbl = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                    pickBtnEl.textContent = fLbl ? '📁 Change' : '📁 Pick Folder';
+                }
 
                 const layoutEl = rootEl.querySelector(`#${idPrefix}-folder-layout`);
                 if (layoutEl) {
@@ -4615,6 +5037,33 @@ const ui = {
                     settingsObj.zipped = !!e.target.checked;
                     notify({ zipped: settingsObj.zipped }, ['zipped']);
                 });
+
+                bindOne('save-mode', e => {
+                    const sm = e.target.value || 'auto';
+                    settingsObj.saveMode = sm;
+                    notify({ saveMode: sm }, ['saveMode']);
+                });
+
+                bindOne(
+                    'pick-folder',
+                    async e => {
+                        e.preventDefault();
+                        if (typeof xfpdPickDirectSaveDirectory !== 'function') return;
+                        try {
+                            const chosen = await xfpdPickDirectSaveDirectory();
+                            if (chosen) {
+                                ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                            }
+                        } catch (err) {
+                            if (err && err.name !== 'AbortError') {
+                                alert(
+                                    'Could not select that folder directly (Chrome blocks system root/Downloads folders — pick or create a subfolder like F:\\Downloads\\Foruns, or use the Go Agent for F:\\Downloads directly).',
+                                );
+                            }
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne('folder-layout', e => {
                     ensurePreSkip();
@@ -11854,7 +12303,55 @@ if (imagebamHeaders && isFF) {
                                 } catch (e) {}
                             }
 
-GM_download(dlOpts);
+                            const effectiveSaveMode = postSettings.saveMode || 'auto';
+                            if (
+                                (effectiveSaveMode === 'auto' || effectiveSaveMode === 'agent') &&
+                                typeof xfpdCheckGoAgentOnline === 'function' &&
+                                (await xfpdCheckGoAgentOnline(false))
+                            ) {
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                                const hdrs = { ...(dlOpts.headers || {}), Referer: reflink || '' };
+                                if (isGoFile && settings?.hosts?.goFile?.token) {
+                                    hdrs.Cookie = `accountToken=${settings.hosts.goFile.token}`;
+                                }
+                                const fbUrls = Array.isArray(resource?.mirrorFallbacks)
+                                    ? resource.mirrorFallbacks.map(m => m && m.url).filter(Boolean)
+                                    : [];
+                                const postTag = formatPostOrderTag(postNumber);
+                                const seqTag = String((resource && resource._seqIndex) || 1).padStart(
+                                    Math.max(3, String(totalDownloadable || 1).length),
+                                    '0',
+                                );
+                                const curLay = resolveEffectiveLayout();
+                                const agentRes = await xfpdAgentDownloadItem({
+                                    url: String(dlOpts.url),
+                                    fallbacks: fbUrls,
+                                    headers: hdrs,
+                                    threadTitle: title,
+                                    relPath: fn,
+                                    filePrefix: curLay === 'media' ? `${postTag}_${seqTag}` : seqTag,
+                                    archiveLabel: cleanAlbumLabel(h.fnNoExt(basename)) || sanitizeWinSegment(h.fnNoExt(basename), ''),
+                                    folderLayout: curLay,
+                                    postFolder: curLay === 'media' ? '' : buildPostSubfolderName(sanitizeWinSegment),
+                                    extractArchives: postSettings.extractArchives !== false,
+                                    contentDedup: useContentDedup,
+                                    passwords: parsedPost && Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers : [],
+                                });
+                                if (agentRes && agentRes.ok) {
+                                    if (useContentDedup) {
+                                        const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                        if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                        if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
+                                    }
+                                    finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
+                                    h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Saved 🢒 ${ellipsedUrl}`);
+                                    h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                    h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                                    return;
+                                }
+                            }
+
+                            GM_download(dlOpts);
                         }
 
                     } catch (e) {
@@ -11906,6 +12403,112 @@ if (isGoFile || isPixeldrain || isFilester) {
                 const isTurboCdn = /turbocdn\.st/i.test(String(url || ''));
                 const filesterRef = isFilester ? String(filesterRefByUrl.get(String(url)) || (resource && resource.original) || 'https://filester.me/') : '';
                 const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
+
+                // Fast Native Go Companion Path (when Go Agent is running on 127.0.0.1:48721 & Zipped is OFF):
+                // Offloads the download + SHA-256 disk dedup + native 7z.exe archive extraction directly to Go,
+                // using 0 MB of Chrome JS RAM and writing straight to F:\Downloads without chrome://downloads!
+                const activeSaveMode = postSettings.saveMode || 'auto';
+                if (
+                    !zippedForThis &&
+                    !isForumAttachment &&
+                    (activeSaveMode === 'auto' || activeSaveMode === 'agent') &&
+                    typeof xfpdCheckGoAgentOnline === 'function' &&
+                    (await xfpdCheckGoAgentOnline(false))
+                ) {
+                    const knownName = inferItemKnownFilename(resource);
+                    if (knownName && /\.[A-Za-z0-9]{2,5}$/.test(knownName) && !/\.bin$/i.test(knownName)) {
+                        const preFn = ensureUniquePath(
+                            buildTargetRelativePath({
+                                basename: sanitizeWinSegment(knownName),
+                                folderName: folderName || '',
+                                seqIndex: resource && resource._seqIndex,
+                                contentType: '',
+                                hostCategory: host && host.category,
+                                sanitizeSegFn: sanitizeWinSegment,
+                                sanitizePathFn: sanitizeWinPath,
+                            }),
+                        );
+                        const titleClean = sanitizeWinSegment(threadTitle);
+                        const agentHeaders = {
+                            Referer: String(reqHeaders.Referer || reflink || ''),
+                            'User-Agent': (typeof navigator !== 'undefined' && navigator.userAgent) || '',
+                        };
+                        if (isGoFile && settings?.hosts?.goFile?.token) {
+                            agentHeaders.Cookie = `accountToken=${settings.hosts.goFile.token}`;
+                        }
+                        const fbUrls = Array.isArray(resource?.mirrorFallbacks)
+                            ? resource.mirrorFallbacks.map(m => m && m.url).filter(Boolean)
+                            : [];
+                        const postTag = formatPostOrderTag(postNumber);
+                        const seqTag = String((resource && resource._seqIndex) || 1).padStart(
+                            Math.max(3, String(totalDownloadable || 1).length),
+                            '0',
+                        );
+                        const curLay = resolveEffectiveLayout();
+
+                        h.ui.setElProps(statusLabel, { color: '#469cf3' });
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+
+                        const goCtrl = typeof AbortController === 'function' ? new AbortController() : null;
+                        if (goCtrl) {
+                            cancelController.abortHandlers.add(() => {
+                                try { goCtrl.abort(); } catch (e) {}
+                            });
+                        }
+
+                        const agentRes = await xfpdAgentDownloadItem(
+                            {
+                                url: String(url),
+                                fallbacks: fbUrls,
+                                headers: agentHeaders,
+                                threadTitle: titleClean,
+                                relPath: preFn,
+                                filePrefix: curLay === 'media' ? `${postTag}_${seqTag}` : seqTag,
+                                archiveLabel: cleanAlbumLabel(h.fnNoExt(knownName)) || sanitizeWinSegment(h.fnNoExt(knownName), ''),
+                                folderLayout: curLay,
+                                postFolder: curLay === 'media' ? '' : buildPostSubfolderName(sanitizeWinSegment),
+                                extractArchives: postSettings.extractArchives !== false,
+                                contentDedup: useContentDedup,
+                                passwords: parsedPost && Array.isArray(parsedPost.spoilers) ? parsedPost.spoilers : [],
+                            },
+                            goCtrl ? goCtrl.signal : null,
+                        );
+
+                        if (isCancelled()) {
+                            notifyBatchStep();
+                            return;
+                        }
+
+                        if (agentRes && agentRes.ok) {
+                            if (useContentDedup) {
+                                const cKey = (resource && resource._canonicalKey) || canonicalizeMediaUrl(url);
+                                if (cKey) xfpdMarkSeenThreadUrl(cKey, activeThreadKey);
+                                if (resource && !resource.folderName && resource.original) {
+                                    const oKey = canonicalizeMediaUrl(resource.original);
+                                    if (oKey) xfpdMarkSeenThreadUrl(oKey, activeThreadKey);
+                                }
+                                if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
+                            }
+                            log.post.info(postId, `::Saved via Go Agent (${agentRes.status})::: ${preFn}`, postNumber);
+                            finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ ${ellipsedUrl}`);
+                            h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                            h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                            return;
+                        }
+
+                        // Release reserved path before either falling through to browser Blob fetch (Cloudflare TLS) or failing
+                        usedPaths.delete(preFn);
+                        if (agentRes && !agentRes.fallbackToBrowser) {
+                            log.post.error(postId, `::Go Agent download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
+                            finishBatchItem(false);
+                            h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
+                            h.ui.setElProps(statusLabel, { color: '#b23b3b' });
+                            h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                            return;
+                        }
+                    }
+                }
 
                 let lastBlobProgressUiAt = 0;
                 const progressEntry = { url: progressKey, intervalId: null, old: 0, new: 0 };
@@ -12739,44 +13342,17 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                                             while (!isCancelled() && tCursor < saveTasks.length) {
                                                 const task = saveTasks[tCursor++];
                                                 if (!task) continue;
-                                                await new Promise(resolveSave => {
-                                                    const bUrl = URL.createObjectURL(task.blob);
-                                                    let settled = false;
-                                                    const doneSave = () => {
-                                                        if (settled) return;
-                                                        settled = true;
-                                                        setTimeout(() => {
-                                                            try { URL.revokeObjectURL(bUrl); } catch (e) {}
-                                                        }, 1000);
-                                                        resolveSave();
-                                                    };
-                                                    const safetyTimer = setTimeout(doneSave, 15000);
-                                                    try {
-                                                        GM_download({
-                                                            url: bUrl,
-                                                            name: task.saveName,
-                                                            onload: () => {
-                                                                clearTimeout(safetyTimer);
-                                                                doneSave();
-                                                            },
-                                                            onerror: err => {
-                                                                clearTimeout(safetyTimer);
-                                                                console.warn('[XFPD] Error saving extracted file:', task.relFn, err);
-                                                                doneSave();
-                                                            },
-                                                            ontimeout: () => {
-                                                                clearTimeout(safetyTimer);
-                                                                doneSave();
-                                                            },
-                                                        });
-                                                    } catch (e) {
-                                                        clearTimeout(safetyTimer);
-                                                        doneSave();
-                                                    }
+                                                await xfpdSaveBlobUnified({
+                                                    blob: task.blob,
+                                                    threadTitle: titleClean,
+                                                    relFn: task.relFn,
+                                                    saveAsName: task.saveName,
+                                                    saveMode: postSettings.saveMode || 'auto',
+                                                    useDedup: false, // Already SHA-256 verified above
                                                 });
                                             }
                                         };
-                                        const poolSize = Math.min(6, saveTasks.length);
+                                        const poolSize = Math.min(8, saveTasks.length);
                                         const pool = [];
                                         for (let w = 0; w < poolSize; w++) pool.push(saveWorker());
                                         await Promise.all(pool);
@@ -12863,19 +13439,21 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                         const saveAsName = (isFF && !zippedForThis) ? saveAsFF : saveAsPath;
 
                         if (!zippedForThis) {
-                            const blobUrl = URL.createObjectURL(fileBlob);
-                            GM_download({
-                                url: blobUrl,
-                                name: saveAsName,
-                                onload: () => {
-                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-                                },
-                                onerror: response => {
-                                    console.log(`Error writing file ${fn} to disk. There may be more details below.`);
-                                    console.log(response);
-                                    try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-                                },
+                            const savedRes = await xfpdSaveBlobUnified({
+                                blob: fileBlob,
+                                threadTitle: title,
+                                relFn: fn,
+                                saveAsName,
+                                saveMode: postSettings.saveMode || 'auto',
+                                useDedup: useContentDedup,
                             });
+                            if (savedRes && savedRes.status === 'dedup') {
+                                finishBatchItem('dedup');
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} (dupe skipped on disk) 🢒 ${ellipsedUrl}`);
+                                h.ui.setElProps(statusLabel, { color: '#2d9053' });
+                                h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
+                                return;
+                            }
                         }
 
                         if (zippedForThis) {
@@ -15523,6 +16101,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             hudDismissedUntilCount = -1;
             hudIdleDismissed = false;
             try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
+            if (typeof xfpdEnsureDirectFolderPermissionOnGesture === 'function') {
+                xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
+            }
 
             const tKey = xfpdGetCurrentThreadKey();
             const sPage = cleanNums[0];
@@ -15574,6 +16155,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             hudDismissedUntilCount = -1;
             hudIdleDismissed = false;
             try { sessionStorage.removeItem('xfpd_hud_idle_dismissed'); } catch (e) {}
+            if (typeof xfpdEnsureDirectFolderPermissionOnGesture === 'function') {
+                xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
+            }
             const jobs = list.map(serializePostEntryToJob);
             const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
 

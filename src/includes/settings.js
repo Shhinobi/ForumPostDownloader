@@ -49,9 +49,11 @@ const XFPD_MAX_STORED_THREADS = 500;
 
 const XFPD_VALID_VIDEO_QUALITIES = ['best', '1080p', '720p', 'all'];
 const XFPD_VALID_FOLDER_LAYOUTS = ['media', 'post', 'post-media', 'flat', 'albums'];
+const XFPD_VALID_SAVE_MODES = ['auto', 'folder', 'agent', 'browser'];
 
 const XFPD_DEFAULT_USER_PREFS = Object.freeze({
     zipped: true,
+    saveMode: 'auto',
     folderLayout: 'media',
     organizeMedia: true,
     includeComments: true,
@@ -123,6 +125,10 @@ function xfpdNormalizeUserPrefs(rawObj) {
             normalized.videoQuality = XFPD_VALID_VIDEO_QUALITIES.includes(src.videoQuality)
                 ? src.videoQuality
                 : XFPD_DEFAULT_USER_PREFS.videoQuality;
+        } else if (key === 'saveMode') {
+            normalized.saveMode = XFPD_VALID_SAVE_MODES.includes(src.saveMode)
+                ? src.saveMode
+                : XFPD_DEFAULT_USER_PREFS.saveMode;
         } else if (key === 'folderLayout') {
             normalized.folderLayout = xfpdDeriveFolderLayout(src);
         } else {
@@ -1467,6 +1473,346 @@ function xfpdEnsureQueueWorkerTab() {
         }
     } catch (e) {}
     return false;
+}
+
+// --- Hybrid Direct-Disk Save Engine (Go Agent 127.0.0.1 + Browser File System API + GM_download) ---
+const XFPD_GO_AGENT_BASE = 'http://127.0.0.1:48721';
+const XFPD_FS_IDB_NAME = 'xfpd_fs_handles_v1';
+const XFPD_FS_IDB_STORE = 'handles';
+const XFPD_FS_FOLDER_LS_KEY = 'xfpd_direct_folder_name';
+
+let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', checkingPromise: null };
+let xfpdCachedRootDirHandle = null;
+const xfpdSubDirHandleCache = new Map();
+
+function xfpdGetGoAgentCachedState() {
+    return xfpdGoAgentState;
+}
+
+async function xfpdCheckGoAgentOnline(force = false) {
+    const now = Date.now();
+    if (!force && xfpdGoAgentState.checkedAt > 0 && now - xfpdGoAgentState.checkedAt < 3500) {
+        return xfpdGoAgentState.online;
+    }
+    if (xfpdGoAgentState.checkingPromise) {
+        return await xfpdGoAgentState.checkingPromise;
+    }
+
+    xfpdGoAgentState.checkingPromise = (async () => {
+        try {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (!fetchFn) {
+                xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+                return false;
+            }
+            const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            const timer = ctrl ? setTimeout(() => ctrl.abort(), 650) : null;
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/ping`, {
+                method: 'GET',
+                mode: 'cors',
+                credentials: 'omit',
+                ...(ctrl ? { signal: ctrl.signal } : {}),
+            });
+            if (timer) clearTimeout(timer);
+            if (res && res.ok) {
+                const j = await res.json();
+                if (j && j.ok) {
+                    xfpdGoAgentState = {
+                        online: true,
+                        checkedAt: Date.now(),
+                        rootDir: String(j.rootDir || ''),
+                        checkingPromise: null,
+                    };
+                    return true;
+                }
+            }
+        } catch (e) {}
+        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+        return false;
+    })();
+
+    return await xfpdGoAgentState.checkingPromise;
+}
+
+async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return null;
+        const qs = new URLSearchParams({
+            thread: String(threadTitle || 'Thread'),
+            relPath: String(relFn || 'file'),
+            dedup: useDedup ? '1' : '0',
+        }).toString();
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/write-blob?${qs}`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: blob,
+        });
+        if (!res || !res.ok) return null;
+        const j = await res.json();
+        return j && j.ok ? j : null;
+    } catch (e) {
+        xfpdGoAgentState.online = false;
+        xfpdGoAgentState.checkedAt = 0;
+        return null;
+    }
+}
+
+async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return null;
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reqPayload),
+            ...(abortSignal ? { signal: abortSignal } : {}),
+        });
+        if (!res || !res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        return null;
+    }
+}
+
+function xfpdOpenFsHandlesDb() {
+    return new Promise((resolve, reject) => {
+        try {
+            const idb =
+                (typeof indexedDB !== 'undefined' && indexedDB) ||
+                (typeof window !== 'undefined' && window.indexedDB);
+            if (!idb) return resolve(null);
+            const req = idb.open(XFPD_FS_IDB_NAME, 1);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(XFPD_FS_IDB_STORE)) {
+                    db.createObjectStore(XFPD_FS_IDB_STORE);
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+async function xfpdLoadDirectDirHandleFromIdb() {
+    if (xfpdCachedRootDirHandle) return xfpdCachedRootDirHandle;
+    try {
+        const db = await xfpdOpenFsHandlesDb();
+        if (!db) return null;
+        const handle = await new Promise(resolve => {
+            try {
+                const tx = db.transaction(XFPD_FS_IDB_STORE, 'readonly');
+                const getReq = tx.objectStore(XFPD_FS_IDB_STORE).get('root');
+                getReq.onsuccess = () => resolve(getReq.result || null);
+                getReq.onerror = () => resolve(null);
+            } catch (e) {
+                resolve(null);
+            }
+        });
+        if (handle) xfpdCachedRootDirHandle = handle;
+        return handle || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+async function xfpdSaveDirectDirHandleToIdb(handle) {
+    xfpdCachedRootDirHandle = handle || null;
+    xfpdSubDirHandleCache.clear();
+    try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            if (handle && handle.name) localStorage.setItem(XFPD_FS_FOLDER_LS_KEY, String(handle.name));
+            else localStorage.removeItem(XFPD_FS_FOLDER_LS_KEY);
+        }
+    } catch (e) {}
+    try {
+        const db = await xfpdOpenFsHandlesDb();
+        if (!db) return;
+        await new Promise(resolve => {
+            try {
+                const tx = db.transaction(XFPD_FS_IDB_STORE, 'readwrite');
+                const st = tx.objectStore(XFPD_FS_IDB_STORE);
+                if (handle) st.put(handle, 'root');
+                else st.delete('root');
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+            } catch (e) {
+                resolve();
+            }
+        });
+    } catch (e) {}
+}
+
+function xfpdGetDirectFolderLabel() {
+    try {
+        if (xfpdCachedRootDirHandle && xfpdCachedRootDirHandle.name) {
+            return String(xfpdCachedRootDirHandle.name);
+        }
+        if (typeof localStorage !== 'undefined' && localStorage) {
+            return String(localStorage.getItem(XFPD_FS_FOLDER_LS_KEY) || '');
+        }
+    } catch (e) {}
+    return '';
+}
+
+function xfpdIsFileSystemAccessSupported() {
+    return (
+        (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function') ||
+        typeof showDirectoryPicker === 'function'
+    );
+}
+
+async function xfpdPickDirectSaveDirectory() {
+    const picker =
+        (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
+            ? window.showDirectoryPicker.bind(window)
+            : null) || (typeof showDirectoryPicker === 'function' ? showDirectoryPicker : null);
+    if (!picker) {
+        throw new Error('File System Access API is not enabled in this browser.');
+    }
+    const handle = await picker({ id: 'xfpd_direct_root', mode: 'readwrite' });
+    if (handle) {
+        await xfpdSaveDirectDirHandleToIdb(handle);
+        return handle.name || 'Selected';
+    }
+    return '';
+}
+
+async function xfpdEnsureDirectFolderPermissionOnGesture() {
+    try {
+        const prefs = xfpdGetEffectivePrefs();
+        if (prefs.saveMode === 'browser' || prefs.zipped) return false;
+        if (prefs.saveMode === 'auto' && xfpdGoAgentState.online) return true;
+        const handle = await xfpdLoadDirectDirHandleFromIdb();
+        if (!handle || typeof handle.queryPermission !== 'function') return false;
+        let perm = await handle.queryPermission({ mode: 'readwrite' });
+        if (perm === 'granted') return true;
+        if (perm === 'prompt' && typeof handle.requestPermission === 'function') {
+            perm = await handle.requestPermission({ mode: 'readwrite' });
+            return perm === 'granted';
+        }
+    } catch (e) {}
+    return false;
+}
+
+async function xfpdWriteBlobToDirectFolder(saveAsPath, blob) {
+    try {
+        const rootHandle = await xfpdLoadDirectDirHandleFromIdb();
+        if (!rootHandle || typeof rootHandle.getDirectoryHandle !== 'function') return false;
+        if (typeof rootHandle.queryPermission === 'function') {
+            const perm = await rootHandle.queryPermission({ mode: 'readwrite' });
+            if (perm !== 'granted') return false;
+        }
+
+        const cleanSegs = String(saveAsPath || '')
+            .replace(/\\/g, '/')
+            .split('/')
+            .map(s => s.trim())
+            .filter(Boolean);
+        if (!cleanSegs.length) return false;
+
+        const fileName = cleanSegs.pop();
+        let dirHandle = rootHandle;
+        let pathKey = '';
+
+        for (const seg of cleanSegs) {
+            pathKey = pathKey ? `${pathKey}/${seg}` : seg;
+            if (xfpdSubDirHandleCache.has(pathKey)) {
+                dirHandle = xfpdSubDirHandleCache.get(pathKey);
+            } else {
+                dirHandle = await dirHandle.getDirectoryHandle(seg, { create: true });
+                xfpdSubDirHandleCache.set(pathKey, dirHandle);
+                if (xfpdSubDirHandleCache.size > 300) {
+                    const firstK = xfpdSubDirHandleCache.keys().next().value;
+                    if (firstK !== undefined) xfpdSubDirHandleCache.delete(firstK);
+                }
+            }
+        }
+
+        const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return true;
+    } catch (e) {
+        xfpdSubDirHandleCache.clear();
+        return false;
+    }
+}
+
+async function xfpdSaveBlobUnified({ blob, threadTitle, relFn, saveAsName, saveMode = 'auto', useDedup = true }) {
+    const mode = XFPD_VALID_SAVE_MODES.includes(saveMode) ? saveMode : 'auto';
+
+    // 1) Option 2: Native Go Companion Agent (127.0.0.1:48721)
+    if (mode === 'auto' || mode === 'agent') {
+        const agentOnline = await xfpdCheckGoAgentOnline(false);
+        if (agentOnline) {
+            const agentRes = await xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup);
+            if (agentRes && agentRes.ok) {
+                return { via: 'agent', status: agentRes.status || 'saved', fingerprint: agentRes.fingerprint || '' };
+            }
+        }
+    }
+
+    // 2) Option 1: Browser Native File System Access API (Direct Folder Handle)
+    if (mode === 'auto' || mode === 'folder' || mode === 'agent') {
+        const cleanThread = String(threadTitle || 'Thread').trim();
+        const fullRel = `${cleanThread}/${String(relFn || 'file').replace(/^\/+/, '')}`;
+        const wroteDirect = await xfpdWriteBlobToDirectFolder(fullRel, blob);
+        if (wroteDirect) {
+            return { via: 'folder', status: 'saved', fingerprint: '' };
+        }
+    }
+
+    // 3) Fallback: Classic Browser Download Manager (GM_download)
+    await new Promise(resolveSave => {
+        const bUrl = URL.createObjectURL(blob);
+        let settled = false;
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            setTimeout(() => {
+                try { URL.revokeObjectURL(bUrl); } catch (e) {}
+            }, 1000);
+            resolveSave();
+        };
+        const safetyTimer = setTimeout(done, 15000);
+        try {
+            GM_download({
+                url: bUrl,
+                name: saveAsName,
+                onload: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+                onerror: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+                ontimeout: () => {
+                    clearTimeout(safetyTimer);
+                    done();
+                },
+            });
+        } catch (e) {
+            clearTimeout(safetyTimer);
+            done();
+        }
+    });
+    return { via: 'browser', status: 'saved', fingerprint: '' };
 }
 
 // GoFile filename hints (from API) so we don't rely on URL-encoded path segments

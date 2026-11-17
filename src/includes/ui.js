@@ -232,12 +232,18 @@ const ui = {
                 const layoutVal =
                     currentSettings.folderLayout ||
                     (currentSettings.organizeMedia !== false ? 'media' : currentSettings.flatten ? 'flat' : 'albums');
+                const saveModeVal = currentSettings.saveMode || 'auto';
                 const vidQual = currentSettings.videoQuality || 'best';
                 const hasThreadCustom = typeof xfpdHasThreadPrefs === 'function' && xfpdHasThreadPrefs();
                 const dedupHistoryCount = typeof xfpdGetThreadDedupCount === 'function' ? xfpdGetThreadDedupCount() : 0;
+                const directFolderName = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                const agentSt = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                const fsSupported = typeof xfpdIsFileSystemAccessSupported === 'function' && xfpdIsFileSystemAccessSupported();
 
                 const optLayout = (val, label) =>
                     `<option value="${val}" ${layoutVal === val ? 'selected="selected"' : ''}>${label}</option>`;
+                const optSaveMode = (val, label) =>
+                    `<option value="${val}" ${saveModeVal === val ? 'selected="selected"' : ''}>${label}</option>`;
                 const optQual = (val, label) =>
                     `<option value="${val}" ${vidQual === val ? 'selected="selected"' : ''}>${label}</option>`;
 
@@ -258,6 +264,35 @@ const ui = {
           </div>
           `,
                     ui.forms.createCheckbox(`${idPrefix}-zipped`, 'Zipped', !!currentSettings.zipped),
+                    `
+          <div class="menu-row xfpd-select-row">
+            <label class="xfpd-select-label" for="${idPrefix}-save-mode">Save Engine</label>
+            <select id="${idPrefix}-save-mode" class="xfpd-select" ${skipDl ? 'disabled="disabled"' : ''}>
+              ${optSaveMode('auto', 'Auto (Go → Folder → Chrome)')}
+              ${optSaveMode('folder', 'Direct Folder (Browser API)')}
+              ${optSaveMode('agent', 'Go Agent (127.0.0.1)')}
+              ${optSaveMode('browser', 'Chrome Download Manager')}
+            </select>
+          </div>
+          <div class="menu-row" style="padding:0 8px 6px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;">
+            <span id="${idPrefix}-save-engine-status" style="color:${agentSt && agentSt.online ? '#47ba24' : directFolderName ? '#3DB7C7' : '#959595'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+              ${
+                  agentSt && agentSt.online
+                      ? `⚡ Go Agent Online (${agentSt.rootDir || 'F:\\Downloads'})`
+                      : directFolderName
+                        ? `📁 Folder: ${directFolderName}`
+                        : '🌐 Default: Chrome Downloads'
+              }
+            </span>
+            ${
+                fsSupported
+                    ? `<button type="button" id="${idPrefix}-pick-folder" class="xfpd-mini-btn" title="Choose a local folder so single posts & pages save directly without Chrome's download manager">${
+                          directFolderName ? '📁 Change' : '📁 Pick Folder'
+                      }</button>`
+                    : ''
+            }
+          </div>
+          `,
                     `
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-folder-layout">Folder Layout</label>
@@ -349,6 +384,47 @@ const ui = {
                 };
                 const skipDl = !!settingsObj.skipDownload;
                 setCb('zipped', settingsObj.zipped, false);
+
+                const saveModeEl = rootEl.querySelector(`#${idPrefix}-save-mode`);
+                if (saveModeEl) {
+                    const sm = settingsObj.saveMode || 'auto';
+                    if (saveModeEl.value !== sm) saveModeEl.value = sm;
+                    saveModeEl.disabled = skipDl;
+                }
+                const engineStEl = rootEl.querySelector(`#${idPrefix}-save-engine-status`);
+                if (engineStEl) {
+                    const refreshEngineStatus = stObj => {
+                        const fLbl = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                        const sm = settingsObj.saveMode || 'auto';
+                        if (sm === 'browser') {
+                            engineStEl.style.color = '#959595';
+                            engineStEl.textContent = '🌐 Mode: Chrome Downloads';
+                        } else if (stObj && stObj.online && (sm === 'auto' || sm === 'agent')) {
+                            engineStEl.style.color = '#47ba24';
+                            engineStEl.textContent = `⚡ Go Agent Online (${stObj.rootDir || 'F:\\Downloads'})`;
+                        } else if (fLbl && (sm === 'auto' || sm === 'folder' || sm === 'agent')) {
+                            engineStEl.style.color = '#3DB7C7';
+                            engineStEl.textContent = `📁 Direct Folder: ${fLbl}`;
+                        } else {
+                            engineStEl.style.color = '#959595';
+                            engineStEl.textContent = sm === 'agent' ? '⚠ Go Agent Offline (using Chrome)' : '🌐 Fallback: Chrome Downloads';
+                        }
+                    };
+                    const curAgent = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    refreshEngineStatus(curAgent);
+                    if (typeof xfpdCheckGoAgentOnline === 'function') {
+                        xfpdCheckGoAgentOnline(false).then(() => {
+                            if (engineStEl.isConnected) {
+                                refreshEngineStatus(xfpdGetGoAgentCachedState());
+                            }
+                        });
+                    }
+                }
+                const pickBtnEl = rootEl.querySelector(`#${idPrefix}-pick-folder`);
+                if (pickBtnEl) {
+                    const fLbl = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
+                    pickBtnEl.textContent = fLbl ? '📁 Change' : '📁 Pick Folder';
+                }
 
                 const layoutEl = rootEl.querySelector(`#${idPrefix}-folder-layout`);
                 if (layoutEl) {
@@ -479,6 +555,33 @@ const ui = {
                     settingsObj.zipped = !!e.target.checked;
                     notify({ zipped: settingsObj.zipped }, ['zipped']);
                 });
+
+                bindOne('save-mode', e => {
+                    const sm = e.target.value || 'auto';
+                    settingsObj.saveMode = sm;
+                    notify({ saveMode: sm }, ['saveMode']);
+                });
+
+                bindOne(
+                    'pick-folder',
+                    async e => {
+                        e.preventDefault();
+                        if (typeof xfpdPickDirectSaveDirectory !== 'function') return;
+                        try {
+                            const chosen = await xfpdPickDirectSaveDirectory();
+                            if (chosen) {
+                                ui.forms.config.syncSettingsInputs(rootEl, idPrefix, settingsObj);
+                            }
+                        } catch (err) {
+                            if (err && err.name !== 'AbortError') {
+                                alert(
+                                    'Could not select that folder directly (Chrome blocks system root/Downloads folders — pick or create a subfolder like F:\\Downloads\\Foruns, or use the Go Agent for F:\\Downloads directly).',
+                                );
+                            }
+                        }
+                    },
+                    'click',
+                );
 
                 bindOne('folder-layout', e => {
                     ensurePreSkip();
