@@ -1164,6 +1164,8 @@ function xfpdDefaultQueueState() {
         workerStandby: false,
         ackCmdIds: [],
         active: null,
+        activePosts: [],
+        lanes: [],
         queued: [],
         history: [],
         stats: {
@@ -1299,6 +1301,8 @@ function xfpdReadQueueState() {
         workerStandby: !!raw.workerStandby,
         ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
+        activePosts: Array.isArray(raw.activePosts) ? raw.activePosts : [],
+        lanes: Array.isArray(raw.lanes) ? raw.lanes : [],
         queued: Array.isArray(raw.queued) ? raw.queued : [],
         history: Array.isArray(raw.history) ? raw.history : [],
         stats: {
@@ -1481,10 +1485,161 @@ const XFPD_FS_IDB_NAME = 'xfpd_fs_handles_v1';
 const XFPD_FS_IDB_STORE = 'handles';
 const XFPD_FS_FOLDER_LS_KEY = 'xfpd_direct_folder_name';
 
-let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', checkingPromise: null };
+let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', lanes: [], checkingPromise: null };
 let xfpdAgentActiveLoopback = 0;
-const XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY = 5; // Leaves 1 of Chrome's 6 HTTP/1.1 sockets free for instant /ping & UI!
+const XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY = 5; // Leaves 1 of Chrome's 6 HTTP/1.1 sockets free for instant /poll-jobs & /ping!
 const xfpdAgentWaitQueue = [];
+
+// Shared async job poller for Go Agent v2.0 (`/api/v1/submit-item` + `/api/v1/poll-jobs`)
+const xfpdPendingGoJobs = new Map(); // jobId -> { resolve }
+let xfpdGoPollTimer = null;
+let xfpdGoPollInFlight = false;
+
+// Global Independent Per-Host + Media-Type (Photos vs Videos) Lane Semaphores (shared across all concurrent posts!)
+const XFPD_LANE_CAPS = Object.freeze({
+    // Resolution lanes (independent per host)
+    'res:fast-img': 14,
+    'res:goonbox': 8,
+    'res:bunkr': 4,
+    'res:gofile': 2,
+    'res:pixeldrain': 4,
+    'res:cyberdrop': 4,
+    'res:filester': 3,
+    'res:turbo': 2,
+    'res:redgifs': 4,
+    // Download lanes (independent per host AND split Photos vs Videos!)
+    'cdn:photos': 14,
+    'cdn:videos': 6,
+    'bunkr:photos': 4,
+    'bunkr:videos': 3,
+    'gofile:photos': 3,
+    'gofile:videos': 2,
+    'cyberdrop:photos': 4,
+    'cyberdrop:videos': 3,
+    'pixeldrain': 4,
+    'filester': 3,
+    'turbo': 2,
+});
+
+const xfpdLaneStates = new Map();
+
+function xfpdGetOrInitLane(laneName) {
+    let st = xfpdLaneStates.get(laneName);
+    if (!st) {
+        st = {
+            name: laneName,
+            cap: XFPD_LANE_CAPS[laneName] || 6,
+            active: 0,
+            done: 0,
+            waiters: [],
+        };
+        xfpdLaneStates.set(laneName, st);
+    }
+    return st;
+}
+
+function xfpdAcquireHostLane(laneName) {
+    const st = xfpdGetOrInitLane(laneName);
+    if (st.active < st.cap) {
+        st.active++;
+        return Promise.resolve();
+    }
+    return new Promise(resolve => st.waiters.push(resolve));
+}
+
+function xfpdReleaseHostLane(laneName) {
+    const st = xfpdGetOrInitLane(laneName);
+    st.done++;
+    if (st.waiters.length > 0) {
+        const next = st.waiters.shift();
+        next();
+    } else {
+        st.active = Math.max(0, st.active - 1);
+    }
+}
+
+function xfpdClassifyResolveLane(hostObj, rawUrl) {
+    const hName = String((hostObj && hostObj.name) || '').toLowerCase();
+    const u = String(rawUrl || '').toLowerCase();
+    if (hName === 'gofile' || u.includes('gofile.io')) return 'res:gofile';
+    if (hName === 'bunkr' || u.includes('bunkr')) return 'res:bunkr';
+    if (hName === 'cyberdrop' || hName === 'cyberfile' || u.includes('cyberdrop') || u.includes('cyberfile')) return 'res:cyberdrop';
+    if (hName === 'pixeldrain' || u.includes('pixeldrain') || u.includes('pixeldra.in')) return 'res:pixeldrain';
+    if (hName === 'filester' || u.includes('filester.')) return 'res:filester';
+    if (hName === 'turbo' || u.includes('turbo')) return 'res:turbo';
+    if (hName === 'goonbox' || u.includes('goonbox.cr')) return 'res:goonbox';
+    if (hName === 'redgifs' || u.includes('redgifs.com')) return 'res:redgifs';
+    return 'res:fast-img';
+}
+
+function xfpdClassifyDownloadLane(itemObj) {
+    const u = String((itemObj && itemObj.url) || '').toLowerCase();
+    const hName = String((itemObj && itemObj.host && itemObj.host.name) || '').toLowerCase();
+    const hCat = String((itemObj && itemObj.host && itemObj.host.category) || '').toLowerCase();
+    const cleanNoQs = u.split('#')[0].split('?')[0];
+    const dotIdx = cleanNoQs.lastIndexOf('.');
+    const ext = dotIdx > 0 ? cleanNoQs.slice(dotIdx + 1).toLowerCase() : '';
+    const isVidExt = settings.extensions.video.includes(`.${ext}`);
+    const isImgExt = settings.extensions.image.includes(`.${ext}`);
+    const isPhoto = isImgExt || (!isVidExt && hCat.includes('image'));
+
+    if (/(?:turbocdn\.st|turbo\.cr|turbovid\.cr)/.test(u) || hName === 'turbo') return 'turbo';
+    if (u.includes('filester.') || hName === 'filester') return 'filester';
+    if (/(?:pixeldrain\.|pixeldra\.in)/.test(u) || hName === 'pixeldrain') return 'pixeldrain';
+    if (u.includes('gofile.io') || hName === 'gofile') return isPhoto ? 'gofile:photos' : 'gofile:videos';
+    if (/(?:bunkr|scdn\.st|cdn\.cr)/.test(u) || hName === 'bunkr') return isPhoto ? 'bunkr:photos' : 'bunkr:videos';
+    if (u.includes('cyberdrop') || u.includes('cyberfile') || u.includes('gigachad-cdn') || hName === 'cyberdrop') {
+        return isPhoto ? 'cyberdrop:photos' : 'cyberdrop:videos';
+    }
+    return isPhoto ? 'cdn:photos' : 'cdn:videos';
+}
+
+function xfpdGetActiveLaneSnapshot() {
+    // Merge Go Agent's live native lanes (when online) with browser resolution/download lanes!
+    const map = new Map();
+    const order = [
+        'cdn:photos',
+        'cdn:videos',
+        'bunkr:photos',
+        'bunkr:videos',
+        'gofile:photos',
+        'gofile:videos',
+        'cyberdrop:photos',
+        'cyberdrop:videos',
+        'pixeldrain',
+        'filester',
+        'turbo',
+        'res:fast-img',
+        'res:goonbox',
+        'res:bunkr',
+        'res:gofile',
+        'res:cyberdrop',
+    ];
+    for (const k of order) {
+        const bSt = xfpdLaneStates.get(k);
+        map.set(k, {
+            name: k,
+            workers: XFPD_LANE_CAPS[k] || 4,
+            active: bSt ? bSt.active : 0,
+            queued: bSt ? bSt.waiters.length : 0,
+            done: bSt ? bSt.done : 0,
+        });
+    }
+    if (xfpdGoAgentState.online && Array.isArray(xfpdGoAgentState.lanes)) {
+        for (const gl of xfpdGoAgentState.lanes) {
+            if (!gl || !gl.name) continue;
+            const prev = map.get(gl.name);
+            map.set(gl.name, {
+                name: gl.name,
+                workers: Number(gl.workers || (prev && prev.workers) || 4),
+                active: Math.max(Number(gl.active || 0), prev ? prev.active : 0),
+                queued: Number(gl.queued || 0) + (prev ? prev.queued : 0),
+                done: Math.max(Number(gl.done || 0), prev ? prev.done : 0),
+            });
+        }
+    }
+    return [...map.values()];
+}
 
 function xfpdAcquireAgentSlot() {
     if (xfpdAgentActiveLoopback < XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY) {
@@ -1548,13 +1703,14 @@ async function xfpdCheckGoAgentOnline(force = false) {
                         online: true,
                         checkedAt: Date.now(),
                         rootDir: String(j.rootDir || ''),
+                        lanes: Array.isArray(j.lanes) ? j.lanes : xfpdGoAgentState.lanes || [],
                         checkingPromise: null,
                     };
                     return true;
                 }
             }
         } catch (e) {}
-        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', lanes: [], checkingPromise: null };
         return false;
     })();
 
@@ -1597,34 +1753,141 @@ async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
     }
 }
 
+function xfpdEnsureGoAgentPoller() {
+    if (xfpdGoPollTimer) return;
+    xfpdGoPollTimer = setInterval(async () => {
+        if (xfpdGoPollInFlight || xfpdPendingGoJobs.size === 0) {
+            if (xfpdPendingGoJobs.size === 0 && xfpdGoPollTimer) {
+                clearInterval(xfpdGoPollTimer);
+                xfpdGoPollTimer = null;
+            }
+            return;
+        }
+        xfpdGoPollInFlight = true;
+        try {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (!fetchFn) return;
+            const ids = [...xfpdPendingGoJobs.keys()].slice(0, 250);
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/poll-jobs`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids }),
+            });
+            if (res && res.ok) {
+                const j = await res.json();
+                if (j && j.ok) {
+                    xfpdGoAgentState.online = true;
+                    xfpdGoAgentState.checkedAt = Date.now();
+                    if (Array.isArray(j.lanes)) {
+                        xfpdGoAgentState.lanes = j.lanes;
+                    }
+                    const comp = j.completed || {};
+                    for (const [id, resultObj] of Object.entries(comp)) {
+                        const waiter = xfpdPendingGoJobs.get(id);
+                        if (waiter) {
+                            xfpdPendingGoJobs.delete(id);
+                            waiter.resolve(resultObj);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // If agent died mid-run, unblock all waiting promises so they fail/fallback cleanly
+            for (const [id, waiter] of xfpdPendingGoJobs.entries()) {
+                xfpdPendingGoJobs.delete(id);
+                waiter.resolve(null);
+            }
+        } finally {
+            xfpdGoPollInFlight = false;
+        }
+    }, 110);
+}
+
 async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
+    if (abortSignal && abortSignal.aborted) return null;
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn) return null;
+
+    // 1) Non-blocking Go v2.0 Multi-Queue Submission (takes <0.5ms and releases Chrome socket immediately!)
+    let submitRes = null;
     await xfpdAcquireAgentSlot();
     try {
         if (abortSignal && abortSignal.aborted) return null;
-        const fetchFn =
-            (typeof fetch === 'function' && fetch) ||
-            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
-        if (!fetchFn) return null;
-        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+        const r = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/submit-item`, {
             method: 'POST',
             mode: 'cors',
             credentials: 'omit',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(reqPayload),
-            ...(abortSignal ? { signal: abortSignal } : {}),
         });
-        if (!res || !res.ok) return null;
-        const j = await res.json();
-        if (j) {
-            xfpdGoAgentState.online = true;
-            xfpdGoAgentState.checkedAt = Date.now();
+        if (r && r.status === 404) {
+            // Older v1.x Go agent fallback
+            const rLegacy = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(reqPayload),
+                ...(abortSignal ? { signal: abortSignal } : {}),
+            });
+            return rLegacy && rLegacy.ok ? await rLegacy.json() : null;
         }
-        return j;
+        if (r && r.ok) {
+            submitRes = await r.json();
+        }
     } catch (e) {
         return null;
     } finally {
         xfpdReleaseAgentSlot();
     }
+
+    if (!submitRes || !submitRes.ok) return null;
+    xfpdGoAgentState.online = true;
+    xfpdGoAgentState.checkedAt = Date.now();
+
+    if (submitRes.done) {
+        return submitRes.result || { ok: true, status: 'dedup' };
+    }
+
+    const goJobId = submitRes.jobId;
+    if (!goJobId) return null;
+
+    return await new Promise(resolve => {
+        const onAbort = () => {
+            if (xfpdPendingGoJobs.delete(goJobId)) {
+                fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/cancel-jobs`, {
+                    method: 'POST',
+                    mode: 'cors',
+                    credentials: 'omit',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids: [goJobId] }),
+                }).catch(() => {});
+                resolve({ ok: false, cancelled: true, reason: 'cancelled' });
+            }
+        };
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                onAbort();
+                return;
+            }
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+        }
+        xfpdPendingGoJobs.set(goJobId, {
+            resolve: resObj => {
+                if (abortSignal) {
+                    try { abortSignal.removeEventListener('abort', onAbort); } catch (e) {}
+                }
+                resolve(resObj);
+            },
+        });
+        xfpdEnsureGoAgentPoller();
+    });
 }
 
 function xfpdOpenFsHandlesDb() {

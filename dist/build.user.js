@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.45
+// @version 3.46
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -1466,6 +1466,8 @@ function xfpdDefaultQueueState() {
         workerStandby: false,
         ackCmdIds: [],
         active: null,
+        activePosts: [],
+        lanes: [],
         queued: [],
         history: [],
         stats: {
@@ -1601,6 +1603,8 @@ function xfpdReadQueueState() {
         workerStandby: !!raw.workerStandby,
         ackCmdIds: Array.isArray(raw.ackCmdIds) ? raw.ackCmdIds : [],
         active: raw.active && typeof raw.active === 'object' ? raw.active : null,
+        activePosts: Array.isArray(raw.activePosts) ? raw.activePosts : [],
+        lanes: Array.isArray(raw.lanes) ? raw.lanes : [],
         queued: Array.isArray(raw.queued) ? raw.queued : [],
         history: Array.isArray(raw.history) ? raw.history : [],
         stats: {
@@ -1783,10 +1787,161 @@ const XFPD_FS_IDB_NAME = 'xfpd_fs_handles_v1';
 const XFPD_FS_IDB_STORE = 'handles';
 const XFPD_FS_FOLDER_LS_KEY = 'xfpd_direct_folder_name';
 
-let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', checkingPromise: null };
+let xfpdGoAgentState = { online: false, checkedAt: 0, rootDir: '', lanes: [], checkingPromise: null };
 let xfpdAgentActiveLoopback = 0;
-const XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY = 5; // Leaves 1 of Chrome's 6 HTTP/1.1 sockets free for instant /ping & UI!
+const XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY = 5; // Leaves 1 of Chrome's 6 HTTP/1.1 sockets free for instant /poll-jobs & /ping!
 const xfpdAgentWaitQueue = [];
+
+// Shared async job poller for Go Agent v2.0 (`/api/v1/submit-item` + `/api/v1/poll-jobs`)
+const xfpdPendingGoJobs = new Map(); // jobId -> { resolve }
+let xfpdGoPollTimer = null;
+let xfpdGoPollInFlight = false;
+
+// Global Independent Per-Host + Media-Type (Photos vs Videos) Lane Semaphores (shared across all concurrent posts!)
+const XFPD_LANE_CAPS = Object.freeze({
+    // Resolution lanes (independent per host)
+    'res:fast-img': 14,
+    'res:goonbox': 8,
+    'res:bunkr': 4,
+    'res:gofile': 2,
+    'res:pixeldrain': 4,
+    'res:cyberdrop': 4,
+    'res:filester': 3,
+    'res:turbo': 2,
+    'res:redgifs': 4,
+    // Download lanes (independent per host AND split Photos vs Videos!)
+    'cdn:photos': 14,
+    'cdn:videos': 6,
+    'bunkr:photos': 4,
+    'bunkr:videos': 3,
+    'gofile:photos': 3,
+    'gofile:videos': 2,
+    'cyberdrop:photos': 4,
+    'cyberdrop:videos': 3,
+    'pixeldrain': 4,
+    'filester': 3,
+    'turbo': 2,
+});
+
+const xfpdLaneStates = new Map();
+
+function xfpdGetOrInitLane(laneName) {
+    let st = xfpdLaneStates.get(laneName);
+    if (!st) {
+        st = {
+            name: laneName,
+            cap: XFPD_LANE_CAPS[laneName] || 6,
+            active: 0,
+            done: 0,
+            waiters: [],
+        };
+        xfpdLaneStates.set(laneName, st);
+    }
+    return st;
+}
+
+function xfpdAcquireHostLane(laneName) {
+    const st = xfpdGetOrInitLane(laneName);
+    if (st.active < st.cap) {
+        st.active++;
+        return Promise.resolve();
+    }
+    return new Promise(resolve => st.waiters.push(resolve));
+}
+
+function xfpdReleaseHostLane(laneName) {
+    const st = xfpdGetOrInitLane(laneName);
+    st.done++;
+    if (st.waiters.length > 0) {
+        const next = st.waiters.shift();
+        next();
+    } else {
+        st.active = Math.max(0, st.active - 1);
+    }
+}
+
+function xfpdClassifyResolveLane(hostObj, rawUrl) {
+    const hName = String((hostObj && hostObj.name) || '').toLowerCase();
+    const u = String(rawUrl || '').toLowerCase();
+    if (hName === 'gofile' || u.includes('gofile.io')) return 'res:gofile';
+    if (hName === 'bunkr' || u.includes('bunkr')) return 'res:bunkr';
+    if (hName === 'cyberdrop' || hName === 'cyberfile' || u.includes('cyberdrop') || u.includes('cyberfile')) return 'res:cyberdrop';
+    if (hName === 'pixeldrain' || u.includes('pixeldrain') || u.includes('pixeldra.in')) return 'res:pixeldrain';
+    if (hName === 'filester' || u.includes('filester.')) return 'res:filester';
+    if (hName === 'turbo' || u.includes('turbo')) return 'res:turbo';
+    if (hName === 'goonbox' || u.includes('goonbox.cr')) return 'res:goonbox';
+    if (hName === 'redgifs' || u.includes('redgifs.com')) return 'res:redgifs';
+    return 'res:fast-img';
+}
+
+function xfpdClassifyDownloadLane(itemObj) {
+    const u = String((itemObj && itemObj.url) || '').toLowerCase();
+    const hName = String((itemObj && itemObj.host && itemObj.host.name) || '').toLowerCase();
+    const hCat = String((itemObj && itemObj.host && itemObj.host.category) || '').toLowerCase();
+    const cleanNoQs = u.split('#')[0].split('?')[0];
+    const dotIdx = cleanNoQs.lastIndexOf('.');
+    const ext = dotIdx > 0 ? cleanNoQs.slice(dotIdx + 1).toLowerCase() : '';
+    const isVidExt = settings.extensions.video.includes(`.${ext}`);
+    const isImgExt = settings.extensions.image.includes(`.${ext}`);
+    const isPhoto = isImgExt || (!isVidExt && hCat.includes('image'));
+
+    if (/(?:turbocdn\.st|turbo\.cr|turbovid\.cr)/.test(u) || hName === 'turbo') return 'turbo';
+    if (u.includes('filester.') || hName === 'filester') return 'filester';
+    if (/(?:pixeldrain\.|pixeldra\.in)/.test(u) || hName === 'pixeldrain') return 'pixeldrain';
+    if (u.includes('gofile.io') || hName === 'gofile') return isPhoto ? 'gofile:photos' : 'gofile:videos';
+    if (/(?:bunkr|scdn\.st|cdn\.cr)/.test(u) || hName === 'bunkr') return isPhoto ? 'bunkr:photos' : 'bunkr:videos';
+    if (u.includes('cyberdrop') || u.includes('cyberfile') || u.includes('gigachad-cdn') || hName === 'cyberdrop') {
+        return isPhoto ? 'cyberdrop:photos' : 'cyberdrop:videos';
+    }
+    return isPhoto ? 'cdn:photos' : 'cdn:videos';
+}
+
+function xfpdGetActiveLaneSnapshot() {
+    // Merge Go Agent's live native lanes (when online) with browser resolution/download lanes!
+    const map = new Map();
+    const order = [
+        'cdn:photos',
+        'cdn:videos',
+        'bunkr:photos',
+        'bunkr:videos',
+        'gofile:photos',
+        'gofile:videos',
+        'cyberdrop:photos',
+        'cyberdrop:videos',
+        'pixeldrain',
+        'filester',
+        'turbo',
+        'res:fast-img',
+        'res:goonbox',
+        'res:bunkr',
+        'res:gofile',
+        'res:cyberdrop',
+    ];
+    for (const k of order) {
+        const bSt = xfpdLaneStates.get(k);
+        map.set(k, {
+            name: k,
+            workers: XFPD_LANE_CAPS[k] || 4,
+            active: bSt ? bSt.active : 0,
+            queued: bSt ? bSt.waiters.length : 0,
+            done: bSt ? bSt.done : 0,
+        });
+    }
+    if (xfpdGoAgentState.online && Array.isArray(xfpdGoAgentState.lanes)) {
+        for (const gl of xfpdGoAgentState.lanes) {
+            if (!gl || !gl.name) continue;
+            const prev = map.get(gl.name);
+            map.set(gl.name, {
+                name: gl.name,
+                workers: Number(gl.workers || (prev && prev.workers) || 4),
+                active: Math.max(Number(gl.active || 0), prev ? prev.active : 0),
+                queued: Number(gl.queued || 0) + (prev ? prev.queued : 0),
+                done: Math.max(Number(gl.done || 0), prev ? prev.done : 0),
+            });
+        }
+    }
+    return [...map.values()];
+}
 
 function xfpdAcquireAgentSlot() {
     if (xfpdAgentActiveLoopback < XFPD_AGENT_MAX_LOOPBACK_CONCURRENCY) {
@@ -1850,13 +2005,14 @@ async function xfpdCheckGoAgentOnline(force = false) {
                         online: true,
                         checkedAt: Date.now(),
                         rootDir: String(j.rootDir || ''),
+                        lanes: Array.isArray(j.lanes) ? j.lanes : xfpdGoAgentState.lanes || [],
                         checkingPromise: null,
                     };
                     return true;
                 }
             }
         } catch (e) {}
-        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', checkingPromise: null };
+        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', lanes: [], checkingPromise: null };
         return false;
     })();
 
@@ -1899,34 +2055,141 @@ async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
     }
 }
 
+function xfpdEnsureGoAgentPoller() {
+    if (xfpdGoPollTimer) return;
+    xfpdGoPollTimer = setInterval(async () => {
+        if (xfpdGoPollInFlight || xfpdPendingGoJobs.size === 0) {
+            if (xfpdPendingGoJobs.size === 0 && xfpdGoPollTimer) {
+                clearInterval(xfpdGoPollTimer);
+                xfpdGoPollTimer = null;
+            }
+            return;
+        }
+        xfpdGoPollInFlight = true;
+        try {
+            const fetchFn =
+                (typeof fetch === 'function' && fetch) ||
+                (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+            if (!fetchFn) return;
+            const ids = [...xfpdPendingGoJobs.keys()].slice(0, 250);
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/poll-jobs`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids }),
+            });
+            if (res && res.ok) {
+                const j = await res.json();
+                if (j && j.ok) {
+                    xfpdGoAgentState.online = true;
+                    xfpdGoAgentState.checkedAt = Date.now();
+                    if (Array.isArray(j.lanes)) {
+                        xfpdGoAgentState.lanes = j.lanes;
+                    }
+                    const comp = j.completed || {};
+                    for (const [id, resultObj] of Object.entries(comp)) {
+                        const waiter = xfpdPendingGoJobs.get(id);
+                        if (waiter) {
+                            xfpdPendingGoJobs.delete(id);
+                            waiter.resolve(resultObj);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // If agent died mid-run, unblock all waiting promises so they fail/fallback cleanly
+            for (const [id, waiter] of xfpdPendingGoJobs.entries()) {
+                xfpdPendingGoJobs.delete(id);
+                waiter.resolve(null);
+            }
+        } finally {
+            xfpdGoPollInFlight = false;
+        }
+    }, 110);
+}
+
 async function xfpdAgentDownloadItem(reqPayload, abortSignal = null) {
+    if (abortSignal && abortSignal.aborted) return null;
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn) return null;
+
+    // 1) Non-blocking Go v2.0 Multi-Queue Submission (takes <0.5ms and releases Chrome socket immediately!)
+    let submitRes = null;
     await xfpdAcquireAgentSlot();
     try {
         if (abortSignal && abortSignal.aborted) return null;
-        const fetchFn =
-            (typeof fetch === 'function' && fetch) ||
-            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
-        if (!fetchFn) return null;
-        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+        const r = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/submit-item`, {
             method: 'POST',
             mode: 'cors',
             credentials: 'omit',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(reqPayload),
-            ...(abortSignal ? { signal: abortSignal } : {}),
         });
-        if (!res || !res.ok) return null;
-        const j = await res.json();
-        if (j) {
-            xfpdGoAgentState.online = true;
-            xfpdGoAgentState.checkedAt = Date.now();
+        if (r && r.status === 404) {
+            // Older v1.x Go agent fallback
+            const rLegacy = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/download-item`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(reqPayload),
+                ...(abortSignal ? { signal: abortSignal } : {}),
+            });
+            return rLegacy && rLegacy.ok ? await rLegacy.json() : null;
         }
-        return j;
+        if (r && r.ok) {
+            submitRes = await r.json();
+        }
     } catch (e) {
         return null;
     } finally {
         xfpdReleaseAgentSlot();
     }
+
+    if (!submitRes || !submitRes.ok) return null;
+    xfpdGoAgentState.online = true;
+    xfpdGoAgentState.checkedAt = Date.now();
+
+    if (submitRes.done) {
+        return submitRes.result || { ok: true, status: 'dedup' };
+    }
+
+    const goJobId = submitRes.jobId;
+    if (!goJobId) return null;
+
+    return await new Promise(resolve => {
+        const onAbort = () => {
+            if (xfpdPendingGoJobs.delete(goJobId)) {
+                fetchFn(`${XFPD_GO_AGENT_BASE}/api/v1/cancel-jobs`, {
+                    method: 'POST',
+                    mode: 'cors',
+                    credentials: 'omit',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids: [goJobId] }),
+                }).catch(() => {});
+                resolve({ ok: false, cancelled: true, reason: 'cancelled' });
+            }
+        };
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                onAbort();
+                return;
+            }
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+        }
+        xfpdPendingGoJobs.set(goJobId, {
+            resolve: resObj => {
+                if (abortSignal) {
+                    try { abortSignal.removeEventListener('abort', onAbort); } catch (e) {}
+                }
+                resolve(resObj);
+            },
+        });
+        xfpdEnsureGoAgentPoller();
+    });
 }
 
 function xfpdOpenFsHandlesDb() {
@@ -8448,30 +8711,17 @@ if (page === 1) {
                 const slug = slugMatch[2];
                 const pageUrl = `${origin}/f/${slug}`;
 
-                const apiCandidates = [];
-
-                // New API style (observed on cyberdrop.cr): https://api.cyberdrop.cr/api/file/info/<slug>
+                const rawCandidates = [
+                    `https://api.cyberdrop.cr/api/file/info/${slug}`,
+                    `https://api.cyberdrop.cr/api/file/auth/${slug}`,
+                ];
                 const root = (u.hostname.match(/cyberdrop\.[a-z]+$/i) || [null])[0];
-                const apiBaseDefault = root ? `https://api.${root}` : 'https://api.cyberdrop.cr';
-                if (root) {
-                    apiCandidates.push(`https://api.${root}/api/file/info/${slug}`);
-                    apiCandidates.push(`https://api.${root}/api/file/auth/${slug}`);
+                const apiBaseDefault = root && !/cyberdrop\.(?:me|to|cc|nl)$/i.test(root) ? `https://api.${root}` : 'https://api.cyberdrop.cr';
+                if (root && !/cyberdrop\.(?:me|to|cc|nl)$/i.test(root) && root.toLowerCase() !== 'cyberdrop.cr') {
+                    rawCandidates.push(`https://api.${root}/api/file/info/${slug}`);
+                    rawCandidates.push(`https://api.${root}/api/file/auth/${slug}`);
                 }
-                // Known working for cyberdrop.cr even if the embed is on /e/
-                apiCandidates.push(`https://api.cyberdrop.cr/api/file/info/${slug}`);
-                apiCandidates.push(`https://api.cyberdrop.cr/api/file/auth/${slug}`);
-                // Additional API variants seen in the wild
-                if (root) {
-                    apiCandidates.push(`https://api.${root}/api/file/url/${slug}`);
-                    apiCandidates.push(`https://api.${root}/api/file/${slug}`);
-                    apiCandidates.push(`https://api.${root}/api/file/auth/${slug}`);
-                }
-                apiCandidates.push(`https://api.cyberdrop.cr/api/file/url/${slug}`);
-                apiCandidates.push(`https://api.cyberdrop.cr/api/file/auth/${slug}`);
-                apiCandidates.push(`https://api.cyberdrop.cr/api/file/${slug}`);
-
-                // Legacy API style (older Cyberdrop): https://cyberdrop.me/api/f/<slug>
-                apiCandidates.push(`${origin}/api/f/${slug}`);
+                const apiCandidates = [...new Set(rawCandidates)];
 
                 const headers = {
                     Accept: 'application/json, text/plain, */*',
@@ -8715,9 +8965,14 @@ if (page === 1) {
                         return out;
                     };
 
+                    let sawDefinitiveNotFound = false;
                     for (const apiUrl of apiCandidates) {
                         try {
                             const { source, status } = await cyberdropFetchText(apiUrl);
+                            if (status === 404 || status === 410 || /"not found"|"file not found"|"deleted"/i.test(source || '')) {
+                                sawDefinitiveNotFound = true;
+                                break;
+                            }
                             if (status !== 200 || !source) continue;
 
                             let baseHint = apiBaseDefault;
@@ -8746,28 +9001,27 @@ if (page === 1) {
 
                             if (resolvedDirect && typeof resolvedDirect === 'string') {
                                 if (resolvedName) cyberdropNameByUrl.set(String(resolvedDirect), String(resolvedName));
-                                return resolvedDirect;
+                                return { url: resolvedDirect, notFound: false };
                             }
                         } catch (e) {}
                     }
-                    return null;
+                    return { url: null, notFound: sawDefinitiveNotFound };
                 };
 
-                // 1st attempt: API directly (some setups need two requests for ddos-guard cookies)
-                let directUrl = await fetchInfo();
-                if (!directUrl) directUrl = await fetchInfo();
-                if (directUrl) return directUrl;
+                // 1st attempt: API directly — if 404/410, fail fast in ~150ms without opening warm-up tabs or returning raw /e/ HTML!
+                let info1 = await fetchInfo();
+                if (info1.url) return info1.url;
+                if (info1.notFound) return null;
 
-                // Warm-up (only one tab at a time) then retry
+                // Warm-up (only when gated/403, never on 404!) then retry once
                 let warmKey = 'cyberdrop';
                 try { warmKey = `cyberdrop:${new URL(pageUrl).origin}`; } catch (e) { }
                 await cyberdropWarmupOnce(warmKey, pageUrl, CYBERDROP_WARMUP_DEFAULT_MS);
 
-                directUrl = await fetchInfo();
-                if (!directUrl) directUrl = await fetchInfo();
-                return directUrl || url;
+                info1 = await fetchInfo();
+                return info1.url || null;
             } catch (e) {
-                return url;
+                return null;
             }
         },
     ],
@@ -10242,9 +10496,9 @@ try {
         callbacks.onProgress({ phase: 'resolving', completed: 0, total: totalResourcesToResolve, succeeded: 0, failed: 0 });
     }
 
-    // Order-preserving concurrent URL resolution pool (up to 8 parallel single-link resolvers; max 2 parallel
-    // album resolvers per host so multi-page albums stay polite while Goonbox/Ibb/Pixhost/Postimg/ImagePond/Bunkr
-    // single links resolve up to 8x faster with identical deterministic P0001_001..N sequence numbering!).
+    // Independent Per-Host Resolution Lanes: each host resolves on its own isolated concurrency queue
+    // (`res:fast-img`, `res:goonbox`, `res:bunkr`, `res:gofile`, `res:cyberdrop`, `res:pixeldrain`, etc.)
+    // so Bunkr never blocks GoFile or Goonbox, while preserving deterministic P0001_001..N sequence numbering!
     const resolveTasks = [];
     for (const host of enabledHosts.filter(hItem => hItem.resources.length)) {
         for (const resource of host.resources) {
@@ -10253,51 +10507,29 @@ try {
     }
 
     const resolvedByTask = Array.from({ length: resolveTasks.length }, () => []);
-    const activeAlbumByHost = new Map();
-    const pendingTaskIndices = resolveTasks.map((_, i) => i);
-    const MAX_RESOLVE_WORKERS = Math.min(10, Math.max(1, resolveTasks.length));
     let completedResolveCount = 0;
-
-    const pickNextResolveTaskIndex = () => {
-        for (let k = 0; k < pendingTaskIndices.length; k++) {
-            const tIdx = pendingTaskIndices[k];
-            const t = resolveTasks[tIdx];
-            if (t.host.type !== 'single') {
-                const hKey = String(t.host.name || '').toLowerCase();
-                if ((activeAlbumByHost.get(hKey) || 0) >= 2) continue;
-            }
-            pendingTaskIndices.splice(k, 1);
-            return tIdx;
-        }
-        if (pendingTaskIndices.length > 0) {
-            return pendingTaskIndices.shift();
-        }
-        return -1;
-    };
 
     const resolveSingleTask = async tIdx => {
         const { host, resource } = resolveTasks[tIdx];
-        const isAlbumTask = host.type !== 'single';
-        const hKey = String(host.name || '').toLowerCase();
-        if (isAlbumTask) {
-            activeAlbumByHost.set(hKey, (activeAlbumByHost.get(hKey) || 0) + 1);
+        if (isCancelled()) return;
+
+        // Fast pre-resolution skip: if this single-file link was already downloaded in this thread,
+        // skip making any HTTP resolution request at all!
+        if (useContentDedup && host.type === 'single' && typeof xfpdHasSeenThreadUrl === 'function') {
+            const origKey = canonicalizeMediaUrl(resource);
+            if (origKey && xfpdHasSeenThreadUrl(origKey, activeThreadKey)) {
+                dedupedCount++;
+                completedResolveCount++;
+                log.post.info(postId, `::Skipped already-downloaded link (pre-resolve)::: ${resource}`, postNumber);
+                return;
+            }
         }
+
+        const resLane = typeof xfpdClassifyResolveLane === 'function' ? xfpdClassifyResolveLane(host, resource) : 'res:fast-img';
+        await xfpdAcquireHostLane(resLane);
 
         try {
             if (isCancelled()) return;
-
-            // Fast pre-resolution skip: if this single-file link was already downloaded in this thread,
-            // skip making any HTTP resolution request at all!
-            if (useContentDedup && host.type === 'single' && typeof xfpdHasSeenThreadUrl === 'function') {
-                const origKey = canonicalizeMediaUrl(resource);
-                if (origKey && xfpdHasSeenThreadUrl(origKey, activeThreadKey)) {
-                    dedupedCount++;
-                    completedResolveCount++;
-                    log.post.info(postId, `::Skipped already-downloaded link (pre-resolve)::: ${resource}`, postNumber);
-                    return;
-                }
-            }
-
             const slotOut = resolvedByTask[tIdx];
 
             for (let ri = 0; ri < compiledResolvers.length; ri++) {
@@ -10412,22 +10644,12 @@ try {
                 }
             }
         } finally {
-            if (isAlbumTask) {
-                activeAlbumByHost.set(hKey, Math.max(0, (activeAlbumByHost.get(hKey) || 1) - 1));
-            }
-        }
-    };
-
-    const resolveWorkerLoop = async () => {
-        while (!isCancelled() && pendingTaskIndices.length > 0) {
-            const nextIdx = pickNextResolveTaskIndex();
-            if (nextIdx < 0) break;
-            await resolveSingleTask(nextIdx);
+            xfpdReleaseHostLane(resLane);
         }
     };
 
     if (resolveTasks.length > 0) {
-        await Promise.all(Array.from({ length: MAX_RESOLVE_WORKERS }, () => resolveWorkerLoop()));
+        await Promise.all(resolveTasks.map((_, i) => resolveSingleTask(i)));
     }
 
     for (const slotItems of resolvedByTask) {
@@ -11077,7 +11299,7 @@ try {
     log.post.info(postId, `::Found ${totalDownloadable} resource(s)::`, postNumber);
     log.separator(postId);
 
-    let customFilename = postSettings.output.find(o => o.postId === postId)?.value;
+    let customFilename = (postSettings.output || []).find(o => o.postId === postId)?.value;
 
     if (customFilename) {
         customFilename = customFilename.replace(/:title:/g, threadTitle);
@@ -11110,32 +11332,15 @@ try {
         const resources = resolved.filter(r => r.url);
         totalDownloadable = resources.length;
 
-        // Non-blocking Sliding-Window Download Scheduler with Per-Host Semaphores:
-        // Replaces the old `batchLength = 1 or 2` stop-and-wait barrier so up to 8 images/files download
-        // concurrently with 0ms slot refill, while rate-sensitive video hosts (Turbo=1, GoFile=2, Filester=2,
-        // Bunkr=3) only cap their OWN host bucket without ever slowing down fast CDN images in the same post!
-        const MAX_GLOBAL_CONCURRENCY = postSettings.zipped ? 6 : 10;
-
-        const classifyConcurrencyBucket = item => {
-            const u = String((item && item.url) || '').toLowerCase();
-            const hName = String((item && item.host && item.host.name) || '').toLowerCase();
-            if (/(?:turbocdn\.st|turbo\.cr|turbovid\.cr)/.test(u) || hName === 'turbo') return { key: 'turbo', cap: 1 };
-            if (u.includes('gofile.io') || hName === 'gofile') return { key: 'gofile', cap: 2 };
-            if (u.includes('filester.') || hName === 'filester') return { key: 'filester', cap: 2 };
-            if (/(?:bunkr|scdn\.st|cdn\.cr)/.test(u) || hName === 'bunkr') return { key: 'bunkr', cap: 3 };
-            if (/(?:pixeldrain\.|pixeldra\.in)/.test(u) || hName === 'pixeldrain') return { key: 'pixeldrain', cap: 4 };
-            if (u.includes('cyberdrop') || hName === 'cyberdrop') return { key: 'cyberdrop', cap: 4 };
-            return { key: `cdn:${hName || 'img'}`, cap: MAX_GLOBAL_CONCURRENCY };
-        };
-
+        // True Independent Multi-Queue Download Scheduler (Per-Host + Photos vs Videos Lanes):
+        // Each host (`bunkr`, `gofile`, `cyberdrop`, `pixeldrain`, `filester`, `turbo`, `cdn`) AND media type
+        // (`photos` vs `videos`) runs on its OWN dedicated lane without any shared global bottleneck!
         resources.forEach((item, idx) => {
             item._seqIndex = idx + 1;
-            const bInfo = classifyConcurrencyBucket(item);
-            item._rootSlot = { bucket: bInfo.key, cap: bInfo.cap, settled: false };
+            const laneName = typeof xfpdClassifyDownloadLane === 'function' ? xfpdClassifyDownloadLane(item) : 'cdn:photos';
+            item._rootSlot = { lane: laneName, settled: false, laneAcquired: false };
         });
 
-        const pendingDownloadQueue = resources.slice();
-        const inFlightByBucket = new Map();
         let inFlightTotal = 0;
 
         const requestProgress = [];
@@ -11162,15 +11367,16 @@ try {
                 setTimeout(finish, ms);
             });
 
-        let pumpDownloadWindow = () => {};
-
         const recordItemOutcome = (resItem, didSucceed) => {
             const slot = resItem && resItem._rootSlot;
             if (slot) {
                 if (slot.settled) return;
                 slot.settled = true;
                 inFlightTotal = Math.max(0, inFlightTotal - 1);
-                inFlightByBucket.set(slot.bucket, Math.max(0, (inFlightByBucket.get(slot.bucket) || 1) - 1));
+                if (slot.laneAcquired) {
+                    slot.laneAcquired = false;
+                    xfpdReleaseHostLane(slot.lane);
+                }
             }
             if (completed < totalDownloadable) {
                 completed++;
@@ -11194,7 +11400,6 @@ try {
                     });
                 } catch (e) {}
             }
-            pumpDownloadWindow();
             notifyBatchStep();
         };
 
@@ -12366,6 +12571,7 @@ if (imagebamHeaders && isFF) {
                                 );
                                 const curLay = resolveEffectiveLayout();
                                 const agentRes = await xfpdAgentDownloadItem({
+                                    postId: String(postId || ''),
                                     url: String(dlOpts.url),
                                     fallbacks: fbUrls,
                                     headers: hdrs,
@@ -12424,18 +12630,6 @@ if (imagebamHeaders && isFF) {
                     return;
                 }
 
-if (isGoFile || isPixeldrain || isFilester) {
-                    const meta0 = await preflightMeta(url, reflink, isGoFile, isPixeldrain);
-                    if (!isGoFile && meta0 && meta0.status && meta0.status >= 400) {
-                        log.post.error(postId, `::Preflight HTTP ${meta0.status}::: ${url}`, postNumber);
-                        if (tryFallbackMirror(`HTTP ${meta0.status}`)) return;
-                    }
-                    if (meta0 && meta0.size && meta0.size > BLOB_MAX_BYTES) {
-                        log.post.info(postId, `::Large file (${meta0.size} bytes > ~1.6GB) -> DIRECT (skip blob)::: ${url}`, postNumber);
-                        startDirectDownload(meta0);
-                        return;
-                    }
-                }
                 let abortReason = '';
                 let bunkrMaintenanceHandled = false;
 
@@ -12447,8 +12641,8 @@ if (isGoFile || isPixeldrain || isFilester) {
                 const reqHeaders = isTurboCdn ? { Referer: 'https://turbo.cr/' } : (isFilester ? { Referer: filesterRef } : { Referer: reflink });
 
                 // Fast Native Go Companion Path (when Go Agent is running on 127.0.0.1:48721 & Zipped is OFF):
-                // Offloads the download + SHA-256 disk dedup + native 7z.exe archive extraction directly to Go,
-                // using 0 MB of Chrome JS RAM and writing straight to F:\Downloads without chrome://downloads!
+                // Submits instantly (<0.5ms) into Go's dedicated per-host + Photos/Videos worker queues, skipping
+                // browser HEAD preflight, using 0 MB of Chrome JS RAM, and writing straight to F:\Downloads!
                 const activeSaveMode = postSettings.saveMode || 'auto';
                 if (
                     !zippedForThis &&
@@ -12500,6 +12694,7 @@ if (isGoFile || isPixeldrain || isFilester) {
 
                         const agentRes = await xfpdAgentDownloadItem(
                             {
+                                postId: String(postId || ''),
                                 url: String(url),
                                 fallbacks: fbUrls,
                                 headers: agentHeaders,
@@ -12549,6 +12744,30 @@ if (isGoFile || isPixeldrain || isFilester) {
                             h.ui.setElProps(totalPB, { width: `${(completed / totalDownloadable) * 100}%` });
                             return;
                         }
+                    }
+                }
+
+                // Ensure browser host/media lane semaphore is held whenever downloading via Browser (including Go fallback or forum attachments)!
+                const rootSlot = resource && resource._rootSlot;
+                if (rootSlot && !rootSlot.laneAcquired) {
+                    await xfpdAcquireHostLane(rootSlot.lane);
+                    rootSlot.laneAcquired = true;
+                    if (isCancelled()) {
+                        finishBatchItem(false);
+                        return;
+                    }
+                }
+
+                if (isGoFile || isPixeldrain || isFilester) {
+                    const meta0 = await preflightMeta(url, reflink, isGoFile, isPixeldrain);
+                    if (!isGoFile && meta0 && meta0.status && meta0.status >= 400) {
+                        log.post.error(postId, `::Preflight HTTP ${meta0.status}::: ${url}`, postNumber);
+                        if (tryFallbackMirror(`HTTP ${meta0.status}`)) return;
+                    }
+                    if (meta0 && meta0.size && meta0.size > BLOB_MAX_BYTES) {
+                        log.post.info(postId, `::Large file (${meta0.size} bytes > ~1.6GB) -> DIRECT (skip blob)::: ${url}`, postNumber);
+                        startDirectDownload(meta0);
+                        return;
                     }
                 }
 
@@ -13643,33 +13862,35 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
                 requestProgress.push(progressEntry);
             };
 
-            pumpDownloadWindow = () => {
-                if (isCancelled()) return;
-                while (inFlightTotal < MAX_GLOBAL_CONCURRENCY && pendingDownloadQueue.length > 0) {
-                    let chosenIdx = -1;
-                    for (let qIdx = 0; qIdx < pendingDownloadQueue.length; qIdx++) {
-                        const cand = pendingDownloadQueue[qIdx];
-                        const slot = cand._rootSlot;
-                        const activeInBucket = inFlightByBucket.get(slot.bucket) || 0;
-                        if (activeInBucket < slot.cap) {
-                            chosenIdx = qIdx;
-                            break;
-                        }
-                    }
-                    if (chosenIdx < 0) break;
-                    const [nextItem] = pendingDownloadQueue.splice(chosenIdx, 1);
-                    const slot = nextItem._rootSlot;
-                    inFlightTotal++;
-                    inFlightByBucket.set(slot.bucket, (inFlightByBucket.get(slot.bucket) || 0) + 1);
-                    startDownload(nextItem, 1);
+            // Launch each item into its dedicated Host + Media (Photos vs Videos) Lane!
+            const useGoNativeLanes =
+                !postSettings.zipped &&
+                ((postSettings.saveMode || 'auto') === 'auto' || postSettings.saveMode === 'agent') &&
+                typeof xfpdCheckGoAgentOnline === 'function' &&
+                (await xfpdCheckGoAgentOnline(false));
+
+            inFlightTotal = resources.length;
+
+            const launchItemInDedicatedLane = async item => {
+                const slot = item._rootSlot;
+                if (!useGoNativeLanes) {
+                    await xfpdAcquireHostLane(slot.lane);
+                    slot.laneAcquired = true;
                 }
+                if (isCancelled()) {
+                    recordItemOutcome(item, false);
+                    return;
+                }
+                startDownload(item, 1);
             };
 
-            pumpDownloadWindow();
+            for (const item of resources) {
+                if (isCancelled()) break;
+                launchItemInDedicatedLane(item);
+            }
 
-            while ((inFlightTotal > 0 || pendingDownloadQueue.length > 0) && !isCancelled()) {
-                await waitBatchTurn(100);
-                pumpDownloadWindow();
+            while (inFlightTotal > 0 && !isCancelled()) {
+                await waitBatchTurn(80);
             }
         }
     } else {
@@ -14455,15 +14676,58 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     const ackQueue = Array.isArray(initialCheck.ackCmdIds) ? initialCheck.ackCmdIds.slice(-180) : [];
     const pendingJobs = [];
     let history = Array.isArray(initialCheck.history) ? initialCheck.history.slice(0, 30) : [];
-    let activeJobSummary = null;
-    let activeCancelController = null;
+    const MAX_CONCURRENT_POST_JOBS = 4;
+    const activeJobsMap = new Map(); // jobId -> { summary, cancelController }
+    let crawlScanSummary = null;
     let activeThreadCrawl = null;
     let pumping = false;
+    let pumpWakeResolver = null;
+    const wakePump = () => {
+        if (pumpWakeResolver) {
+            const fn = pumpWakeResolver;
+            pumpWakeResolver = null;
+            fn();
+        }
+    };
+    const waitPumpWake = () =>
+        new Promise(resolve => {
+            pumpWakeResolver = resolve;
+        });
     let standbyMode = false;
     let idleCloseTimer = null;
     let workerRefs = null;
     let listRenderRevision = 1;
     let lastRenderedRevision = 0;
+
+    const getActivePostSummaries = () => [...activeJobsMap.values()].map(entry => ({ ...entry.summary }));
+
+    const getPrimaryActiveSummary = () => {
+        if (activeJobsMap.size > 0) {
+            const first = activeJobsMap.values().next().value.summary;
+            const out = { ...first };
+            if (crawlScanSummary && crawlScanSummary.threadCrawl) {
+                out.threadCrawl = { ...crawlScanSummary.threadCrawl };
+            }
+            return out;
+        }
+        if (crawlScanSummary) {
+            return { ...crawlScanSummary };
+        }
+        return null;
+    };
+
+    const hasAnyActiveWork = () => activeJobsMap.size > 0 || !!crawlScanSummary || !!activeThreadCrawl;
+
+    const cancelActivePostJobs = (predicate = null) => {
+        let count = 0;
+        for (const entry of activeJobsMap.values()) {
+            if (!predicate || predicate(entry.summary)) {
+                entry.cancelController.cancel();
+                count++;
+            }
+        }
+        return count;
+    };
 
     const sessionStats = {
         postsDone: Number(initialCheck.stats?.postsDone || 0) || 0,
@@ -14587,21 +14851,90 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 ? `crawl P.${st.active.threadCrawl.currentPage}/${st.active.threadCrawl.endPage}`
                 : 'pages crawled';
 
-        // 3) Live Active Task Panel
+        // 3) Live Independent Host & Media Queues (Photos vs Videos)
+        if (workerRefs.lanesGrid) {
+            const laneSnap =
+                (typeof xfpdGetActiveLaneSnapshot === 'function' ? xfpdGetActiveLaneSnapshot() : st.lanes) || [];
+            const visibleLanes = laneSnap.filter(
+                l => !String(l.name || '').startsWith('res:') || l.active > 0 || l.queued > 0,
+            );
+            const totalActiveStreams = laneSnap.reduce(
+                (acc, l) => acc + (String(l.name || '').startsWith('res:') ? 0 : Number(l.active || 0)),
+                0,
+            );
+            const totalQueuedStreams = laneSnap.reduce(
+                (acc, l) => acc + (String(l.name || '').startsWith('res:') ? 0 : Number(l.queued || 0)),
+                0,
+            );
+            if (workerRefs.lanesSummary) {
+                const agentBadge =
+                    typeof xfpdGoAgentState !== 'undefined' && xfpdGoAgentState && xfpdGoAgentState.online
+                        ? '⚡ Native Go v2.0 Lanes'
+                        : '🌐 Browser Multi-Lanes';
+                workerRefs.lanesSummary.textContent = `${agentBadge} · ${totalActiveStreams} active · ${totalQueuedStreams} queued`;
+            }
+            workerRefs.lanesGrid.innerHTML = visibleLanes
+                .map(l => {
+                    const busy = l.active > 0 || l.queued > 0;
+                    const borderCol = busy ? 'rgba(61,183,199,.55)' : 'rgba(255,255,255,.08)';
+                    const bgCol = busy ? 'rgba(61,183,199,.09)' : '#15171b';
+                    const nameCol = busy ? '#65d9e8' : '#b8c2cc';
+                    const qTxt = l.queued > 0 ? ` · +${l.queued}q` : '';
+                    return `<div style="padding:7px 10px;border-radius:7px;background:${bgCol};border:1px solid ${borderCol};display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+                              <span style="font-weight:700;color:${nameCol};">${escHtml(l.name)}</span>
+                              <span style="font-family:monospace;font-size:11.5px;color:${busy ? '#5ce038' : '#7d8894'};">${l.active}/${l.workers}${qTxt}</span>
+                            </div>`;
+                })
+                .join('');
+        }
+
+        // 4) Live Active Task Panel (supports up to 4 concurrent posts!)
+        const activePostsList = Array.isArray(st.activePosts) && st.activePosts.length > 0 ? st.activePosts : st.active && st.active.postId ? [st.active] : [];
         if (st.active) {
             const act = st.active;
             const tc = act.threadCrawl;
-            workerRefs.activeTitle.innerHTML = tc
-                ? `📚 <b>${escHtml(act.threadTitle || 'Thread')}</b> · Page ${tc.currentPage}/${tc.endPage}${
-                      act.postId ? ` · Post #${escHtml(act.postNumber)}` : ''
-                  }`
-                : `▶ <b>${escHtml(act.threadTitle || 'Thread')}</b> · Post #${escHtml(act.postNumber)}`;
+            if (activePostsList.length > 1) {
+                workerRefs.activeTitle.innerHTML = tc
+                    ? `📚 <b>${escHtml(act.threadTitle || 'Thread')}</b> · Page ${tc.currentPage}/${tc.endPage} · <span style="color:#3DB7C7;">${activePostsList.length} posts running in parallel</span>`
+                    : `▶ <b>${escHtml(act.threadTitle || 'Thread')}</b> · <span style="color:#3DB7C7;">${activePostsList.length} posts running in parallel</span>`;
+            } else {
+                workerRefs.activeTitle.innerHTML = tc
+                    ? `📚 <b>${escHtml(act.threadTitle || 'Thread')}</b> · Page ${tc.currentPage}/${tc.endPage}${
+                          act.postId ? ` · Post #${escHtml(act.postNumber)}` : ''
+                      }`
+                    : `▶ <b>${escHtml(act.threadTitle || 'Thread')}</b> · Post #${escHtml(act.postNumber)}`;
+            }
             workerRefs.activeStatus.textContent = act.statusText || act.phase || 'Working...';
             workerRefs.fileFill.style.width = `${act.filePct || 0}%`;
             workerRefs.totalFill.style.width = `${act.totalPct || 0}%`;
             workerRefs.activeActions.style.display = 'inline-flex';
-            workerRefs.skipPostBtn.style.display = act.postId ? '' : 'none';
+            workerRefs.skipPostBtn.style.display = activePostsList.length === 1 && act.postId ? '' : 'none';
             workerRefs.stopThreadBtn.style.display = tc ? '' : 'none';
+            if (workerRefs.concurrentPostsBox) {
+                if (activePostsList.length > 1) {
+                    workerRefs.concurrentPostsBox.style.display = 'flex';
+                    workerRefs.concurrentPostsBox.innerHTML = activePostsList
+                        .map(
+                            p => `
+                          <div style="padding:7px 10px;border-radius:6px;background:#15171b;border:1px solid rgba(61,183,199,.25);display:flex;flex-direction:column;gap:4px;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px;">
+                              <span style="font-weight:700;color:#e4e7eb;">#${escHtml(p.postNumber)} · <span style="color:#9aa4af;font-weight:500;">${escHtml(h.limit(p.statusText || p.phase || 'Working...', 58))}</span></span>
+                              <span style="display:inline-flex;align-items:center;gap:6px;">
+                                <span style="font-family:monospace;color:#47ba24;font-weight:700;">${p.completed || 0}/${p.total || 0} (${p.totalPct || 0}%)</span>
+                                <button type="button" data-wrk-cancel-active="${escHtml(p.jobId)}" style="padding:1px 7px;border-radius:4px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.06);color:#eaeaea;font-size:11px;cursor:pointer;">Skip</button>
+                              </span>
+                            </div>
+                            <div style="height:4px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden;">
+                              <div style="height:100%;width:${p.totalPct || 0}%;background:#3DB7C7;"></div>
+                            </div>
+                          </div>`,
+                        )
+                        .join('');
+                } else {
+                    workerRefs.concurrentPostsBox.style.display = 'none';
+                    workerRefs.concurrentPostsBox.innerHTML = '';
+                }
+            }
             if (tc && tc.pagesTotal > 0) {
                 const crawlPct = Math.min(100, Math.round(((tc.pagesDone + (act.totalPct || 0) / 100) / tc.pagesTotal) * 100));
                 workerRefs.crawlWrap.style.display = 'block';
@@ -14619,6 +14952,10 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             workerRefs.totalFill.style.width = '0%';
             workerRefs.activeActions.style.display = 'none';
             workerRefs.crawlWrap.style.display = 'none';
+            if (workerRefs.concurrentPostsBox) {
+                workerRefs.concurrentPostsBox.style.display = 'none';
+                workerRefs.concurrentPostsBox.innerHTML = '';
+            }
         }
 
         // 4) Lists (Failed/Dead Breakdown + Queue + History) — only rebuild DOM when revision changes!
@@ -14744,14 +15081,19 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     };
 
     const publishState = (extra = {}) => {
-        const isStandbyNow = !activeJobSummary && pendingJobs.length === 0 && standbyMode;
+        const primaryActive = getPrimaryActiveSummary();
+        const activePosts = getActivePostSummaries();
+        const lanesSnap = typeof xfpdGetActiveLaneSnapshot === 'function' ? xfpdGetActiveLaneSnapshot() : [];
+        const isStandbyNow = !primaryActive && pendingJobs.length === 0 && standbyMode;
         const st = xfpdWriteQueueState({
             workerId,
             workerHeartbeat: Date.now(),
             workerClosing: false,
             workerStandby: isStandbyNow,
             ackCmdIds: ackQueue.slice(-200),
-            active: activeJobSummary ? { ...activeJobSummary } : null,
+            active: primaryActive,
+            activePosts,
+            lanes: lanesSnap,
             queued: pendingJobs.map(summarizeQueuedJob),
             history: history.slice(0, 30),
             stats: { ...sessionStats },
@@ -14760,8 +15102,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         if (isDedicatedWorkerTab) {
             try {
                 const deadSuffix = sessionStats.filesFailed > 0 ? ` · ✕${sessionStats.filesFailed}` : '';
+                const multiSuffix = activePosts.length > 1 ? ` [${activePosts.length} posts]` : '';
                 document.title = st.active
-                    ? `📥 #${st.active.postNumber} (${st.active.totalPct || 0}%)${deadSuffix} — XFPD Worker`
+                    ? `📥 #${st.active.postNumber}${multiSuffix} (${st.active.totalPct || 0}%)${deadSuffix} — XFPD Worker`
                     : isStandbyNow
                       ? `💤 Ready (✓${sessionStats.filesSaved}${deadSuffix}) — XFPD Worker`
                       : '📥 XFPD Download Worker';
@@ -14781,6 +15124,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     workerStandby: false,
                     ackCmdIds: ackQueue.slice(-200),
                     active: null,
+                    activePosts: [],
+                    lanes: [],
                     queued: [],
                     history: history.slice(0, 30),
                     stats: { ...sessionStats },
@@ -14853,6 +15198,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                       </div>
                     </div>
 
+                    <div style="padding:14px 18px;border-radius:10px;background:#1a1d23;border:1px solid rgba(61,183,199,.25);">
+                      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:9px;">
+                        <span style="font-weight:700;font-size:13.5px;color:#3DB7C7;">⚡ Independent Host &amp; Media Queues (Photos vs Videos)</span>
+                        <span id="wrk-lanes-summary" style="font-family:monospace;font-size:11.5px;color:#9aa4af;">0 active · 0 queued</span>
+                      </div>
+                      <div id="wrk-lanes-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px;"></div>
+                    </div>
+
                     <div style="padding:16px 20px;border-radius:10px;background:#1a1d23;border:1px solid rgba(61,183,199,.28);">
                       <div id="wrk-crawl-wrap" style="display:none;margin-bottom:12px;">
                         <div id="wrk-crawl-lbl" style="font-size:12px;font-weight:700;color:#3DB7C7;margin-bottom:5px;">Thread Crawl Progress</div>
@@ -14876,6 +15229,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                           <div id="wrk-total-fill" style="height:100%;width:0%;background:#47ba24;transition:width .14s ease;"></div>
                         </div>
                       </div>
+                      <div id="wrk-concurrent-posts" style="display:none;flex-direction:column;gap:6px;margin-top:10px;"></div>
                     </div>
 
                     <div style="padding:16px 20px;border-radius:10px;background:#1a1d23;border:1px solid rgba(255,107,107,.28);">
@@ -14916,6 +15270,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     kpiFailedSub: q('wrk-kpi-failed-sub'),
                     kpiPages: q('wrk-kpi-pages'),
                     kpiPagesSub: q('wrk-kpi-pages-sub'),
+                    lanesSummary: q('wrk-lanes-summary'),
+                    lanesGrid: q('wrk-lanes-grid'),
                     crawlWrap: q('wrk-crawl-wrap'),
                     crawlLbl: q('wrk-crawl-lbl'),
                     crawlFill: q('wrk-crawl-fill'),
@@ -14926,6 +15282,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     stopThreadBtn: q('wrk-stop-thread-btn'),
                     fileFill: q('wrk-file-fill'),
                     totalFill: q('wrk-total-fill'),
+                    concurrentPostsBox: q('wrk-concurrent-posts'),
                     deadCountBadge: q('wrk-dead-badge'),
                     hostPills: q('wrk-host-pills'),
                     failedList: q('wrk-failed-list'),
@@ -14939,7 +15296,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 q('wrk-stop-all-btn').addEventListener('click', () => {
                     pendingJobs.length = 0;
                     if (activeThreadCrawl) activeThreadCrawl.cancelled = true;
-                    if (activeCancelController) activeCancelController.cancel();
+                    cancelActivePostJobs();
                     listRenderRevision++;
                     publishState();
                 });
@@ -14961,12 +15318,13 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 });
 
                 q('wrk-skip-post-btn').addEventListener('click', () => {
-                    if (activeCancelController) activeCancelController.cancel();
+                    const first = activeJobsMap.values().next().value;
+                    if (first) first.cancelController.cancel();
                 });
 
                 q('wrk-stop-thread-btn').addEventListener('click', () => {
                     if (activeThreadCrawl) activeThreadCrawl.cancelled = true;
-                    if (activeCancelController) activeCancelController.cancel();
+                    cancelActivePostJobs(s => !!s.threadCrawl);
                     listRenderRevision++;
                     publishState();
                 });
@@ -15001,6 +15359,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                                 if (copyBtn.isConnected) copyBtn.textContent = 'Copy Log';
                             }, 1500);
                         }
+                        return;
+                    }
+                    const cActive = e.target.closest('[data-wrk-cancel-active]');
+                    if (cActive) {
+                        const jId = cActive.getAttribute('data-wrk-cancel-active');
+                        const actEntry = activeJobsMap.get(jId);
+                        if (actEntry) actEntry.cancelController.cancel();
+                        publishState();
                         return;
                     }
                     const cThread = e.target.closest('[data-wrk-cancel-thread]');
@@ -15038,11 +15404,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
     const maybeArmIdleClose = () => {
         cancelIdleClose();
         if (!isDedicatedWorkerTab) return;
-        if (activeJobSummary || pendingJobs.length > 0) return;
+        if (hasAnyActiveWork() || pendingJobs.length > 0) return;
         if (standbyMode) return;
         idleCloseTimer = setTimeout(() => {
             const unacked = xfpdReadPendingQueueCommands(processedCmdIds);
-            if (unacked.length > 0 || activeJobSummary || pendingJobs.length > 0) {
+            if (unacked.length > 0 || hasAnyActiveWork() || pendingJobs.length > 0) {
                 drainCommands();
                 return;
             }
@@ -15054,6 +15420,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 workerStandby: false,
                 ackCmdIds: ackQueue.slice(-200),
                 active: null,
+                activePosts: [],
+                lanes: [],
                 queued: [],
                 history: history.slice(0, 30),
             });
@@ -15087,7 +15455,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         applyPairs(hints.imagepondNames, imagepondNameByUrl);
     };
 
-    const prepareRemotePostIfLockedOrCollapsed = async job => {
+    const prepareRemotePostIfLockedOrCollapsed = async (job, jobSummary) => {
         const incComments = !job.postSettings || job.postSettings.includeComments !== false;
         const needsLockUnlock =
             !!(job.hasMainLockedContent || (incComments && job.hasCommentLockedContent)) &&
@@ -15101,9 +15469,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
 
         if (needsLockUnlock && Array.isArray(job.unlockReactUrls) && job.unlockReactUrls.length && job.csrfToken) {
-            activeJobSummary.phase = 'unlocking';
-            activeJobSummary.statusText = '🔓 Reacting to unlock hidden links...';
-            publishState();
+            if (jobSummary) {
+                jobSummary.phase = 'unlocking';
+                jobSummary.statusText = '🔓 Reacting to unlock hidden links...';
+                publishState();
+            }
 
             for (const rUrl of job.unlockReactUrls) {
                 let reqUri = '/';
@@ -15126,9 +15496,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         }
 
         if (job.pageUrl) {
-            activeJobSummary.phase = 'unlocking';
-            activeJobSummary.statusText = '💬 Loading fresh post & comment links...';
-            publishState();
+            if (jobSummary) {
+                jobSummary.phase = 'unlocking';
+                jobSummary.statusText = '💬 Loading fresh post & comment links...';
+                publishState();
+            }
 
             const pageRes = await xfpdSameOriginFetchText(job.pageUrl, 'GET', null);
             if (pageRes && pageRes.ok && pageRes.text) {
@@ -15213,7 +15585,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         cancelIdleClose();
         hydrateJobHints(job.hints);
 
-        activeCancelController = {
+        const jobCancelController = {
             cancelled: false,
             abortHandlers: new Set(),
             cancel() {
@@ -15229,7 +15601,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             .filter(hItem => hItem.enabled && hItem.resources && hItem.resources.length)
             .reduce((a, hItem) => a + hItem.resources.length, 0);
 
-        activeJobSummary = {
+        const jobSummary = {
             jobId: job.jobId,
             threadKey: job.threadKey,
             threadTitle: job.threadTitle,
@@ -15244,281 +15616,262 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             totalPct: 0,
             statusText: 'Preparing...',
         };
+
+        activeJobsMap.set(job.jobId, { summary: jobSummary, cancelController: jobCancelController });
         publishState();
 
-        let reactedMainDuringUnlock = false;
         try {
-            const prep = await prepareRemotePostIfLockedOrCollapsed(job);
-            reactedMainDuringUnlock = !!(prep && prep.reactedMainDuringUnlock);
-        } catch (e) {}
+            let reactedMainDuringUnlock = false;
+            try {
+                const prep = await prepareRemotePostIfLockedOrCollapsed(job, jobSummary);
+                reactedMainDuringUnlock = !!(prep && prep.reactedMainDuringUnlock);
+            } catch (e) {}
 
-        if (activeCancelController.cancelled) {
-            history.unshift({
-                jobId: job.jobId,
-                threadKey: job.threadKey,
-                threadTitle: job.threadTitle,
-                postId: job.postId,
-                postNumber: job.postNumber,
-                status: 'cancelled',
-                succeeded: 0,
-                total: enabledCount0,
-                failed: 0,
-                deduped: 0,
-                errorLog: '',
-                finishedAt: Date.now(),
-            });
-            activeJobSummary = null;
-            activeCancelController = null;
+            if (jobCancelController.cancelled) {
+                history.unshift({
+                    jobId: job.jobId,
+                    threadKey: job.threadKey,
+                    threadTitle: job.threadTitle,
+                    postId: job.postId,
+                    postNumber: job.postNumber,
+                    status: 'cancelled',
+                    succeeded: 0,
+                    total: enabledCount0,
+                    failed: 0,
+                    deduped: 0,
+                    errorLog: '',
+                    finishedAt: Date.now(),
+                });
+                listRenderRevision++;
+                return;
+            }
+
+            const enabledHosts = (job.parsedHosts || []).filter(hItem => hItem.enabled && hItem.resources && hItem.resources.length);
+            const finalResourceTotal = enabledHosts.reduce((a, hItem) => a + hItem.resources.length, 0);
+            if (finalResourceTotal === 0) {
+                history.unshift({
+                    jobId: job.jobId,
+                    threadKey: job.threadKey,
+                    threadTitle: job.threadTitle,
+                    postId: job.postId,
+                    postNumber: job.postNumber,
+                    status: 'done',
+                    succeeded: 0,
+                    total: 0,
+                    failed: 0,
+                    deduped: 0,
+                    errorLog: '',
+                    finishedAt: Date.now(),
+                });
+                listRenderRevision++;
+                return;
+            }
+
+            jobSummary.total = finalResourceTotal;
             publishState();
-            return;
-        }
 
-        const enabledHosts = (job.parsedHosts || []).filter(hItem => hItem.enabled && hItem.resources && hItem.resources.length);
-        const finalResourceTotal = enabledHosts.reduce((a, hItem) => a + hItem.resources.length, 0);
-        if (finalResourceTotal === 0) {
-            history.unshift({
-                jobId: job.jobId,
-                threadKey: job.threadKey,
-                threadTitle: job.threadTitle,
-                postId: job.postId,
-                postNumber: job.postNumber,
-                status: 'done',
-                succeeded: 0,
-                total: 0,
-                failed: 0,
-                deduped: 0,
-                errorLog: '',
-                finishedAt: Date.now(),
-            });
-            activeJobSummary = null;
-            activeCancelController = null;
-            publishState();
-            return;
-        }
+            // Virtual statusUI elements observed via MutationObserver (immune to background timer throttling!)
+            const vRoot = document.createElement('div');
+            const vStatus = document.createElement('span');
+            const vFilePB = document.createElement('div');
+            const vTotalPB = document.createElement('div');
+            vRoot.append(vStatus, vFilePB, vTotalPB);
 
-        activeJobSummary.total = finalResourceTotal;
-        publishState();
-
-        // Virtual statusUI elements observed via MutationObserver (immune to background timer throttling!)
-        const vRoot = document.createElement('div');
-        const vStatus = document.createElement('span');
-        const vFilePB = document.createElement('div');
-        const vTotalPB = document.createElement('div');
-        vRoot.append(vStatus, vFilePB, vTotalPB);
-
-        let lastBroadcastAt = 0;
-        const syncVirtualDomProgress = (force = false) => {
-            if (!activeJobSummary) return;
-            const now = Date.now();
-            if (!force && now - lastBroadcastAt < 140) return;
-            lastBroadcastAt = now;
-            const txt = String(vStatus.textContent || '').replace(/Copy Log$/i, '').trim();
-            if (txt) activeJobSummary.statusText = txt;
-            const fPct = parseFloat(vFilePB.style.width || '0') || 0;
-            const tPct = parseFloat(vTotalPB.style.width || '0') || 0;
-            activeJobSummary.filePct = Math.max(0, Math.min(100, Math.round(fPct)));
-            activeJobSummary.totalPct = Math.max(0, Math.min(100, Math.round(tPct)));
-            publishState();
-        };
-
-        let vObserver = null;
-        if (typeof MutationObserver !== 'undefined') {
-            vObserver = new MutationObserver(() => syncVirtualDomProgress(false));
-            vObserver.observe(vRoot, {
-                childList: true,
-                characterData: true,
-                attributes: true,
-                subtree: true,
-            });
-        }
-        const progressPoll = setInterval(() => syncVirtualDomProgress(false), 350);
-
-        const virtualParsedPost = {
-            postId: job.postId,
-            postNumber: job.postNumber,
-            pageNumber: job.pageNumber || 1,
-            threadKey: job.threadKey,
-            threadTitle: job.threadTitle,
-            postCaption: job.postCaption || '',
-            spoilers: Array.isArray(job.spoilers) ? job.spoilers : [],
-            contentContainer: null,
-            footer: null,
-        };
-
-        let outcome = null;
-
-        try {
-            await downloadPost(
-                virtualParsedPost,
-                job.parsedHosts,
-                list => list.filter(hItem => hItem.enabled),
-                resolvers,
-                () => job.postSettings,
-                { status: vStatus, filePB: vFilePB, totalPB: vTotalPB },
-                {
-                    cancelController: activeCancelController,
-                    onProgress: ({ phase, completed, total }) => {
-                        if (!activeJobSummary) return;
-                        activeJobSummary.phase = phase;
-                        activeJobSummary.completed = completed;
-                        activeJobSummary.total = total;
-                        if (total > 0) {
-                            activeJobSummary.totalPct = Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
-                        }
-                        syncVirtualDomProgress(false);
-                    },
-                    onCancel: (total, succeeded) => {
-                        outcome = {
-                            status: 'cancelled',
-                            total,
-                            succeeded,
-                            failed: 0,
-                            deduped: 0,
-                            errorLog: '',
-                        };
-                    },
-                    onComplete: (total, succeeded, failed = 0, deduped = 0, errorLog = '') => {
-                        let st = 'done';
-                        if (total === 0 && deduped > 0 && failed === 0) st = 'dedup';
-                        else if (failed > 0 && succeeded > 0) st = 'partial';
-                        else if (failed > 0 && succeeded === 0) st = 'failed';
-                        outcome = {
-                            status: st,
-                            total,
-                            succeeded,
-                            failed,
-                            deduped,
-                            errorLog: failed > 0 ? String(errorLog || '') : '',
-                        };
-                    },
-                },
-            );
-        } catch (err) {
-            console.error('[XFPD Worker] Job failed with exception:', err);
-            outcome = {
-                status: 'failed',
-                total: finalResourceTotal,
-                succeeded: 0,
-                failed: finalResourceTotal,
-                deduped: 0,
-                errorLog: String((err && err.stack) || err || ''),
+            let lastBroadcastAt = 0;
+            const syncVirtualDomProgress = (force = false) => {
+                if (!activeJobsMap.has(job.jobId)) return;
+                const now = Date.now();
+                if (!force && now - lastBroadcastAt < 140) return;
+                lastBroadcastAt = now;
+                const txt = String(vStatus.textContent || '').replace(/Copy Log$/i, '').trim();
+                if (txt) jobSummary.statusText = txt;
+                const fPct = parseFloat(vFilePB.style.width || '0') || 0;
+                const tPct = parseFloat(vTotalPB.style.width || '0') || 0;
+                jobSummary.filePct = Math.max(0, Math.min(100, Math.round(fPct)));
+                jobSummary.totalPct = Math.max(0, Math.min(100, Math.round(tPct)));
+                publishState();
             };
-        } finally {
-            if (vObserver) {
-                try { vObserver.disconnect(); } catch (e) {}
-            }
-            clearInterval(progressPoll);
-        }
 
-        // Trigger post-download thank-you reaction remotely ONLY when Auto-React Downloaded Posts is enabled!
-        if (
-            outcome &&
-            job.postSettings &&
-            job.postSettings.autoReactAfterDownload === true &&
-            (outcome.succeeded > 0 || (outcome.deduped > 0 && outcome.failed === 0)) &&
-            job.completionReactUrl &&
-            !reactedMainDuringUnlock
-        ) {
-            const activeCsrf = job.csrfToken || xfpdGetXenForoCsrfToken();
-            if (activeCsrf) {
-                try {
-                    let reqUri = '/';
+            let vObserver = null;
+            if (typeof MutationObserver !== 'undefined') {
+                vObserver = new MutationObserver(() => syncVirtualDomProgress(false));
+                vObserver.observe(vRoot, {
+                    childList: true,
+                    characterData: true,
+                    attributes: true,
+                    subtree: true,
+                });
+            }
+            const progressPoll = setInterval(() => syncVirtualDomProgress(false), 350);
+
+            const virtualParsedPost = {
+                postId: job.postId,
+                postNumber: job.postNumber,
+                pageNumber: job.pageNumber || 1,
+                threadKey: job.threadKey,
+                threadTitle: job.threadTitle,
+                postCaption: job.postCaption || '',
+                spoilers: Array.isArray(job.spoilers) ? job.spoilers : [],
+                contentContainer: null,
+                footer: null,
+            };
+
+            let outcome = null;
+
+            try {
+                await downloadPost(
+                    virtualParsedPost,
+                    job.parsedHosts,
+                    list => list.filter(hItem => hItem.enabled),
+                    resolvers,
+                    () => job.postSettings,
+                    { status: vStatus, filePB: vFilePB, totalPB: vTotalPB },
+                    {
+                        cancelController: jobCancelController,
+                        onProgress: ({ phase, completed, total }) => {
+                            if (!activeJobsMap.has(job.jobId)) return;
+                            jobSummary.phase = phase;
+                            jobSummary.completed = completed;
+                            jobSummary.total = total;
+                            if (total > 0) {
+                                jobSummary.totalPct = Math.max(0, Math.min(100, Math.round((completed / total) * 100)));
+                            }
+                            syncVirtualDomProgress(false);
+                        },
+                        onCancel: (total, succeeded) => {
+                            outcome = {
+                                status: 'cancelled',
+                                total,
+                                succeeded,
+                                failed: 0,
+                                deduped: 0,
+                                errorLog: '',
+                            };
+                        },
+                        onComplete: (total, succeeded, failed = 0, deduped = 0, errorLog = '') => {
+                            let st = 'done';
+                            if (total === 0 && deduped > 0 && failed === 0) st = 'dedup';
+                            else if (failed > 0 && succeeded > 0) st = 'partial';
+                            else if (failed > 0 && succeeded === 0) st = 'failed';
+                            outcome = {
+                                status: st,
+                                total,
+                                succeeded,
+                                failed,
+                                deduped,
+                                errorLog: failed > 0 ? String(errorLog || '') : '',
+                            };
+                        },
+                    },
+                );
+            } catch (err) {
+                console.error('[XFPD Worker] Job failed with exception:', err);
+                outcome = {
+                    status: 'failed',
+                    total: finalResourceTotal,
+                    succeeded: 0,
+                    failed: finalResourceTotal,
+                    deduped: 0,
+                    errorLog: String((err && err.stack) || err || ''),
+                };
+            } finally {
+                if (vObserver) {
+                    try { vObserver.disconnect(); } catch (e) {}
+                }
+                clearInterval(progressPoll);
+            }
+
+            // Trigger post-download thank-you reaction remotely ONLY when Auto-React Downloaded Posts is enabled!
+            if (
+                outcome &&
+                job.postSettings &&
+                job.postSettings.autoReactAfterDownload === true &&
+                (outcome.succeeded > 0 || (outcome.deduped > 0 && outcome.failed === 0)) &&
+                job.completionReactUrl &&
+                !reactedMainDuringUnlock
+            ) {
+                const activeCsrf = job.csrfToken || xfpdGetXenForoCsrfToken();
+                if (activeCsrf) {
                     try {
-                        const pUrl = new URL(job.pageUrl);
-                        reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                        let reqUri = '/';
+                        try {
+                            const pUrl = new URL(job.pageUrl);
+                            reqUri = `${pUrl.pathname}${pUrl.search || ''}`;
+                        } catch (e) {}
+                        const bodyParams = new URLSearchParams({
+                            _xfToken: activeCsrf,
+                            _xfRequestUri: reqUri,
+                            _xfWithData: '1',
+                            _xfResponseType: 'json',
+                        }).toString();
+                        let reactRes = await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
+                        // Retry once after 1.2s if XenForo flood-checked rapid consecutive reactions!
+                        if (!reactRes || !reactRes.ok || /"status"\s*:\s*"error"/i.test(reactRes.text || '')) {
+                            await h.delayedResolve(1200);
+                            await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
+                        }
                     } catch (e) {}
-                    const bodyParams = new URLSearchParams({
-                        _xfToken: activeCsrf,
-                        _xfRequestUri: reqUri,
-                        _xfWithData: '1',
-                        _xfResponseType: 'json',
-                    }).toString();
-                    let reactRes = await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
-                    // Retry once after 1.2s if XenForo flood-checked rapid consecutive reactions!
-                    if (!reactRes || !reactRes.ok || /"status"\s*:\s*"error"/i.test(reactRes.text || '')) {
-                        await h.delayedResolve(1200);
-                        await xfpdSameOriginFetchText(job.completionReactUrl, 'POST', bodyParams);
-                    }
-                } catch (e) {}
-            }
-        }
-
-        if (outcome) {
-            if (outcome.status !== 'cancelled') {
-                sessionStats.postsDone++;
-                sessionStats.filesSaved += Number(outcome.succeeded || 0) || 0;
-                sessionStats.filesDeduped += Number(outcome.deduped || 0) || 0;
-                const failCnt = Number(outcome.failed || 0) || 0;
-                if (failCnt > 0) {
-                    sessionStats.filesFailed += failCnt;
-                    sessionStats.failedPostsCount++;
-                    const deadItems = parseDeadLinksFromLog(outcome.errorLog || '');
-                    for (const d of deadItems) {
-                        deadLinksByHost.set(d.host, (deadLinksByHost.get(d.host) || 0) + 1);
-                    }
-                    failedPostsRecords.unshift({
-                        jobId: job.jobId,
-                        threadKey: job.threadKey,
-                        threadTitle: job.threadTitle,
-                        pageUrl: job.pageUrl || '',
-                        pageNumber: job.pageNumber || 0,
-                        postId: job.postId,
-                        postNumber: job.postNumber,
-                        succeeded: outcome.succeeded || 0,
-                        failed: failCnt,
-                        deduped: outcome.deduped || 0,
-                        total: outcome.total || 0,
-                        deadItems,
-                        errorLog: outcome.errorLog || '',
-                        finishedAt: Date.now(),
-                    });
-                    if (failedPostsRecords.length > 150) failedPostsRecords.length = 150;
                 }
             }
-            if (typeof xfpdRecordThreadPostOutcome === 'function') {
-                try {
-                    xfpdRecordThreadPostOutcome(job.threadKey, {
-                        postId: job.postId,
-                        postNumber: job.postNumber,
-                        ...outcome,
-                    });
-                } catch (e) {}
-            }
-            history = history.filter(hItem => !(hItem.threadKey === job.threadKey && hItem.postId === job.postId));
-            history.unshift({
-                jobId: job.jobId,
-                threadKey: job.threadKey,
-                threadTitle: job.threadTitle,
-                postId: job.postId,
-                postNumber: job.postNumber,
-                ...outcome,
-                finishedAt: Date.now(),
-            });
-            if (history.length > 30) history = history.slice(0, 30);
-            listRenderRevision++;
-        }
 
-        if (activeThreadCrawl && !activeThreadCrawl.cancelled && job.threadCrawl) {
-            activeJobSummary = {
-                jobId: activeThreadCrawl.jobId,
-                threadKey: activeThreadCrawl.threadKey,
-                threadTitle: activeThreadCrawl.threadTitle,
-                postId: '',
-                postNumber: `P.${job.threadCrawl.currentPage}`,
-                postCaption: '',
-                threadCrawl: job.threadCrawl,
-                phase: 'scanning_page',
-                completed: job.threadCrawl.pagesDone,
-                total: job.threadCrawl.pagesTotal,
-                filePct: 0,
-                totalPct: Math.round(((job.threadCrawl.pagesDone + 0.5) / Math.max(1, job.threadCrawl.pagesTotal)) * 100),
-                statusText: `📄 Continuing thread crawl (Page ${job.threadCrawl.currentPage}/${job.threadCrawl.endPage})...`,
-            };
-        } else {
-            activeJobSummary = null;
+            if (outcome) {
+                if (outcome.status !== 'cancelled') {
+                    sessionStats.postsDone++;
+                    sessionStats.filesSaved += Number(outcome.succeeded || 0) || 0;
+                    sessionStats.filesDeduped += Number(outcome.deduped || 0) || 0;
+                    const failCnt = Number(outcome.failed || 0) || 0;
+                    if (failCnt > 0) {
+                        sessionStats.filesFailed += failCnt;
+                        sessionStats.failedPostsCount++;
+                        const deadItems = parseDeadLinksFromLog(outcome.errorLog || '');
+                        for (const d of deadItems) {
+                            deadLinksByHost.set(d.host, (deadLinksByHost.get(d.host) || 0) + 1);
+                        }
+                        failedPostsRecords.unshift({
+                            jobId: job.jobId,
+                            threadKey: job.threadKey,
+                            threadTitle: job.threadTitle,
+                            pageUrl: job.pageUrl || '',
+                            pageNumber: job.pageNumber || 0,
+                            postId: job.postId,
+                            postNumber: job.postNumber,
+                            succeeded: outcome.succeeded || 0,
+                            failed: failCnt,
+                            deduped: outcome.deduped || 0,
+                            total: outcome.total || 0,
+                            deadItems,
+                            errorLog: outcome.errorLog || '',
+                            finishedAt: Date.now(),
+                        });
+                        if (failedPostsRecords.length > 150) failedPostsRecords.length = 150;
+                    }
+                }
+                if (typeof xfpdRecordThreadPostOutcome === 'function') {
+                    try {
+                        xfpdRecordThreadPostOutcome(job.threadKey, {
+                            postId: job.postId,
+                            postNumber: job.postNumber,
+                            ...outcome,
+                        });
+                    } catch (e) {}
+                }
+                history = history.filter(hItem => !(hItem.threadKey === job.threadKey && hItem.postId === job.postId));
+                history.unshift({
+                    jobId: job.jobId,
+                    threadKey: job.threadKey,
+                    threadTitle: job.threadTitle,
+                    postId: job.postId,
+                    postNumber: job.postNumber,
+                    ...outcome,
+                    finishedAt: Date.now(),
+                });
+                if (history.length > 30) history = history.slice(0, 30);
+                listRenderRevision++;
+            }
+        } finally {
+            activeJobsMap.delete(job.jobId);
+            publishState();
         }
-        activeCancelController = null;
-        publishState();
     };
 
     const executeThreadCrawlJob = async crawlJob => {
@@ -15540,6 +15893,18 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         const incComments = !crawlJob.postSettings || crawlJob.postSettings.includeComments !== false;
 
         let prefetchedNextPage = null;
+        const inFlightCrawlPosts = new Set();
+
+        const dispatchCrawlPostConcurrent = async postJob => {
+            while (!activeThreadCrawl.cancelled && inFlightCrawlPosts.size >= MAX_CONCURRENT_POST_JOBS) {
+                await Promise.race(inFlightCrawlPosts);
+            }
+            if (activeThreadCrawl.cancelled) return;
+            const p = executeSingleJob(postJob).finally(() => {
+                inFlightCrawlPosts.delete(p);
+            });
+            inFlightCrawlPosts.add(p);
+        };
 
         try {
             for (let pIdx = 0; pIdx < pages.length; pIdx++) {
@@ -15556,7 +15921,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     pagesTotal: pages.length,
                 };
 
-                activeJobSummary = {
+                crawlScanSummary = {
                     jobId: crawlJob.jobId,
                     threadKey: crawlJob.threadKey,
                     threadTitle: crawlJob.threadTitle,
@@ -15582,7 +15947,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     if (activeThreadCrawl.cancelled) break;
                     if (backoffDelaysMs[attempt] > 0) {
                         const waitSec = Math.round(backoffDelaysMs[attempt] / 1000);
-                        activeJobSummary.statusText = `⏳ Forum busy/rate-limited on Page ${pageNum} — retry [${attempt}/${backoffDelaysMs.length - 1}] in ${waitSec}s...`;
+                        if (crawlScanSummary) {
+                            crawlScanSummary.statusText = `⏳ Forum busy/rate-limited on Page ${pageNum} — retry [${attempt}/${backoffDelaysMs.length - 1}] in ${waitSec}s...`;
+                        }
                         publishState();
                         await h.delayedResolve(backoffDelaysMs[attempt]);
                         if (activeThreadCrawl.cancelled) break;
@@ -15672,9 +16039,10 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     console.error('[XFPD Worker] Error parsing thread page:', pageNum, err);
                 }
 
+                // Multi-Post Cross-Page Pipeline: dispatch up to MAX_CONCURRENT_POST_JOBS (4) posts concurrently
+                // so a slow video post on Page P NEVER stalls fast photo/Bunkr/CDN posts on Page P or Page P+1!
                 for (let jIdx = 0; jIdx < pagePostJobs.length; jIdx++) {
                     if (activeThreadCrawl.cancelled) break;
-                    // Overlap prefetching Page P+1 HTML while the last post of Page P is downloading!
                     if (jIdx === pagePostJobs.length - 1 && pIdx + 1 < pages.length && !prefetchedNextPage) {
                         const nextUrl = pages[pIdx + 1].pageUrl;
                         prefetchedNextPage = {
@@ -15684,10 +16052,10 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     }
                     const postJob = pagePostJobs[jIdx];
                     if (csrfToken) postJob.csrfToken = csrfToken;
-                    await executeSingleJob(postJob);
+                    await dispatchCrawlPostConcurrent(postJob);
                 }
 
-                // Zero-waste adaptive pacing: only wait if Page P completed in < 350ms (e.g. skipped already-done page)!
+                // Zero-waste adaptive pacing: only wait if Page P scanned/dispatched in < 350ms!
                 if (pIdx + 1 < pages.length && !activeThreadCrawl.cancelled) {
                     const elapsedOnPage = Date.now() - pageFetchStartedAt;
                     if (elapsedOnPage < 350) {
@@ -15695,10 +16063,13 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     }
                 }
             }
+
+            if (inFlightCrawlPosts.size > 0) {
+                await Promise.allSettled([...inFlightCrawlPosts]);
+            }
         } finally {
             activeThreadCrawl = null;
-            activeJobSummary = null;
-            activeCancelController = null;
+            crawlScanSummary = null;
             publishState();
         }
     };
@@ -15710,13 +16081,42 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         cancelIdleClose();
 
         const runLoop = async () => {
-            while (pendingJobs.length > 0) {
-                const nextJob = pendingJobs.shift();
-                if (!nextJob) continue;
-                if (nextJob.kind === 'thread_crawl') {
-                    await executeThreadCrawlJob(nextJob);
-                } else {
-                    await executeSingleJob(nextJob);
+            const inFlightStandalonePosts = new Set();
+
+            while (pendingJobs.length > 0 || inFlightStandalonePosts.size > 0) {
+                while (pendingJobs.length > 0) {
+                    const peekJob = pendingJobs[0];
+                    if (!peekJob) {
+                        pendingJobs.shift();
+                        continue;
+                    }
+                    if (peekJob.kind === 'thread_crawl') {
+                        if (inFlightStandalonePosts.size >= MAX_CONCURRENT_POST_JOBS) {
+                            break;
+                        }
+                        const crawlJob = pendingJobs.shift();
+                        listRenderRevision++;
+                        publishState();
+                        await executeThreadCrawlJob(crawlJob);
+                    } else {
+                        if (inFlightStandalonePosts.size >= MAX_CONCURRENT_POST_JOBS) {
+                            break;
+                        }
+                        const postJob = pendingJobs.shift();
+                        listRenderRevision++;
+                        publishState();
+                        const p = executeSingleJob(postJob).finally(() => {
+                            inFlightStandalonePosts.delete(p);
+                        });
+                        inFlightStandalonePosts.add(p);
+                    }
+                }
+
+                if (inFlightStandalonePosts.size > 0) {
+                    if (pendingJobs.length > 0 && inFlightStandalonePosts.size < MAX_CONCURRENT_POST_JOBS) {
+                        continue;
+                    }
+                    await Promise.race([...inFlightStandalonePosts, waitPumpWake()]);
                 }
             }
         };
@@ -15749,10 +16149,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (cmd.type === 'enqueue' && Array.isArray(p.jobs)) {
                 for (const job of p.jobs) {
                     if (!job || !job.postId) continue;
-                    const dupActive =
-                        activeJobSummary &&
-                        activeJobSummary.threadKey === job.threadKey &&
-                        activeJobSummary.postId === job.postId;
+                    const dupActive = [...activeJobsMap.values()].some(
+                        entry => entry.summary.threadKey === job.threadKey && entry.summary.postId === job.postId,
+                    );
                     const dupQueued = pendingJobs.some(
                         q => q.kind !== 'thread_crawl' && q.threadKey === job.threadKey && q.postId === job.postId,
                     );
@@ -15784,7 +16183,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                         (!p.jobId && p.threadKey && item.threadKey === p.threadKey));
                 if (activeThreadCrawl && matchCrawl(activeThreadCrawl)) {
                     activeThreadCrawl.cancelled = true;
-                    if (activeCancelController) activeCancelController.cancel();
+                    cancelActivePostJobs(s => !!(s.threadCrawl && matchCrawl(s.threadCrawl)));
                 }
                 for (let i = pendingJobs.length - 1; i >= 0; i--) {
                     if (pendingJobs[i].kind === 'thread_crawl' && matchCrawl(pendingJobs[i])) {
@@ -15794,15 +16193,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             } else if (cmd.type === 'cancel_job') {
                 if (activeThreadCrawl && p.jobId && activeThreadCrawl.jobId === p.jobId) {
                     activeThreadCrawl.cancelled = true;
-                    if (activeCancelController) activeCancelController.cancel();
+                    cancelActivePostJobs(s => !!(s.threadCrawl && s.threadCrawl.jobId === p.jobId));
                     continue;
                 }
                 const matchJob = item =>
                     (p.jobId && item.jobId === p.jobId) ||
                     (p.postId && item.postId === p.postId && (!p.threadKey || item.threadKey === p.threadKey));
-                if (activeJobSummary && matchJob(activeJobSummary) && activeCancelController) {
-                    activeCancelController.cancel();
-                } else {
+                const cancelledAnyActive = cancelActivePostJobs(matchJob) > 0;
+                if (!cancelledAnyActive) {
                     for (let i = pendingJobs.length - 1; i >= 0; i--) {
                         if (matchJob(pendingJobs[i])) {
                             pendingJobs.splice(i, 1);
@@ -15814,9 +16212,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 if (activeThreadCrawl) {
                     activeThreadCrawl.cancelled = true;
                 }
-                if (activeCancelController) {
-                    activeCancelController.cancel();
-                }
+                cancelActivePostJobs();
             } else if (cmd.type === 'clear_history') {
                 history = [];
                 failedPostsRecords.length = 0;
@@ -15835,10 +16231,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
         if (mutated) {
             listRenderRevision++;
             publishState();
+            wakePump();
         }
         if (pendingJobs.length > 0 && !pumping) {
             pumpQueue();
-        } else if (!activeJobSummary && pendingJobs.length === 0) {
+        } else if (!hasAnyActiveWork() && pendingJobs.length === 0) {
             maybeArmIdleClose();
         }
     };
@@ -16235,24 +16632,28 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const curThreadKey = xfpdGetCurrentThreadKey();
             const workerAlive = xfpdIsQueueWorkerAlive(st);
             const active = workerAlive ? st.active : null;
+            const activePosts = workerAlive && Array.isArray(st.activePosts) && st.activePosts.length > 0 ? st.activePosts : active && active.postId ? [active] : [];
             const queued = workerAlive ? st.queued || [] : [];
             const history = st.history || [];
 
-            // 1) Sync post buttons on the current page
+            // 1) Sync post buttons on the current page (supports up to 4 concurrent active posts!)
             parsedPosts.forEach(entry => {
                 const btn = entry.btnDownloadPost;
                 if (!btn) return;
                 const pid = entry.parsedPost.postId;
 
-                if (active && active.postId === pid && (!active.threadKey || active.threadKey === curThreadKey)) {
+                const actMatch = activePosts.find(
+                    a => a && a.postId === pid && (!a.threadKey || a.threadKey === curThreadKey),
+                );
+                if (actMatch) {
                     btn.dataset.xfpdState = 'running';
                     btn.style.color = '#e8a838';
-                    if (active.phase === 'unlocking') {
+                    if (actMatch.phase === 'unlocking') {
                         btn.innerHTML = '⏳ Unlocking... (✕)';
-                    } else if (active.phase === 'resolving') {
-                        btn.innerHTML = `✕ Cancel (Resolving ${active.completed}/${active.total})`;
+                    } else if (actMatch.phase === 'resolving') {
+                        btn.innerHTML = `✕ Cancel (Resolving ${actMatch.completed}/${actMatch.total})`;
                     } else {
-                        btn.innerHTML = `✕ Cancel (${active.completed}/${active.total})`;
+                        btn.innerHTML = `✕ Cancel (${actMatch.completed}/${actMatch.total})`;
                     }
                     return;
                 }
@@ -16491,18 +16892,20 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
             const recentDone = recentHistory.filter(hItem => hItem.status !== 'cancelled').length;
             const doneCount = Math.max(recentDone, (st.stats && st.stats.postsDone) || 0);
-            const totalPostsInWave = doneCount + (active ? 1 : 0) + queued.length + pendingEnqueues;
+            const activeCount = Math.max(activePosts.length, active ? 1 : 0);
+            const totalPostsInWave = doneCount + activeCount + queued.length + pendingEnqueues;
 
             if (active) {
                 const pct = active.totalPct || 0;
                 titleEl.style.color = '#3DB7C7';
+                const parTag = activePosts.length > 1 ? ` [${activePosts.length}∥]` : '';
                 if (active.threadCrawl) {
                     const tc = active.threadCrawl;
-                    const postTag = active.phase === 'scanning_page' ? 'scanning' : `#${active.postNumber}`;
+                    const postTag = active.phase === 'scanning_page' ? 'scanning' : `#${active.postNumber}${parTag}`;
                     titleEl.textContent = `📚 Thread P.${tc.currentPage}/${tc.endPage} · ${postTag} · ${pct}%`;
                 } else {
                     const curPostIdx = doneCount + 1;
-                    titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts) · ${pct}%`;
+                    titleEl.textContent = `📥 Downloading (${curPostIdx}/${totalPostsInWave} posts${parTag}) · ${pct}%`;
                 }
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = `${pct}%`;
@@ -16558,6 +16961,30 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             }
             if (active) {
                 const tc = active.threadCrawl;
+                const busyLanes = (Array.isArray(st.lanes) ? st.lanes : []).filter(l => l && (l.active > 0 || l.queued > 0));
+                const lanesHtml = busyLanes.length
+                    ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;">${busyLanes
+                          .map(
+                              l =>
+                                  `<span style="padding:1px 6px;border-radius:999px;background:rgba(61,183,199,.14);border:1px solid rgba(61,183,199,.38);color:#65d9e8;font-size:10.5px;font-family:monospace;">${escapeHudHtml(
+                                      l.name,
+                                  )} ${l.active}/${l.workers}${l.queued > 0 ? `+${l.queued}q` : ''}</span>`,
+                          )
+                          .join('')}</div>`
+                    : '';
+                const extraPostsHtml =
+                    activePosts.length > 1
+                        ? `<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">${activePosts
+                              .slice(1)
+                              .map(
+                                  ap => `
+                                <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 6px;border-radius:4px;background:rgba(255,255,255,.04);">
+                                  <span>▶ #${escapeHudHtml(ap.postNumber)} · ${ap.completed || 0}/${ap.total || 0} (${ap.totalPct || 0}%)</span>
+                                  <button type="button" class="xfpd-q-btn" data-xfpd-cancel-job="${escapeHudHtml(ap.jobId)}" title="Skip post">✕</button>
+                                </div>`,
+                              )
+                              .join('')}</div>`
+                        : '';
                 const activeHeading = tc
                     ? `📚 ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 18))} · P.${tc.currentPage}/${tc.endPage}${active.postId ? ` · #${escapeHudHtml(active.postNumber)}` : ''}`
                     : `▶ ${escapeHudHtml(h.limit(active.threadTitle || 'Thread', 24))} · #${escapeHudHtml(active.postNumber)}`;
@@ -16576,6 +17003,8 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     <div class="xfpd-q-sub">${escapeHudHtml(active.statusText || active.phase || 'Working...')}</div>
                     <div class="xfpd-q-pbar"><div style="width:${active.filePct || 0}%;background:#3DB7C7;"></div></div>
                     <div class="xfpd-q-pbar"><div style="width:${active.totalPct || 0}%;background:#47ba24;"></div></div>
+                    ${extraPostsHtml}
+                    ${lanesHtml}
                   </div>
                 `);
             }
@@ -17470,10 +17899,15 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
 
                 // If this post is currently active or queued in the background worker, clicking cancels it!
                 if (workerAlive) {
-                    const isAct =
-                        curSt.active &&
-                        curSt.active.postId === postId &&
-                        (!curSt.active.threadKey || curSt.active.threadKey === curThreadKey);
+                    const actList =
+                        Array.isArray(curSt.activePosts) && curSt.activePosts.length > 0
+                            ? curSt.activePosts
+                            : curSt.active
+                              ? [curSt.active]
+                              : [];
+                    const isAct = actList.some(
+                        a => a && a.postId === postId && (!a.threadKey || a.threadKey === curThreadKey),
+                    );
                     const isQue = (curSt.queued || []).some(
                         q => q.postId === postId && (!q.threadKey || q.threadKey === curThreadKey),
                     );
