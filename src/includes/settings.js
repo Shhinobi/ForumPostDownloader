@@ -1701,6 +1701,8 @@ async function xfpdCheckGoAgentOnline(force = false) {
                 if (j && j.ok) {
                     xfpdGoAgentState = {
                         online: true,
+                        nativeManager: !!j.nativeManager,
+                        version: String(j.version || ''),
                         checkedAt: Date.now(),
                         rootDir: String(j.rootDir || ''),
                         lanes: Array.isArray(j.lanes) ? j.lanes : xfpdGoAgentState.lanes || [],
@@ -1710,11 +1712,344 @@ async function xfpdCheckGoAgentOnline(force = false) {
                 }
             }
         } catch (e) {}
-        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', lanes: [], checkingPromise: null };
+        xfpdGoAgentState = {
+            online: false,
+            nativeManager: false,
+            version: '',
+            checkedAt: Date.now(),
+            rootDir: '',
+            lanes: [],
+            checkingPromise: null,
+        };
         return false;
     })();
 
     return await xfpdGoAgentState.checkingPromise;
+}
+
+// ============================================================================
+// NATIVE RUST DOWNLOAD MANAGER v3.0 — EVENT-DRIVEN WEBSOCKET & ZERO-TAB RPC
+// ============================================================================
+const xfpdNativeManagerListeners = new Set();
+const xfpdNativeManagerLive = {
+    wsConnected: false,
+    speedMbps: 0,
+    activeStreams: 0,
+    queuedTasks: 0,
+    saved: 0,
+    deduped: 0,
+    failed: 0,
+    postStates: new Map(), // `${threadKey}::${postId}` -> { status, total, completed, succeeded, failed, deduped, postNumber }
+    threadCrawl: null, // { threadKey, threadTitle, currentPage, endPage, statusText, done }
+};
+let xfpdNativeWsInstance = null;
+let xfpdNativeWsReconnectTimer = null;
+
+function xfpdGetNativeManagerLive() {
+    return xfpdNativeManagerLive;
+}
+
+function xfpdOnNativeManagerEvent(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdNativeManagerListeners.add(cb);
+    return () => xfpdNativeManagerListeners.delete(cb);
+}
+
+function xfpdNotifyNativeListeners(ev) {
+    xfpdNativeManagerListeners.forEach(cb => {
+        try { cb(ev, xfpdNativeManagerLive); } catch (e) {}
+    });
+}
+
+async function xfpdCollectForumCookieHeader() {
+    let docCookies = '';
+    try { docCookies = String(document.cookie || ''); } catch (e) {}
+    try {
+        if (typeof GM_cookie !== 'undefined' && GM_cookie && typeof GM_cookie.list === 'function') {
+            const gmList = await new Promise(resolve => {
+                let settled = false;
+                const timer = setTimeout(() => {
+                    if (!settled) {
+                        settled = true;
+                        resolve(null);
+                    }
+                }, 800);
+                try {
+                    GM_cookie.list({ url: location.href }, (cookies, err) => {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve(!err && Array.isArray(cookies) ? cookies : null);
+                    });
+                } catch (e) {
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve(null);
+                    }
+                }
+            });
+            if (gmList && gmList.length > 0) {
+                return gmList.map(c => `${c.name}=${c.value}`).join('; ');
+            }
+        }
+    } catch (e) {}
+    return docCookies;
+}
+
+function xfpdEnsureNativeManagerWs() {
+    if (typeof WebSocket !== 'function') return;
+    if (
+        xfpdNativeWsInstance &&
+        (xfpdNativeWsInstance.readyState === WebSocket.OPEN || xfpdNativeWsInstance.readyState === WebSocket.CONNECTING)
+    ) {
+        return;
+    }
+    if (xfpdNativeWsReconnectTimer) {
+        clearTimeout(xfpdNativeWsReconnectTimer);
+        xfpdNativeWsReconnectTimer = null;
+    }
+
+    try {
+        const wsUrl = `${XFPD_GO_AGENT_BASE.replace(/^http/i, 'ws')}/api/v3/ws`;
+        const ws = new WebSocket(wsUrl);
+        xfpdNativeWsInstance = ws;
+
+        ws.onopen = async () => {
+            xfpdNativeManagerLive.wsConnected = true;
+            xfpdGoAgentState.online = true;
+            xfpdGoAgentState.nativeManager = true;
+            xfpdGoAgentState.checkedAt = Date.now();
+            try {
+                const cookies = await xfpdCollectForumCookieHeader();
+                ws.send(
+                    JSON.stringify({
+                        cmd: 'sync_cookies',
+                        domain: location.origin,
+                        cookies,
+                        userAgent: navigator.userAgent || '',
+                        gofileToken: (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '',
+                    }),
+                );
+            } catch (e) {}
+            xfpdNotifyNativeListeners({ event: 'ws_open' });
+        };
+
+        ws.onmessage = ev => {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (!msg || !msg.event) return;
+                if (msg.event === 'snapshot' || msg.event === 'stats_tick') {
+                    xfpdGoAgentState.online = true;
+                    xfpdGoAgentState.nativeManager = true;
+                    xfpdGoAgentState.checkedAt = Date.now();
+                    if (msg.root_dir) xfpdGoAgentState.rootDir = String(msg.root_dir);
+                    if (Array.isArray(msg.lanes)) xfpdGoAgentState.lanes = msg.lanes;
+                    xfpdNativeManagerLive.speedMbps = Number(msg.speed_mbps || 0);
+                    xfpdNativeManagerLive.activeStreams = Number(msg.active_streams || 0);
+                    xfpdNativeManagerLive.queuedTasks = Number(msg.queued_tasks || 0);
+                    xfpdNativeManagerLive.saved = Number(msg.saved || 0);
+                    xfpdNativeManagerLive.deduped = Number(msg.deduped || 0);
+                    xfpdNativeManagerLive.failed = Number(msg.failed || 0);
+                } else if (msg.event === 'post_summary' && msg.post_id) {
+                    const pKey = `${msg.thread_key || ''}::${msg.post_id}`;
+                    xfpdNativeManagerLive.postStates.set(pKey, {
+                        threadKey: msg.thread_key || '',
+                        postId: String(msg.post_id),
+                        postNumber: String(msg.post_number || ''),
+                        status: String(msg.status || 'downloading'),
+                        total: Number(msg.total || 0),
+                        completed: Number(msg.completed || 0),
+                        succeeded: Number(msg.succeeded || 0),
+                        failed: Number(msg.failed || 0),
+                        deduped: Number(msg.deduped || 0),
+                    });
+                    if (
+                        msg.status !== 'downloading' &&
+                        typeof xfpdRecordThreadPostOutcome === 'function'
+                    ) {
+                        try {
+                            xfpdRecordThreadPostOutcome(msg.thread_key, {
+                                postId: String(msg.post_id),
+                                postNumber: String(msg.post_number || ''),
+                                status: msg.status,
+                                total: Number(msg.total || 0),
+                                succeeded: Number(msg.succeeded || 0),
+                                failed: Number(msg.failed || 0),
+                                deduped: Number(msg.deduped || 0),
+                            });
+                        } catch (e) {}
+                    }
+                } else if (msg.event === 'thread_crawl_progress') {
+                    xfpdNativeManagerLive.threadCrawl = msg.done
+                        ? null
+                        : {
+                              threadKey: msg.thread_key || '',
+                              threadTitle: msg.thread_title || '',
+                              currentPage: Number(msg.current_page || 1),
+                              endPage: Number(msg.end_page || 1),
+                              statusText: String(msg.status_text || ''),
+                          };
+                }
+                xfpdNotifyNativeListeners(msg);
+            } catch (e) {}
+        };
+
+        ws.onclose = () => {
+            xfpdNativeManagerLive.wsConnected = false;
+            xfpdNativeWsInstance = null;
+            xfpdNotifyNativeListeners({ event: 'ws_close' });
+            xfpdNativeWsReconnectTimer = setTimeout(() => {
+                xfpdCheckGoAgentOnline(true).then(ok => {
+                    if (ok && xfpdGoAgentState.nativeManager) xfpdEnsureNativeManagerWs();
+                });
+            }, 4000);
+        };
+    } catch (e) {}
+}
+
+async function xfpdEnqueueNativePostJobs(serializedJobs) {
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn || !Array.isArray(serializedJobs) || !serializedJobs.length) return false;
+
+    xfpdEnsureNativeManagerWs();
+    const cookies = await xfpdCollectForumCookieHeader();
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const gfTok = (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '';
+
+    let allOk = true;
+    for (const job of serializedJobs) {
+        const urls = [];
+        for (const hObj of job.parsedHosts || []) {
+            if (!hObj || !hObj.enabled || !Array.isArray(hObj.resources)) continue;
+            for (const u of hObj.resources) {
+                if (u && !urls.includes(u)) urls.push(u);
+            }
+        }
+        const hintMap = {};
+        if (job.hints && Array.isArray(job.hints.linkNames)) {
+            for (const pair of job.hints.linkNames) {
+                if (Array.isArray(pair) && pair[0] && pair[1]) hintMap[pair[0]] = pair[1];
+            }
+        }
+        const ps = job.postSettings || {};
+        const pKey = `${job.threadKey || ''}::${job.postId}`;
+        xfpdNativeManagerLive.postStates.set(pKey, {
+            threadKey: job.threadKey || '',
+            postId: String(job.postId),
+            postNumber: String(job.postNumber || ''),
+            status: 'downloading',
+            total: urls.length,
+            completed: 0,
+            succeeded: 0,
+            failed: 0,
+            deduped: 0,
+        });
+
+        try {
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/enqueue-post`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    threadKey: job.threadKey || '',
+                    threadTitle: job.threadTitle || 'Thread',
+                    pageUrl: job.pageUrl || location.href,
+                    pageNumber: Number(job.pageNumber || 1),
+                    postId: String(job.postId || ''),
+                    postNumber: String(job.postNumber || '1'),
+                    postCaption: String(job.postCaption || ''),
+                    folderLayout: String(ps.folderLayout || 'media'),
+                    extractArchives: ps.extractArchives !== false,
+                    contentDedup: ps.contentDedup !== false,
+                    autoUnlockReaction: ps.autoUnlockReaction !== false,
+                    autoReactAfterDownload: ps.autoReactAfterDownload === true,
+                    videoQuality: String(ps.videoQuality || 'source'),
+                    spoilers: Array.isArray(job.spoilers) ? job.spoilers : [],
+                    urls,
+                    unlockReactUrls: Array.isArray(job.unlockReactUrls) ? job.unlockReactUrls : [],
+                    completionReactUrl: job.completionReactUrl || null,
+                    csrfToken: job.csrfToken || '',
+                    forumCookies: cookies,
+                    userAgent: ua,
+                    linkNameHints: hintMap,
+                    gofileToken: gfTok,
+                }),
+            });
+            if (!res || !res.ok) allOk = false;
+        } catch (e) {
+            allOk = false;
+        }
+    }
+    xfpdNotifyNativeListeners({ event: 'local_enqueued' });
+    return allOk;
+}
+
+async function xfpdEnqueueNativeThreadCrawl(crawlJob) {
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn || !crawlJob) return false;
+
+    xfpdEnsureNativeManagerWs();
+    const cookies = await xfpdCollectForumCookieHeader();
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const gfTok = (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '';
+    const ps = crawlJob.postSettings || {};
+
+    xfpdNativeManagerLive.threadCrawl = {
+        threadKey: crawlJob.threadKey || '',
+        threadTitle: crawlJob.threadTitle || 'Thread',
+        currentPage: Number(crawlJob.startPage || 1),
+        endPage: Number(crawlJob.endPage || 1),
+        statusText: `Starting native crawl (${crawlJob.startPage}–${crawlJob.endPage})...`,
+    };
+    xfpdNotifyNativeListeners({ event: 'local_thread_enqueued' });
+
+    try {
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/enqueue-thread`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                threadKey: crawlJob.threadKey || '',
+                threadTitle: crawlJob.threadTitle || 'Thread',
+                threadUrl: location.href,
+                pages: Array.isArray(crawlJob.pages) ? crawlJob.pages : [],
+                startPage: Number(crawlJob.startPage || 1),
+                endPage: Number(crawlJob.endPage || 1),
+                includeComments: ps.includeComments !== false,
+                folderLayout: String(ps.folderLayout || 'media'),
+                extractArchives: ps.extractArchives !== false,
+                contentDedup: ps.contentDedup !== false,
+                autoUnlockReaction: ps.autoUnlockReaction !== false,
+                autoReactAfterDownload: ps.autoReactAfterDownload === true,
+                videoQuality: String(ps.videoQuality || 'source'),
+                csrfToken: crawlJob.csrfToken || '',
+                forumCookies: cookies,
+                userAgent: ua,
+                gofileToken: gfTok,
+            }),
+        });
+        return !!(res && res.ok);
+    } catch (e) {
+        return false;
+    }
+}
+
+function xfpdCancelNativePostJob(postId, threadKey = '') {
+    const pKey = `${threadKey || ''}::${postId}`;
+    xfpdNativeManagerLive.postStates.delete(pKey);
+    if (xfpdNativeWsInstance && xfpdNativeWsInstance.readyState === WebSocket.OPEN) {
+        try {
+            xfpdNativeWsInstance.send(JSON.stringify({ cmd: 'cancel_post', postId: String(postId) }));
+        } catch (e) {}
+    }
+    xfpdNotifyNativeListeners({ event: 'local_cancelled' });
 }
 
 async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {

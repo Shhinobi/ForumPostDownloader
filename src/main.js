@@ -10598,6 +10598,41 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 postSettings: JSON.parse(JSON.stringify(pageSettings)),
             };
 
+            // Native Rust Download Manager v3.0 Path: ZERO `#xfpd_worker=1` extra tab!
+            const saveMode = (pageSettings && pageSettings.saveMode) || 'auto';
+            if (
+                !pageSettings.zipped &&
+                (saveMode === 'auto' || saveMode === 'agent') &&
+                typeof xfpdCheckGoAgentOnline === 'function' &&
+                typeof xfpdEnqueueNativeThreadCrawl === 'function'
+            ) {
+                xfpdCheckGoAgentOnline(false).then(async isOnline => {
+                    const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    if (isOnline && ag && ag.nativeManager) {
+                        const sent = await xfpdEnqueueNativeThreadCrawl(crawlJob);
+                        if (sent) {
+                            syncVisiblePostsAndHud(xfpdReadQueueState());
+                            return;
+                        }
+                    }
+                    const cmdId = xfpdSendQueueCommand('enqueue_thread', { crawlJob });
+                    const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                    if (!spawnedOrAlive) {
+                        xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        return;
+                    }
+                    setTimeout(() => {
+                        const st = xfpdReadQueueState();
+                        const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                        if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                            xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        }
+                    }, 3500);
+                });
+                return;
+            }
+
             const cmdId = xfpdSendQueueCommand('enqueue_thread', { crawlJob });
             const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
             syncVisiblePostsAndHud(xfpdReadQueueState());
@@ -10637,7 +10672,6 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
             }
             const jobs = list.map(serializePostEntryToJob);
-            const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
 
             // Immediately show optimistic queued state on the clicked post buttons
             list.forEach(entry => {
@@ -10648,6 +10682,43 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             });
 
+            // Native Rust Download Manager v3.0 Path: ZERO `#xfpd_worker=1` extra tab!
+            const anyZipped = jobs.some(j => j && j.postSettings && j.postSettings.zipped);
+            const saveMode = (pageSettings && pageSettings.saveMode) || 'auto';
+            if (
+                !anyZipped &&
+                (saveMode === 'auto' || saveMode === 'agent') &&
+                typeof xfpdCheckGoAgentOnline === 'function' &&
+                typeof xfpdEnqueueNativePostJobs === 'function'
+            ) {
+                xfpdCheckGoAgentOnline(false).then(async isOnline => {
+                    const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    if (isOnline && ag && ag.nativeManager) {
+                        const sent = await xfpdEnqueueNativePostJobs(jobs);
+                        if (sent) {
+                            syncVisiblePostsAndHud(xfpdReadQueueState());
+                            return;
+                        }
+                    }
+                    const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
+                    const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                    if (!spawnedOrAlive) {
+                        xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        return;
+                    }
+                    setTimeout(() => {
+                        const st = xfpdReadQueueState();
+                        const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                        if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                            xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        }
+                    }, 3500);
+                });
+                return;
+            }
+
+            const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
             const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
             syncVisiblePostsAndHud(xfpdReadQueueState());
             if (!spawnedOrAlive) {
@@ -10674,12 +10745,24 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const activePosts = workerAlive && Array.isArray(st.activePosts) && st.activePosts.length > 0 ? st.activePosts : active && active.postId ? [active] : [];
             const queued = workerAlive ? st.queued || [] : [];
             const history = st.history || [];
+            const nativeLive = typeof xfpdGetNativeManagerLive === 'function' ? xfpdGetNativeManagerLive() : null;
+            const agState = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+            const isNativeMgr = !!(agState && agState.online && agState.nativeManager);
 
-            // 1) Sync post buttons on the current page (supports up to 4 concurrent active posts!)
+            // 1) Sync post buttons on the current page (supports Native Rust Manager WS + up to 4 concurrent worker posts!)
             parsedPosts.forEach(entry => {
                 const btn = entry.btnDownloadPost;
                 if (!btn) return;
                 const pid = entry.parsedPost.postId;
+
+                const nativePost =
+                    nativeLive && nativeLive.postStates ? nativeLive.postStates.get(`${curThreadKey || ''}::${pid}`) : null;
+                if (nativePost && nativePost.status === 'downloading') {
+                    btn.dataset.xfpdState = 'running';
+                    btn.style.color = '#e8a838';
+                    btn.innerHTML = `⚡ Cancel (${nativePost.completed}/${nativePost.total || '?'})`;
+                    return;
+                }
 
                 const actMatch = activePosts.find(
                     a => a && a.postId === pid && (!a.threadKey || a.threadKey === curThreadKey),
@@ -10753,7 +10836,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 return acc;
             }, 0);
             const pagInfo = xfpdGetThreadPaginationInfo();
-            const isBusy = !!(active || queued.length > 0 || pendingEnqueues > 0);
+            const nativeBusy = !!(
+                isNativeMgr &&
+                nativeLive &&
+                (nativeLive.activeStreams > 0 || nativeLive.queuedTasks > 0 || nativeLive.threadCrawl)
+            );
+            const isBusy = !!(nativeBusy || active || queued.length > 0 || pendingEnqueues > 0);
             const hasUnclosedHistory = recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount;
             const isIdlePillMode = !isBusy && !hasUnclosedHistory;
             const shouldShowHud =
@@ -10773,6 +10861,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-head" id="xfpd-q-head-bar">
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-open-mgr-btn" style="display:none;" title="Open Native Rust Download Manager UI">⚡ Manager</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-thread-btn" title="Download entire thread (all pages)">📚 Thread</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-page-btn" title="Enqueue all posts on this page">⬇ Page</button>
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
@@ -10783,6 +10872,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-body" id="xfpd-q-body"></div>
                 `;
                 document.body.appendChild(hudEl);
+                const openMgrBtn = hudEl.querySelector('#xfpd-q-open-mgr-btn');
+                if (openMgrBtn) {
+                    openMgrBtn.addEventListener('click', e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        window.open('http://127.0.0.1:48721', '_blank', 'noopener');
+                    });
+                }
 
                 const toggleExpand = () => {
                     const curSt = xfpdReadQueueState();
@@ -10926,6 +11023,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             }
 
+            const openMgrHudBtn = hudEl.querySelector('#xfpd-q-open-mgr-btn');
+            if (openMgrHudBtn) {
+                openMgrHudBtn.style.display = isNativeMgr ? '' : 'none';
+            }
+
             const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
             hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
 
@@ -10934,7 +11036,18 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const activeCount = Math.max(activePosts.length, active ? 1 : 0);
             const totalPostsInWave = doneCount + activeCount + queued.length + pendingEnqueues;
 
-            if (active) {
+            if (nativeBusy && nativeLive) {
+                titleEl.style.color = '#3DB7C7';
+                const spdTxt = nativeLive.speedMbps > 0 ? ` · ${nativeLive.speedMbps.toFixed(1)} MB/s` : '';
+                if (nativeLive.threadCrawl) {
+                    const tc = nativeLive.threadCrawl;
+                    titleEl.textContent = `⚡ Rust P.${tc.currentPage}/${tc.endPage} · ${nativeLive.activeStreams} act${spdTxt}`;
+                } else {
+                    titleEl.textContent = `⚡ Downloading (${nativeLive.activeStreams} act · ${nativeLive.queuedTasks} q${spdTxt})`;
+                }
+                topFill.style.background = '#3DB7C7';
+                topFill.style.width = '100%';
+            } else if (active) {
                 const pct = active.totalPct || 0;
                 titleEl.style.color = '#3DB7C7';
                 const parTag = activePosts.length > 1 ? ` [${activePosts.length}∥]` : '';
@@ -10961,7 +11074,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 topFill.style.width = '100%';
             } else {
                 titleEl.style.color = '#3DB7C7';
-                titleEl.textContent = workerAlive ? '📥 Queue · Standby ●' : '📥 Queue · Ready';
+                titleEl.textContent = isNativeMgr
+                    ? '⚡ Rust Manager · Ready'
+                    : workerAlive
+                      ? '📥 Queue · Standby ●'
+                      : '📥 Queue · Ready';
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = '0%';
             }
@@ -11936,6 +12053,15 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 const curThreadKey = xfpdGetCurrentThreadKey();
                 const workerAlive = xfpdIsQueueWorkerAlive(curSt);
 
+                if (typeof xfpdGetNativeManagerLive === 'function' && typeof xfpdCancelNativePostJob === 'function') {
+                    const nl = xfpdGetNativeManagerLive();
+                    const np = nl && nl.postStates ? nl.postStates.get(`${curThreadKey || ''}::${postId}`) : null;
+                    if (np && np.status === 'downloading') {
+                        xfpdCancelNativePostJob(postId, curThreadKey);
+                        return;
+                    }
+                }
+
                 // If this post is currently active or queued in the background worker, clicking cancels it!
                 if (workerAlive) {
                     const actList =
@@ -12055,6 +12181,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 init.injectCustomStyles();
                 scanPosts();
                 syncVisiblePostsAndHud(xfpdReadQueueState());
+
+                if (typeof xfpdOnNativeManagerEvent === 'function') {
+                    xfpdOnNativeManagerEvent(() => {
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
+                    });
+                }
+                if (typeof xfpdCheckGoAgentOnline === 'function' && typeof xfpdEnsureNativeManagerWs === 'function') {
+                    xfpdCheckGoAgentOnline(true).then(ok => {
+                        const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                        if (ok && ag && ag.nativeManager) {
+                            xfpdEnsureNativeManagerWs();
+                        }
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
+                    });
+                }
             },
             { once: true },
         );

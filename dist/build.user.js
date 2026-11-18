@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.46
+// @version 3.47
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -2003,6 +2003,8 @@ async function xfpdCheckGoAgentOnline(force = false) {
                 if (j && j.ok) {
                     xfpdGoAgentState = {
                         online: true,
+                        nativeManager: !!j.nativeManager,
+                        version: String(j.version || ''),
                         checkedAt: Date.now(),
                         rootDir: String(j.rootDir || ''),
                         lanes: Array.isArray(j.lanes) ? j.lanes : xfpdGoAgentState.lanes || [],
@@ -2012,11 +2014,344 @@ async function xfpdCheckGoAgentOnline(force = false) {
                 }
             }
         } catch (e) {}
-        xfpdGoAgentState = { online: false, checkedAt: Date.now(), rootDir: '', lanes: [], checkingPromise: null };
+        xfpdGoAgentState = {
+            online: false,
+            nativeManager: false,
+            version: '',
+            checkedAt: Date.now(),
+            rootDir: '',
+            lanes: [],
+            checkingPromise: null,
+        };
         return false;
     })();
 
     return await xfpdGoAgentState.checkingPromise;
+}
+
+// ============================================================================
+// NATIVE RUST DOWNLOAD MANAGER v3.0 — EVENT-DRIVEN WEBSOCKET & ZERO-TAB RPC
+// ============================================================================
+const xfpdNativeManagerListeners = new Set();
+const xfpdNativeManagerLive = {
+    wsConnected: false,
+    speedMbps: 0,
+    activeStreams: 0,
+    queuedTasks: 0,
+    saved: 0,
+    deduped: 0,
+    failed: 0,
+    postStates: new Map(), // `${threadKey}::${postId}` -> { status, total, completed, succeeded, failed, deduped, postNumber }
+    threadCrawl: null, // { threadKey, threadTitle, currentPage, endPage, statusText, done }
+};
+let xfpdNativeWsInstance = null;
+let xfpdNativeWsReconnectTimer = null;
+
+function xfpdGetNativeManagerLive() {
+    return xfpdNativeManagerLive;
+}
+
+function xfpdOnNativeManagerEvent(cb) {
+    if (typeof cb !== 'function') return () => {};
+    xfpdNativeManagerListeners.add(cb);
+    return () => xfpdNativeManagerListeners.delete(cb);
+}
+
+function xfpdNotifyNativeListeners(ev) {
+    xfpdNativeManagerListeners.forEach(cb => {
+        try { cb(ev, xfpdNativeManagerLive); } catch (e) {}
+    });
+}
+
+async function xfpdCollectForumCookieHeader() {
+    let docCookies = '';
+    try { docCookies = String(document.cookie || ''); } catch (e) {}
+    try {
+        if (typeof GM_cookie !== 'undefined' && GM_cookie && typeof GM_cookie.list === 'function') {
+            const gmList = await new Promise(resolve => {
+                let settled = false;
+                const timer = setTimeout(() => {
+                    if (!settled) {
+                        settled = true;
+                        resolve(null);
+                    }
+                }, 800);
+                try {
+                    GM_cookie.list({ url: location.href }, (cookies, err) => {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve(!err && Array.isArray(cookies) ? cookies : null);
+                    });
+                } catch (e) {
+                    if (!settled) {
+                        settled = true;
+                        clearTimeout(timer);
+                        resolve(null);
+                    }
+                }
+            });
+            if (gmList && gmList.length > 0) {
+                return gmList.map(c => `${c.name}=${c.value}`).join('; ');
+            }
+        }
+    } catch (e) {}
+    return docCookies;
+}
+
+function xfpdEnsureNativeManagerWs() {
+    if (typeof WebSocket !== 'function') return;
+    if (
+        xfpdNativeWsInstance &&
+        (xfpdNativeWsInstance.readyState === WebSocket.OPEN || xfpdNativeWsInstance.readyState === WebSocket.CONNECTING)
+    ) {
+        return;
+    }
+    if (xfpdNativeWsReconnectTimer) {
+        clearTimeout(xfpdNativeWsReconnectTimer);
+        xfpdNativeWsReconnectTimer = null;
+    }
+
+    try {
+        const wsUrl = `${XFPD_GO_AGENT_BASE.replace(/^http/i, 'ws')}/api/v3/ws`;
+        const ws = new WebSocket(wsUrl);
+        xfpdNativeWsInstance = ws;
+
+        ws.onopen = async () => {
+            xfpdNativeManagerLive.wsConnected = true;
+            xfpdGoAgentState.online = true;
+            xfpdGoAgentState.nativeManager = true;
+            xfpdGoAgentState.checkedAt = Date.now();
+            try {
+                const cookies = await xfpdCollectForumCookieHeader();
+                ws.send(
+                    JSON.stringify({
+                        cmd: 'sync_cookies',
+                        domain: location.origin,
+                        cookies,
+                        userAgent: navigator.userAgent || '',
+                        gofileToken: (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '',
+                    }),
+                );
+            } catch (e) {}
+            xfpdNotifyNativeListeners({ event: 'ws_open' });
+        };
+
+        ws.onmessage = ev => {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (!msg || !msg.event) return;
+                if (msg.event === 'snapshot' || msg.event === 'stats_tick') {
+                    xfpdGoAgentState.online = true;
+                    xfpdGoAgentState.nativeManager = true;
+                    xfpdGoAgentState.checkedAt = Date.now();
+                    if (msg.root_dir) xfpdGoAgentState.rootDir = String(msg.root_dir);
+                    if (Array.isArray(msg.lanes)) xfpdGoAgentState.lanes = msg.lanes;
+                    xfpdNativeManagerLive.speedMbps = Number(msg.speed_mbps || 0);
+                    xfpdNativeManagerLive.activeStreams = Number(msg.active_streams || 0);
+                    xfpdNativeManagerLive.queuedTasks = Number(msg.queued_tasks || 0);
+                    xfpdNativeManagerLive.saved = Number(msg.saved || 0);
+                    xfpdNativeManagerLive.deduped = Number(msg.deduped || 0);
+                    xfpdNativeManagerLive.failed = Number(msg.failed || 0);
+                } else if (msg.event === 'post_summary' && msg.post_id) {
+                    const pKey = `${msg.thread_key || ''}::${msg.post_id}`;
+                    xfpdNativeManagerLive.postStates.set(pKey, {
+                        threadKey: msg.thread_key || '',
+                        postId: String(msg.post_id),
+                        postNumber: String(msg.post_number || ''),
+                        status: String(msg.status || 'downloading'),
+                        total: Number(msg.total || 0),
+                        completed: Number(msg.completed || 0),
+                        succeeded: Number(msg.succeeded || 0),
+                        failed: Number(msg.failed || 0),
+                        deduped: Number(msg.deduped || 0),
+                    });
+                    if (
+                        msg.status !== 'downloading' &&
+                        typeof xfpdRecordThreadPostOutcome === 'function'
+                    ) {
+                        try {
+                            xfpdRecordThreadPostOutcome(msg.thread_key, {
+                                postId: String(msg.post_id),
+                                postNumber: String(msg.post_number || ''),
+                                status: msg.status,
+                                total: Number(msg.total || 0),
+                                succeeded: Number(msg.succeeded || 0),
+                                failed: Number(msg.failed || 0),
+                                deduped: Number(msg.deduped || 0),
+                            });
+                        } catch (e) {}
+                    }
+                } else if (msg.event === 'thread_crawl_progress') {
+                    xfpdNativeManagerLive.threadCrawl = msg.done
+                        ? null
+                        : {
+                              threadKey: msg.thread_key || '',
+                              threadTitle: msg.thread_title || '',
+                              currentPage: Number(msg.current_page || 1),
+                              endPage: Number(msg.end_page || 1),
+                              statusText: String(msg.status_text || ''),
+                          };
+                }
+                xfpdNotifyNativeListeners(msg);
+            } catch (e) {}
+        };
+
+        ws.onclose = () => {
+            xfpdNativeManagerLive.wsConnected = false;
+            xfpdNativeWsInstance = null;
+            xfpdNotifyNativeListeners({ event: 'ws_close' });
+            xfpdNativeWsReconnectTimer = setTimeout(() => {
+                xfpdCheckGoAgentOnline(true).then(ok => {
+                    if (ok && xfpdGoAgentState.nativeManager) xfpdEnsureNativeManagerWs();
+                });
+            }, 4000);
+        };
+    } catch (e) {}
+}
+
+async function xfpdEnqueueNativePostJobs(serializedJobs) {
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn || !Array.isArray(serializedJobs) || !serializedJobs.length) return false;
+
+    xfpdEnsureNativeManagerWs();
+    const cookies = await xfpdCollectForumCookieHeader();
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const gfTok = (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '';
+
+    let allOk = true;
+    for (const job of serializedJobs) {
+        const urls = [];
+        for (const hObj of job.parsedHosts || []) {
+            if (!hObj || !hObj.enabled || !Array.isArray(hObj.resources)) continue;
+            for (const u of hObj.resources) {
+                if (u && !urls.includes(u)) urls.push(u);
+            }
+        }
+        const hintMap = {};
+        if (job.hints && Array.isArray(job.hints.linkNames)) {
+            for (const pair of job.hints.linkNames) {
+                if (Array.isArray(pair) && pair[0] && pair[1]) hintMap[pair[0]] = pair[1];
+            }
+        }
+        const ps = job.postSettings || {};
+        const pKey = `${job.threadKey || ''}::${job.postId}`;
+        xfpdNativeManagerLive.postStates.set(pKey, {
+            threadKey: job.threadKey || '',
+            postId: String(job.postId),
+            postNumber: String(job.postNumber || ''),
+            status: 'downloading',
+            total: urls.length,
+            completed: 0,
+            succeeded: 0,
+            failed: 0,
+            deduped: 0,
+        });
+
+        try {
+            const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/enqueue-post`, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    threadKey: job.threadKey || '',
+                    threadTitle: job.threadTitle || 'Thread',
+                    pageUrl: job.pageUrl || location.href,
+                    pageNumber: Number(job.pageNumber || 1),
+                    postId: String(job.postId || ''),
+                    postNumber: String(job.postNumber || '1'),
+                    postCaption: String(job.postCaption || ''),
+                    folderLayout: String(ps.folderLayout || 'media'),
+                    extractArchives: ps.extractArchives !== false,
+                    contentDedup: ps.contentDedup !== false,
+                    autoUnlockReaction: ps.autoUnlockReaction !== false,
+                    autoReactAfterDownload: ps.autoReactAfterDownload === true,
+                    videoQuality: String(ps.videoQuality || 'source'),
+                    spoilers: Array.isArray(job.spoilers) ? job.spoilers : [],
+                    urls,
+                    unlockReactUrls: Array.isArray(job.unlockReactUrls) ? job.unlockReactUrls : [],
+                    completionReactUrl: job.completionReactUrl || null,
+                    csrfToken: job.csrfToken || '',
+                    forumCookies: cookies,
+                    userAgent: ua,
+                    linkNameHints: hintMap,
+                    gofileToken: gfTok,
+                }),
+            });
+            if (!res || !res.ok) allOk = false;
+        } catch (e) {
+            allOk = false;
+        }
+    }
+    xfpdNotifyNativeListeners({ event: 'local_enqueued' });
+    return allOk;
+}
+
+async function xfpdEnqueueNativeThreadCrawl(crawlJob) {
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn || !crawlJob) return false;
+
+    xfpdEnsureNativeManagerWs();
+    const cookies = await xfpdCollectForumCookieHeader();
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+    const gfTok = (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '';
+    const ps = crawlJob.postSettings || {};
+
+    xfpdNativeManagerLive.threadCrawl = {
+        threadKey: crawlJob.threadKey || '',
+        threadTitle: crawlJob.threadTitle || 'Thread',
+        currentPage: Number(crawlJob.startPage || 1),
+        endPage: Number(crawlJob.endPage || 1),
+        statusText: `Starting native crawl (${crawlJob.startPage}–${crawlJob.endPage})...`,
+    };
+    xfpdNotifyNativeListeners({ event: 'local_thread_enqueued' });
+
+    try {
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/enqueue-thread`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                threadKey: crawlJob.threadKey || '',
+                threadTitle: crawlJob.threadTitle || 'Thread',
+                threadUrl: location.href,
+                pages: Array.isArray(crawlJob.pages) ? crawlJob.pages : [],
+                startPage: Number(crawlJob.startPage || 1),
+                endPage: Number(crawlJob.endPage || 1),
+                includeComments: ps.includeComments !== false,
+                folderLayout: String(ps.folderLayout || 'media'),
+                extractArchives: ps.extractArchives !== false,
+                contentDedup: ps.contentDedup !== false,
+                autoUnlockReaction: ps.autoUnlockReaction !== false,
+                autoReactAfterDownload: ps.autoReactAfterDownload === true,
+                videoQuality: String(ps.videoQuality || 'source'),
+                csrfToken: crawlJob.csrfToken || '',
+                forumCookies: cookies,
+                userAgent: ua,
+                gofileToken: gfTok,
+            }),
+        });
+        return !!(res && res.ok);
+    } catch (e) {
+        return false;
+    }
+}
+
+function xfpdCancelNativePostJob(postId, threadKey = '') {
+    const pKey = `${threadKey || ''}::${postId}`;
+    xfpdNativeManagerLive.postStates.delete(pKey);
+    if (xfpdNativeWsInstance && xfpdNativeWsInstance.readyState === WebSocket.OPEN) {
+        try {
+            xfpdNativeWsInstance.send(JSON.stringify({ cmd: 'cancel_post', postId: String(postId) }));
+        } catch (e) {}
+    }
+    xfpdNotifyNativeListeners({ event: 'local_cancelled' });
 }
 
 async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
@@ -16559,6 +16894,41 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 postSettings: JSON.parse(JSON.stringify(pageSettings)),
             };
 
+            // Native Rust Download Manager v3.0 Path: ZERO `#xfpd_worker=1` extra tab!
+            const saveMode = (pageSettings && pageSettings.saveMode) || 'auto';
+            if (
+                !pageSettings.zipped &&
+                (saveMode === 'auto' || saveMode === 'agent') &&
+                typeof xfpdCheckGoAgentOnline === 'function' &&
+                typeof xfpdEnqueueNativeThreadCrawl === 'function'
+            ) {
+                xfpdCheckGoAgentOnline(false).then(async isOnline => {
+                    const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    if (isOnline && ag && ag.nativeManager) {
+                        const sent = await xfpdEnqueueNativeThreadCrawl(crawlJob);
+                        if (sent) {
+                            syncVisiblePostsAndHud(xfpdReadQueueState());
+                            return;
+                        }
+                    }
+                    const cmdId = xfpdSendQueueCommand('enqueue_thread', { crawlJob });
+                    const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                    if (!spawnedOrAlive) {
+                        xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        return;
+                    }
+                    setTimeout(() => {
+                        const st = xfpdReadQueueState();
+                        const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                        if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                            xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        }
+                    }, 3500);
+                });
+                return;
+            }
+
             const cmdId = xfpdSendQueueCommand('enqueue_thread', { crawlJob });
             const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
             syncVisiblePostsAndHud(xfpdReadQueueState());
@@ -16598,7 +16968,6 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 xfpdEnsureDirectFolderPermissionOnGesture().catch(() => {});
             }
             const jobs = list.map(serializePostEntryToJob);
-            const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
 
             // Immediately show optimistic queued state on the clicked post buttons
             list.forEach(entry => {
@@ -16609,6 +16978,43 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             });
 
+            // Native Rust Download Manager v3.0 Path: ZERO `#xfpd_worker=1` extra tab!
+            const anyZipped = jobs.some(j => j && j.postSettings && j.postSettings.zipped);
+            const saveMode = (pageSettings && pageSettings.saveMode) || 'auto';
+            if (
+                !anyZipped &&
+                (saveMode === 'auto' || saveMode === 'agent') &&
+                typeof xfpdCheckGoAgentOnline === 'function' &&
+                typeof xfpdEnqueueNativePostJobs === 'function'
+            ) {
+                xfpdCheckGoAgentOnline(false).then(async isOnline => {
+                    const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                    if (isOnline && ag && ag.nativeManager) {
+                        const sent = await xfpdEnqueueNativePostJobs(jobs);
+                        if (sent) {
+                            syncVisiblePostsAndHud(xfpdReadQueueState());
+                            return;
+                        }
+                    }
+                    const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
+                    const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
+                    syncVisiblePostsAndHud(xfpdReadQueueState());
+                    if (!spawnedOrAlive) {
+                        xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        return;
+                    }
+                    setTimeout(() => {
+                        const st = xfpdReadQueueState();
+                        const acked = Array.isArray(st.ackCmdIds) && st.ackCmdIds.includes(cmdId);
+                        if (!acked && !xfpdIsQueueWorkerAlive(st)) {
+                            xfpdStartQueueEngine({ isDedicatedWorkerTab: false });
+                        }
+                    }, 3500);
+                });
+                return;
+            }
+
+            const cmdId = xfpdSendQueueCommand('enqueue', { jobs });
             const spawnedOrAlive = xfpdEnsureQueueWorkerTab();
             syncVisiblePostsAndHud(xfpdReadQueueState());
             if (!spawnedOrAlive) {
@@ -16635,12 +17041,24 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const activePosts = workerAlive && Array.isArray(st.activePosts) && st.activePosts.length > 0 ? st.activePosts : active && active.postId ? [active] : [];
             const queued = workerAlive ? st.queued || [] : [];
             const history = st.history || [];
+            const nativeLive = typeof xfpdGetNativeManagerLive === 'function' ? xfpdGetNativeManagerLive() : null;
+            const agState = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+            const isNativeMgr = !!(agState && agState.online && agState.nativeManager);
 
-            // 1) Sync post buttons on the current page (supports up to 4 concurrent active posts!)
+            // 1) Sync post buttons on the current page (supports Native Rust Manager WS + up to 4 concurrent worker posts!)
             parsedPosts.forEach(entry => {
                 const btn = entry.btnDownloadPost;
                 if (!btn) return;
                 const pid = entry.parsedPost.postId;
+
+                const nativePost =
+                    nativeLive && nativeLive.postStates ? nativeLive.postStates.get(`${curThreadKey || ''}::${pid}`) : null;
+                if (nativePost && nativePost.status === 'downloading') {
+                    btn.dataset.xfpdState = 'running';
+                    btn.style.color = '#e8a838';
+                    btn.innerHTML = `⚡ Cancel (${nativePost.completed}/${nativePost.total || '?'})`;
+                    return;
+                }
 
                 const actMatch = activePosts.find(
                     a => a && a.postId === pid && (!a.threadKey || a.threadKey === curThreadKey),
@@ -16714,7 +17132,12 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 return acc;
             }, 0);
             const pagInfo = xfpdGetThreadPaginationInfo();
-            const isBusy = !!(active || queued.length > 0 || pendingEnqueues > 0);
+            const nativeBusy = !!(
+                isNativeMgr &&
+                nativeLive &&
+                (nativeLive.activeStreams > 0 || nativeLive.queuedTasks > 0 || nativeLive.threadCrawl)
+            );
+            const isBusy = !!(nativeBusy || active || queued.length > 0 || pendingEnqueues > 0);
             const hasUnclosedHistory = recentHistory.length > 0 && recentHistory.length !== hudDismissedUntilCount;
             const isIdlePillMode = !isBusy && !hasUnclosedHistory;
             const shouldShowHud =
@@ -16734,6 +17157,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-head" id="xfpd-q-head-bar">
                     <span class="xfpd-q-title" id="xfpd-q-title-txt">📥 Download Queue</span>
                     <span class="xfpd-q-ctrls">
+                      <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-open-mgr-btn" style="display:none;" title="Open Native Rust Download Manager UI">⚡ Manager</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-thread-btn" title="Download entire thread (all pages)">📚 Thread</button>
                       <button type="button" class="xfpd-q-btn xfpd-q-btn-accent" id="xfpd-q-dl-page-btn" title="Enqueue all posts on this page">⬇ Page</button>
                       <button type="button" class="xfpd-q-btn" id="xfpd-q-toggle-btn" title="Expand / Collapse">▼</button>
@@ -16744,6 +17168,14 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                   <div class="xfpd-q-body" id="xfpd-q-body"></div>
                 `;
                 document.body.appendChild(hudEl);
+                const openMgrBtn = hudEl.querySelector('#xfpd-q-open-mgr-btn');
+                if (openMgrBtn) {
+                    openMgrBtn.addEventListener('click', e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        window.open('http://127.0.0.1:48721', '_blank', 'noopener');
+                    });
+                }
 
                 const toggleExpand = () => {
                     const curSt = xfpdReadQueueState();
@@ -16887,6 +17319,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 }
             }
 
+            const openMgrHudBtn = hudEl.querySelector('#xfpd-q-open-mgr-btn');
+            if (openMgrHudBtn) {
+                openMgrHudBtn.style.display = isNativeMgr ? '' : 'none';
+            }
+
             const effectiveExpanded = isIdlePillMode ? hudIdleExpanded : hudExpanded;
             hudEl.classList.toggle('xfpd-q-pill', isIdlePillMode && !hudIdleExpanded);
 
@@ -16895,7 +17332,18 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             const activeCount = Math.max(activePosts.length, active ? 1 : 0);
             const totalPostsInWave = doneCount + activeCount + queued.length + pendingEnqueues;
 
-            if (active) {
+            if (nativeBusy && nativeLive) {
+                titleEl.style.color = '#3DB7C7';
+                const spdTxt = nativeLive.speedMbps > 0 ? ` · ${nativeLive.speedMbps.toFixed(1)} MB/s` : '';
+                if (nativeLive.threadCrawl) {
+                    const tc = nativeLive.threadCrawl;
+                    titleEl.textContent = `⚡ Rust P.${tc.currentPage}/${tc.endPage} · ${nativeLive.activeStreams} act${spdTxt}`;
+                } else {
+                    titleEl.textContent = `⚡ Downloading (${nativeLive.activeStreams} act · ${nativeLive.queuedTasks} q${spdTxt})`;
+                }
+                topFill.style.background = '#3DB7C7';
+                topFill.style.width = '100%';
+            } else if (active) {
                 const pct = active.totalPct || 0;
                 titleEl.style.color = '#3DB7C7';
                 const parTag = activePosts.length > 1 ? ` [${activePosts.length}∥]` : '';
@@ -16922,7 +17370,11 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 topFill.style.width = '100%';
             } else {
                 titleEl.style.color = '#3DB7C7';
-                titleEl.textContent = workerAlive ? '📥 Queue · Standby ●' : '📥 Queue · Ready';
+                titleEl.textContent = isNativeMgr
+                    ? '⚡ Rust Manager · Ready'
+                    : workerAlive
+                      ? '📥 Queue · Standby ●'
+                      : '📥 Queue · Ready';
                 topFill.style.background = '#3DB7C7';
                 topFill.style.width = '0%';
             }
@@ -17897,6 +18349,15 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 const curThreadKey = xfpdGetCurrentThreadKey();
                 const workerAlive = xfpdIsQueueWorkerAlive(curSt);
 
+                if (typeof xfpdGetNativeManagerLive === 'function' && typeof xfpdCancelNativePostJob === 'function') {
+                    const nl = xfpdGetNativeManagerLive();
+                    const np = nl && nl.postStates ? nl.postStates.get(`${curThreadKey || ''}::${postId}`) : null;
+                    if (np && np.status === 'downloading') {
+                        xfpdCancelNativePostJob(postId, curThreadKey);
+                        return;
+                    }
+                }
+
                 // If this post is currently active or queued in the background worker, clicking cancels it!
                 if (workerAlive) {
                     const actList =
@@ -18016,6 +18477,21 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                 init.injectCustomStyles();
                 scanPosts();
                 syncVisiblePostsAndHud(xfpdReadQueueState());
+
+                if (typeof xfpdOnNativeManagerEvent === 'function') {
+                    xfpdOnNativeManagerEvent(() => {
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
+                    });
+                }
+                if (typeof xfpdCheckGoAgentOnline === 'function' && typeof xfpdEnsureNativeManagerWs === 'function') {
+                    xfpdCheckGoAgentOnline(true).then(ok => {
+                        const ag = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
+                        if (ok && ag && ag.nativeManager) {
+                            xfpdEnsureNativeManagerWs();
+                        }
+                        syncVisiblePostsAndHud(xfpdReadQueueState());
+                    });
+                }
             },
             { once: true },
         );
