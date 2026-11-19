@@ -1761,40 +1761,85 @@ function xfpdNotifyNativeListeners(ev) {
     });
 }
 
-async function xfpdCollectForumCookieHeader() {
-    let docCookies = '';
-    try { docCookies = String(document.cookie || ''); } catch (e) {}
-    try {
-        if (typeof GM_cookie !== 'undefined' && GM_cookie && typeof GM_cookie.list === 'function') {
-            const gmList = await new Promise(resolve => {
-                let settled = false;
-                const timer = setTimeout(() => {
-                    if (!settled) {
-                        settled = true;
-                        resolve(null);
-                    }
-                }, 800);
-                try {
-                    GM_cookie.list({ url: location.href }, (cookies, err) => {
-                        if (settled) return;
-                        settled = true;
-                        clearTimeout(timer);
-                        resolve(!err && Array.isArray(cookies) ? cookies : null);
-                    });
-                } catch (e) {
-                    if (!settled) {
-                        settled = true;
-                        clearTimeout(timer);
-                        resolve(null);
-                    }
-                }
+function xfpdQueryGmCookies(details) {
+    return new Promise(resolve => {
+        if (typeof GM_cookie === 'undefined' || !GM_cookie || typeof GM_cookie.list !== 'function') {
+            resolve([]);
+            return;
+        }
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (!settled) {
+                settled = true;
+                resolve([]);
+            }
+        }, 700);
+        try {
+            GM_cookie.list(details, (cookies, err) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(!err && Array.isArray(cookies) ? cookies : []);
             });
-            if (gmList && gmList.length > 0) {
-                return gmList.map(c => `${c.name}=${c.value}`).join('; ');
+        } catch (e) {
+            if (!settled) {
+                settled = true;
+                clearTimeout(timer);
+                resolve([]);
+            }
+        }
+    });
+}
+
+function xfpdIsNonMediaSocialBioUrl(rawUrl) {
+    try {
+        const unwrapped =
+            (typeof xfpdDecodeForumRedirectUrl === 'function' && xfpdDecodeForumRedirectUrl(rawUrl)) ||
+            String(rawUrl || '');
+        const u = new URL(String(unwrapped || ''));
+        const h = String(u.hostname || '').toLowerCase();
+        const p = String(u.pathname || '').toLowerCase();
+        if (/\.(?:jpe?g|jfif|png|gif|webp|avif|heic|heif|bmp|mp4|m4v|mov|webm|mkv|avi|wmv|flv|ts|m2ts|zip|rar|7z)$/i.test(p)) {
+            return false;
+        }
+        return /(?:^|\.)(?:onlyfans\.com|patreon\.com|instagram\.com|tiktok\.com|twitter\.com|x\.com|linktr\.ee|link\.me|beacons\.ai|allmylinks\.com|mylinks\.ai|fansly\.com|manyvids\.com|chaturbate\.com|stripchat\.com|cam4\.com|youtube\.com|youtu\.be|twitch\.tv|discord\.gg|discord\.com|t\.me|facebook\.com|threads\.net)$/i.test(
+            h,
+        );
+    } catch (e) {
+        return false;
+    }
+}
+
+async function xfpdCollectForumCookieHeader() {
+    const map = new Map();
+    try {
+        const docCookies = String(document.cookie || '');
+        for (const part of docCookies.split(';')) {
+            const idx = part.indexOf('=');
+            if (idx > 0) {
+                const k = part.slice(0, idx).trim();
+                const v = part.slice(idx + 1).trim();
+                if (k) map.set(k, v);
             }
         }
     } catch (e) {}
-    return docCookies;
+
+    try {
+        const host = String(location.hostname || '').trim();
+        const baseDom = host.split('.').slice(-2).join('.');
+        const originRoot = `${location.origin}/`;
+        const [byUrl, byDom] = await Promise.all([
+            xfpdQueryGmCookies({ url: location.href }),
+            baseDom ? xfpdQueryGmCookies({ url: originRoot, domain: baseDom }) : Promise.resolve([]),
+        ]);
+        for (const c of [...byDom, ...byUrl]) {
+            if (c && c.name) map.set(String(c.name), String(c.value || ''));
+        }
+    } catch (e) {}
+
+    return Array.from(map.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
 }
 
 function xfpdEnsureNativeManagerWs() {
@@ -1925,7 +1970,7 @@ async function xfpdEnqueueNativePostJobs(serializedJobs) {
         for (const hObj of job.parsedHosts || []) {
             if (!hObj || !hObj.enabled || !Array.isArray(hObj.resources)) continue;
             for (const u of hObj.resources) {
-                if (u && !urls.includes(u)) urls.push(u);
+                if (u && !xfpdIsNonMediaSocialBioUrl(u) && !urls.includes(u)) urls.push(u);
             }
         }
         const hintMap = {};
