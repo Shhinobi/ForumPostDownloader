@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.51
+// @version 3.52
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -2176,6 +2176,8 @@ function xfpdEnsureNativeManagerWs() {
                         cookies,
                         userAgent: navigator.userAgent || '',
                         gofileToken: (settings && settings.hosts && settings.hosts.goFile && settings.hosts.goFile.token) || '',
+                        browserProxy: true,
+                        scriptVersion: '3.52',
                     }),
                 );
             } catch (e) {}
@@ -2258,11 +2260,86 @@ function xfpdEnsureNativeManagerWs() {
     } catch (e) {}
 }
 
+function xfpdParseHeaderDispositionName(rawHeaders) {
+    const cd = String(rawHeaders || '');
+    const mUtf = /filename\*\s*=\s*UTF-8''([^;\r\n]+)/i.exec(cd);
+    if (mUtf && mUtf[1]) {
+        try { return decodeURIComponent(mUtf[1].trim()); } catch (e) { return mUtf[1].trim(); }
+    }
+    const mStd = /filename\s*=\s*"?([^";\r\n]+)"?/i.exec(cd);
+    return mStd && mStd[1] ? mStd[1].trim() : '';
+}
+
+function xfpdFetchBinaryViaGmXhr(targetHref) {
+    return new Promise(resolve => {
+        const gmXhr =
+            (typeof GM_xmlhttpRequest === 'function' && GM_xmlhttpRequest) ||
+            (typeof window !== 'undefined' && typeof window.GM_xmlhttpRequest === 'function' && window.GM_xmlhttpRequest);
+        if (!gmXhr) {
+            resolve(null);
+            return;
+        }
+        let settled = false;
+        const finish = val => {
+            if (!settled) {
+                settled = true;
+                resolve(val);
+            }
+        };
+        try {
+            gmXhr({
+                method: 'GET',
+                url: targetHref,
+                headers: { Referer: location.href },
+                responseType: 'arraybuffer',
+                anonymous: false,
+                withCredentials: true,
+                timeout: 25000,
+                onload: res => {
+                    const hdrs = String((res && res.responseHeaders) || '');
+                    const mCt = /^content-type:\s*([^\r\n]+)/im.exec(hdrs);
+                    const ct = mCt && mCt[1] ? mCt[1].trim() : '';
+                    const dispName = xfpdParseHeaderDispositionName(hdrs);
+                    const buf = res && res.response instanceof ArrayBuffer ? res.response : null;
+                    finish(
+                        buf && buf.byteLength > 0
+                            ? { status: Number(res.status || 200), ct, dispName, ab: buf }
+                            : null,
+                    );
+                },
+                onerror: () => finish(null),
+                ontimeout: () => finish(null),
+                onabort: () => finish(null),
+            });
+        } catch (e) {
+            finish(null);
+        }
+    });
+}
+
 async function xfpdHandleNativeBrowserFetchReq(msg) {
     const fetchFn =
         (typeof fetch === 'function' && fetch) ||
         (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
     if (!fetchFn || !msg || !msg.req_id || !msg.url) return;
+
+    const replyUrl = `${XFPD_GO_AGENT_BASE}/api/v3/browser-fetch/${encodeURIComponent(String(msg.req_id))}`;
+    const sendReply = async (status, ct, dispName, bodyBuf) => {
+        try {
+            await fetchFn(replyUrl, {
+                method: 'POST',
+                mode: 'cors',
+                credentials: 'omit',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-XFPD-Status': String(status || 599),
+                    'X-XFPD-Content-Type': String(ct || ''),
+                    'X-XFPD-Filename': encodeURIComponent(String(dispName || '')),
+                },
+                body: bodyBuf || new ArrayBuffer(0),
+            });
+        } catch (e) {}
+    };
 
     try {
         const kind = String(msg.kind || 'html');
@@ -2278,8 +2355,9 @@ async function xfpdHandleNativeBrowserFetchReq(msg) {
         }
 
         const parsedTarget = new URL(targetUrl, location.origin);
-        // Security invariant: ONLY answer same-origin forum requests (carries HttpOnly + DDoS-Guard session with 0 CORS risk!)
+        // Security invariant: ONLY answer same-origin forum requests!
         if (parsedTarget.origin !== location.origin) {
+            await sendReply(421, '', '', new ArrayBuffer(0));
             return;
         }
 
@@ -2309,34 +2387,34 @@ async function xfpdHandleNativeBrowserFetchReq(msg) {
             }
         }
 
-        const resp = await fetchFn(parsedTarget.href, {
-            method: 'GET',
-            credentials: 'include',
-        });
-        const ct = String(resp.headers.get('content-type') || '');
-        const cd = String(resp.headers.get('content-disposition') || '');
-        let dispName = '';
-        const mUtf = /filename\*\s*=\s*UTF-8''([^;\r\n]+)/i.exec(cd);
-        if (mUtf && mUtf[1]) {
-            try { dispName = decodeURIComponent(mUtf[1].trim()); } catch (e) { dispName = mUtf[1].trim(); }
-        } else {
-            const mStd = /filename\s*=\s*"?([^";\r\n]+)"?/i.exec(cd);
-            if (mStd && mStd[1]) dispName = mStd[1].trim();
+        // For binary `/attachments/` that 302-redirect cross-origin to CDN nodes, use `GM_xmlhttpRequest` first so CORS never blocks!
+        if (kind === 'binary') {
+            const gmRes = await xfpdFetchBinaryViaGmXhr(parsedTarget.href);
+            if (gmRes && gmRes.status >= 200 && gmRes.status < 300 && !/text\/html/i.test(gmRes.ct)) {
+                await sendReply(gmRes.status, gmRes.ct, gmRes.dispName, gmRes.ab);
+                return;
+            }
         }
-        const ab = await resp.arrayBuffer();
-        await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/browser-fetch/${encodeURIComponent(String(msg.req_id))}`, {
-            method: 'POST',
-            mode: 'cors',
-            credentials: 'omit',
-            headers: {
-                'Content-Type': 'application/octet-stream',
-                'X-XFPD-Status': String(resp.status || 200),
-                'X-XFPD-Content-Type': ct,
-                'X-XFPD-Filename': encodeURIComponent(dispName),
-            },
-            body: ab,
-        });
-    } catch (e) {}
+
+        const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+        const tmr = ctrl ? setTimeout(() => ctrl.abort(), 18000) : null;
+        try {
+            const resp = await fetchFn(parsedTarget.href, {
+                method: 'GET',
+                credentials: 'include',
+                ...(ctrl ? { signal: ctrl.signal } : {}),
+            });
+            const ct = String(resp.headers.get('content-type') || '');
+            const dispName = xfpdParseHeaderDispositionName(resp.headers.get('content-disposition') || '');
+            const ab = await resp.arrayBuffer();
+            await sendReply(resp.status || 200, ct, dispName, ab);
+        } finally {
+            if (tmr) clearTimeout(tmr);
+        }
+    } catch (e) {
+        // NEVER swallow errors silently — always release the Rust oneshot waiter immediately!
+        await sendReply(599, '', '', new ArrayBuffer(0));
+    }
 }
 
 async function xfpdEnqueueNativePostJobs(serializedJobs) {
