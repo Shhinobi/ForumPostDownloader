@@ -1935,6 +1935,9 @@ function xfpdEnsureNativeManagerWs() {
                               endPage: Number(msg.end_page || 1),
                               statusText: String(msg.status_text || ''),
                           };
+                } else if (msg.event === 'browser_fetch_req' && msg.req_id && msg.url) {
+                    xfpdHandleNativeBrowserFetchReq(msg);
+                    return;
                 }
                 xfpdNotifyNativeListeners(msg);
             } catch (e) {}
@@ -1950,6 +1953,87 @@ function xfpdEnsureNativeManagerWs() {
                 });
             }, 4000);
         };
+    } catch (e) {}
+}
+
+async function xfpdHandleNativeBrowserFetchReq(msg) {
+    const fetchFn =
+        (typeof fetch === 'function' && fetch) ||
+        (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+    if (!fetchFn || !msg || !msg.req_id || !msg.url) return;
+
+    try {
+        const kind = String(msg.kind || 'html');
+        let targetUrl = String(msg.url || '');
+        let reactUrl = '';
+        let csrfTok = '';
+
+        if (kind === 'unlock_and_html') {
+            const parts = targetUrl.split('|||');
+            targetUrl = parts[0] || '';
+            reactUrl = parts[1] || '';
+            csrfTok = parts[2] || '';
+        }
+
+        const parsedTarget = new URL(targetUrl, location.origin);
+        // Security invariant: ONLY answer same-origin forum requests (carries HttpOnly + DDoS-Guard session with 0 CORS risk!)
+        if (parsedTarget.origin !== location.origin) {
+            return;
+        }
+
+        if (kind === 'unlock_and_html' && reactUrl) {
+            const parsedReact = new URL(reactUrl, location.origin);
+            const reactNum = Number.parseInt(String(parsedReact.searchParams.get('reaction_id') || ''), 10);
+            const validReactPath = /^\/(?:posts|uw-fcs-comments|comments)\/\d+\/react$/i.test(parsedReact.pathname || '');
+            // SMG safety & CSRF invariant: strict `/posts/<id>/react` path AND NEVER reaction_id=33 (DMCA) on SocialMediaGirls!
+            if (
+                parsedReact.origin === location.origin &&
+                validReactPath &&
+                !(/socialmediagirls\.com$/i.test(parsedReact.hostname) && reactNum === 33)
+            ) {
+                const token = csrfTok || (typeof xfpdGetXenForoCsrfToken === 'function' ? xfpdGetXenForoCsrfToken() : '');
+                if (token) {
+                    const fd = new FormData();
+                    fd.append('_xfToken', token);
+                    fd.append('_xfRequestUri', parsedTarget.pathname + parsedTarget.search);
+                    fd.append('_xfWithData', '1');
+                    fd.append('_xfResponseType', 'json');
+                    await fetchFn(parsedReact.href, {
+                        method: 'POST',
+                        credentials: 'include',
+                        body: fd,
+                    }).catch(() => {});
+                }
+            }
+        }
+
+        const resp = await fetchFn(parsedTarget.href, {
+            method: 'GET',
+            credentials: 'include',
+        });
+        const ct = String(resp.headers.get('content-type') || '');
+        const cd = String(resp.headers.get('content-disposition') || '');
+        let dispName = '';
+        const mUtf = /filename\*\s*=\s*UTF-8''([^;\r\n]+)/i.exec(cd);
+        if (mUtf && mUtf[1]) {
+            try { dispName = decodeURIComponent(mUtf[1].trim()); } catch (e) { dispName = mUtf[1].trim(); }
+        } else {
+            const mStd = /filename\s*=\s*"?([^";\r\n]+)"?/i.exec(cd);
+            if (mStd && mStd[1]) dispName = mStd[1].trim();
+        }
+        const ab = await resp.arrayBuffer();
+        await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/browser-fetch/${encodeURIComponent(String(msg.req_id))}`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: {
+                'Content-Type': 'application/octet-stream',
+                'X-XFPD-Status': String(resp.status || 200),
+                'X-XFPD-Content-Type': ct,
+                'X-XFPD-Filename': encodeURIComponent(dispName),
+            },
+            body: ab,
+        });
     } catch (e) {}
 }
 
