@@ -1530,8 +1530,61 @@ if (page === 1) {
     ],
     [
         [/(?:focus\.)?(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/[ul]/],
-        url => {
-            let resolved = url.replace('/u/', '/api/file/').replace('/l/', '/api/list/');
+        async (url, http) => {
+            const cleanUrl = String(url || '').replace(/^(https?:\/\/)focus\./i, '$1');
+            const mFile = /(?:pixeldrain\.com|pixeldrain\.net|pixeldra\.in)\/u\/([A-Za-z0-9_-]+)/i.exec(cleanUrl);
+            if (mFile && mFile[1] && http && typeof http.get === 'function' && typeof http.post === 'function') {
+                const fileId = mFile[1];
+                try {
+                    const infoRes = await http.get(
+                        `https://pixeldrain.com/api/file/${fileId}/info`,
+                        {},
+                        { Referer: `https://pixeldrain.com/u/${fileId}`, __xfpd_timeout: 8000 },
+                        'text',
+                    );
+                    if (infoRes && infoRes.status === 200 && infoRes.source) {
+                        const info = JSON.parse(String(infoRes.source));
+                        const fileSize = Number(info && info.size) || 0;
+                        if (info && info.name) {
+                            pixeldrainInfoById.set(fileId, {
+                                filename: String(info.name).trim(),
+                                mimeType: String(info.mime_type || ''),
+                                size: fileSize,
+                            });
+                        }
+                        const avail = String((info && info.availability) || '');
+                        const canExtractInBrowser =
+                            (typeof xfpdGoAgentState !== 'undefined' && xfpdGoAgentState && xfpdGoAgentState.online) ||
+                            fileSize <= 0 ||
+                            fileSize <= XFPD_MAX_EXTRACT_ARCHIVE_BYTES;
+                        if (canExtractInBrowser && (avail.endsWith('_captcha_required') || avail.endsWith('_limit_exceeded'))) {
+                            const stem = String((info && info.name) || 'xfpd').replace(/\.[^.]+$/, '') || 'xfpd';
+                            const createRes = await http.post(
+                                'https://pixeldrain.com/api/list',
+                                JSON.stringify({
+                                    title: stem.slice(0, 120),
+                                    anonymous: true,
+                                    files: [{ id: fileId }],
+                                }),
+                                {},
+                                {
+                                    'Content-Type': 'application/json',
+                                    Origin: 'https://pixeldrain.com',
+                                    Referer: `https://pixeldrain.com/u/${fileId}`,
+                                    __xfpd_timeout: 8000,
+                                },
+                            );
+                            if (createRes && createRes.source) {
+                                const created = JSON.parse(String(createRes.source));
+                                if (created && created.id) {
+                                    return `https://pixeldrain.com/api/list/${created.id}/zip?xfpd_pdzip=1`;
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            let resolved = cleanUrl.replace('/u/', '/api/file/').replace('/l/', '/api/list/');
             resolved = h.contains('/api/list', resolved) ? `${resolved}/zip` : resolved;
             resolved = h.contains('/api/file', resolved) ? `${resolved}?download` : resolved;
             return resolved;
@@ -7538,8 +7591,9 @@ const isView = /https?:\/\/(?:www\.)?filester\.(me|sh|si|gg)\/d\//i.test(String(
 
                         // Auto-Extract Archives (.zip / .rar RAR4+RAR5 / .7z / .tar.gz): unpack photos & videos directly into
                         // Photos/ and Videos/ with per-file SHA-256 deduplication instead of saving the raw archive!
+                        const isPdBypassZip = String(url || '').includes('xfpd_pdzip=1');
                         if (
-                            postSettings.extractArchives !== false &&
+                            (postSettings.extractArchives !== false || isPdBypassZip) &&
                             fileBlob &&
                             typeof fileBlob.size === 'number' &&
                             fileBlob.size > 0 &&
