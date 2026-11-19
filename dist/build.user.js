@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.47
+// @version 3.48
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png
@@ -2352,6 +2352,23 @@ function xfpdCancelNativePostJob(postId, threadKey = '') {
         } catch (e) {}
     }
     xfpdNotifyNativeListeners({ event: 'local_cancelled' });
+}
+
+async function xfpdShowNativeDesktopWindow() {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return false;
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/show-window`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+        });
+        return !!(res && res.ok);
+    } catch (e) {
+        return false;
+    }
 }
 
 async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
@@ -5390,9 +5407,9 @@ const ui = {
           <div class="menu-row xfpd-select-row">
             <label class="xfpd-select-label" for="${idPrefix}-save-mode">Save Engine</label>
             <select id="${idPrefix}-save-mode" class="xfpd-select" ${skipDl ? 'disabled="disabled"' : ''}>
-              ${optSaveMode('auto', 'Auto (Go → Folder → Chrome)')}
+              ${optSaveMode('auto', 'Auto (XFPD App → Folder → Chrome)')}
+              ${optSaveMode('agent', 'XFPD Desktop App (Rust)')}
               ${optSaveMode('folder', 'Direct Folder (Browser API)')}
-              ${optSaveMode('agent', 'Go Agent (127.0.0.1)')}
               ${optSaveMode('browser', 'Chrome Download Manager')}
             </select>
           </div>
@@ -5400,19 +5417,22 @@ const ui = {
             <span id="${idPrefix}-save-engine-status" style="color:${agentSt && agentSt.online ? '#47ba24' : directFolderName ? '#3DB7C7' : '#959595'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
               ${
                   agentSt && agentSt.online
-                      ? `⚡ Go Agent Online (${agentSt.rootDir || 'F:\\Downloads'})`
+                      ? `⚡ XFPD App Online (${agentSt.rootDir || 'F:\\Downloads'})`
                       : directFolderName
                         ? `📁 Folder: ${directFolderName}`
                         : '🌐 Default: Chrome Downloads'
               }
             </span>
-            ${
-                fsSupported
-                    ? `<button type="button" id="${idPrefix}-pick-folder" class="xfpd-mini-btn" title="Choose a local folder so single posts & pages save directly without Chrome's download manager">${
-                          directFolderName ? '📁 Change' : '📁 Pick Folder'
-                      }</button>`
-                    : ''
-            }
+            <span style="display:inline-flex;align-items:center;gap:4px;flex-shrink:0;">
+              <button type="button" id="${idPrefix}-open-app" class="xfpd-mini-btn" style="${agentSt && agentSt.online ? '' : 'display:none;'}" title="Bring the standalone XFPD Desktop Download Manager window to the front">⚡ Open App</button>
+              ${
+                  fsSupported
+                      ? `<button type="button" id="${idPrefix}-pick-folder" class="xfpd-mini-btn" title="Choose a local folder so single posts & pages save directly without Chrome's download manager">${
+                            directFolderName ? '📁 Change' : '📁 Pick Folder'
+                        }</button>`
+                      : ''
+              }
+            </span>
           </div>
           `,
                     `
@@ -5518,18 +5538,22 @@ const ui = {
                     const refreshEngineStatus = stObj => {
                         const fLbl = typeof xfpdGetDirectFolderLabel === 'function' ? xfpdGetDirectFolderLabel() : '';
                         const sm = settingsObj.saveMode || 'auto';
+                        const openAppEl = rootEl.querySelector(`#${idPrefix}-open-app`);
+                        if (openAppEl) {
+                            openAppEl.style.display = stObj && stObj.online ? '' : 'none';
+                        }
                         if (sm === 'browser') {
                             engineStEl.style.color = '#959595';
                             engineStEl.textContent = '🌐 Mode: Chrome Downloads';
                         } else if (stObj && stObj.online && (sm === 'auto' || sm === 'agent')) {
                             engineStEl.style.color = '#47ba24';
-                            engineStEl.textContent = `⚡ Go Agent Online (${stObj.rootDir || 'F:\\Downloads'})`;
+                            engineStEl.textContent = `⚡ XFPD App Online (${stObj.rootDir || 'F:\\Downloads'})`;
                         } else if (fLbl && (sm === 'auto' || sm === 'folder' || sm === 'agent')) {
                             engineStEl.style.color = '#3DB7C7';
                             engineStEl.textContent = `📁 Direct Folder: ${fLbl}`;
                         } else {
                             engineStEl.style.color = '#959595';
-                            engineStEl.textContent = sm === 'agent' ? '⚠ Go Agent Offline (using Chrome)' : '🌐 Fallback: Chrome Downloads';
+                            engineStEl.textContent = sm === 'agent' ? '⚠ XFPD App Offline (using Chrome)' : '🌐 Fallback: Chrome Downloads';
                         }
                     };
                     const curAgent = typeof xfpdGetGoAgentCachedState === 'function' ? xfpdGetGoAgentCachedState() : null;
@@ -5685,6 +5709,17 @@ const ui = {
                 });
 
                 bindOne(
+                    'open-app',
+                    async e => {
+                        e.preventDefault();
+                        if (typeof xfpdShowNativeDesktopWindow === 'function') {
+                            await xfpdShowNativeDesktopWindow();
+                        }
+                    },
+                    'click',
+                );
+
+                bindOne(
                     'pick-folder',
                     async e => {
                         e.preventDefault();
@@ -5697,7 +5732,7 @@ const ui = {
                         } catch (err) {
                             if (err && err.name !== 'AbortError') {
                                 alert(
-                                    'Could not select that folder directly (Chrome blocks system root/Downloads folders — pick or create a subfolder like F:\\Downloads\\Foruns, or use the Go Agent for F:\\Downloads directly).',
+                                    'Could not select that folder directly (Chrome blocks system root/Downloads folders — pick or create a subfolder like F:\\Downloads\\Foruns, or use the XFPD Desktop App for F:\\Downloads directly).',
                                 );
                             }
                         }
@@ -12891,7 +12926,7 @@ if (imagebamHeaders && isFF) {
                                 typeof xfpdCheckGoAgentOnline === 'function' &&
                                 (await xfpdCheckGoAgentOnline(false))
                             ) {
-                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ XFPD App 🢒 ${ellipsedUrl}`);
                                 const hdrs = { ...(dlOpts.headers || {}), Referer: reflink || '' };
                                 if (isGoFile && settings?.hosts?.goFile?.token) {
                                     hdrs.Cookie = `accountToken=${settings.hosts.goFile.token}`;
@@ -13018,7 +13053,7 @@ if (imagebamHeaders && isFF) {
                         const curLay = resolveEffectiveLayout();
 
                         h.ui.setElProps(statusLabel, { color: '#469cf3' });
-                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ XFPD App 🢒 ${ellipsedUrl}`);
 
                         const goCtrl = typeof AbortController === 'function' ? new AbortController() : null;
                         if (goCtrl) {
@@ -13061,7 +13096,7 @@ if (imagebamHeaders && isFF) {
                                 }
                                 if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
                             }
-                            log.post.info(postId, `::Saved via Go Agent (${agentRes.status})::: ${preFn}`, postNumber);
+                            log.post.info(postId, `::Saved via XFPD Manager (${agentRes.status})::: ${preFn}`, postNumber);
                             finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
                             h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ ${ellipsedUrl}`);
                             h.ui.setElProps(statusLabel, { color: '#2d9053' });
@@ -13072,7 +13107,7 @@ if (imagebamHeaders && isFF) {
                         // Release reserved path before either falling through to browser Blob fetch (Cloudflare TLS) or failing
                         usedPaths.delete(preFn);
                         if (agentRes && !agentRes.fallbackToBrowser) {
-                            log.post.error(postId, `::Go Agent download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
+                            log.post.error(postId, `::XFPD Manager download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
                             finishBatchItem(false);
                             h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                             h.ui.setElProps(statusLabel, { color: '#b23b3b' });
@@ -15204,7 +15239,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (workerRefs.lanesSummary) {
                 const agentBadge =
                     typeof xfpdGoAgentState !== 'undefined' && xfpdGoAgentState && xfpdGoAgentState.online
-                        ? '⚡ Native Go v2.0 Lanes'
+                        ? '⚡ XFPD Rust Manager Lanes'
                         : '🌐 Browser Multi-Lanes';
                 workerRefs.lanesSummary.textContent = `${agentBadge} · ${totalActiveStreams} active · ${totalQueuedStreams} queued`;
             }
@@ -17173,7 +17208,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     openMgrBtn.addEventListener('click', e => {
                         e.preventDefault();
                         e.stopPropagation();
-                        window.open('http://127.0.0.1:48721', '_blank', 'noopener');
+                        if (typeof xfpdShowNativeDesktopWindow === 'function') {
+                            xfpdShowNativeDesktopWindow();
+                        }
                     });
                 }
 

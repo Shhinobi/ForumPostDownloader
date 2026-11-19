@@ -6595,7 +6595,7 @@ if (imagebamHeaders && isFF) {
                                 typeof xfpdCheckGoAgentOnline === 'function' &&
                                 (await xfpdCheckGoAgentOnline(false))
                             ) {
-                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                                h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ XFPD App 🢒 ${ellipsedUrl}`);
                                 const hdrs = { ...(dlOpts.headers || {}), Referer: reflink || '' };
                                 if (isGoFile && settings?.hosts?.goFile?.token) {
                                     hdrs.Cookie = `accountToken=${settings.hosts.goFile.token}`;
@@ -6722,7 +6722,7 @@ if (imagebamHeaders && isFF) {
                         const curLay = resolveEffectiveLayout();
 
                         h.ui.setElProps(statusLabel, { color: '#469cf3' });
-                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ Go Agent 🢒 ${ellipsedUrl}`);
+                        h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ XFPD App 🢒 ${ellipsedUrl}`);
 
                         const goCtrl = typeof AbortController === 'function' ? new AbortController() : null;
                         if (goCtrl) {
@@ -6765,7 +6765,7 @@ if (imagebamHeaders && isFF) {
                                 }
                                 if (agentRes.fingerprint) xfpdMarkSeenThreadHash(agentRes.fingerprint, activeThreadKey);
                             }
-                            log.post.info(postId, `::Saved via Go Agent (${agentRes.status})::: ${preFn}`, postNumber);
+                            log.post.info(postId, `::Saved via XFPD Manager (${agentRes.status})::: ${preFn}`, postNumber);
                             finishBatchItem(agentRes.status === 'dedup' ? 'dedup' : true);
                             h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ⚡ ${ellipsedUrl}`);
                             h.ui.setElProps(statusLabel, { color: '#2d9053' });
@@ -6776,7 +6776,7 @@ if (imagebamHeaders && isFF) {
                         // Release reserved path before either falling through to browser Blob fetch (Cloudflare TLS) or failing
                         usedPaths.delete(preFn);
                         if (agentRes && !agentRes.fallbackToBrowser) {
-                            log.post.error(postId, `::Go Agent download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
+                            log.post.error(postId, `::XFPD Manager download failed (${agentRes.reason || 'error'})::: ${url}`, postNumber);
                             finishBatchItem(false);
                             h.ui.setText(statusLabel, `${completed} / ${totalDownloadable} 🢒 ${ellipsedUrl}`);
                             h.ui.setElProps(statusLabel, { color: '#b23b3b' });
@@ -8908,7 +8908,7 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
             if (workerRefs.lanesSummary) {
                 const agentBadge =
                     typeof xfpdGoAgentState !== 'undefined' && xfpdGoAgentState && xfpdGoAgentState.online
-                        ? '⚡ Native Go v2.0 Lanes'
+                        ? '⚡ XFPD Rust Manager Lanes'
                         : '🌐 Browser Multi-Lanes';
                 workerRefs.lanesSummary.textContent = `${agentBadge} · ${totalActiveStreams} active · ${totalQueuedStreams} queued`;
             }
@@ -10877,7 +10877,9 @@ function xfpdStartQueueEngine({ isDedicatedWorkerTab = false } = {}) {
                     openMgrBtn.addEventListener('click', e => {
                         e.preventDefault();
                         e.stopPropagation();
-                        window.open('http://127.0.0.1:48721', '_blank', 'noopener');
+                        if (typeof xfpdShowNativeDesktopWindow === 'function') {
+                            xfpdShowNativeDesktopWindow();
+                        }
                     });
                 }
 

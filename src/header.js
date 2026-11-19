@@ -5,7 +5,7 @@
 // @author SkyCloudDev
 // @author Shhinobi
 // @description Downloads images and videos from posts on SimpCity and SocialMediaGirls forums
-// @version 3.47
+// @version 3.48
 // @updateURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @downloadURL https://github.com/Shhinobi/ForumPostDownloader/raw/main/dist/build.user.js
 // @icon https://simp4.cuckcapital.cr/simpcityIcon192.png

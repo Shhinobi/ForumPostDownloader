@@ -2052,6 +2052,23 @@ function xfpdCancelNativePostJob(postId, threadKey = '') {
     xfpdNotifyNativeListeners({ event: 'local_cancelled' });
 }
 
+async function xfpdShowNativeDesktopWindow() {
+    try {
+        const fetchFn =
+            (typeof fetch === 'function' && fetch) ||
+            (typeof window !== 'undefined' && typeof window.fetch === 'function' && window.fetch.bind(window));
+        if (!fetchFn) return false;
+        const res = await fetchFn(`${XFPD_GO_AGENT_BASE}/api/v3/show-window`, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+        });
+        return !!(res && res.ok);
+    } catch (e) {
+        return false;
+    }
+}
+
 async function xfpdAgentWriteBlob(threadTitle, relFn, blob, useDedup = true) {
     await xfpdAcquireAgentSlot();
     try {
